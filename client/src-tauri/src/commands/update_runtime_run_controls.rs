@@ -1,19 +1,21 @@
 use std::{
+    collections::HashSet,
     path::Path,
+    sync::{Mutex, OnceLock},
     thread,
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 use tauri::{AppHandle, Runtime, State};
 
 use crate::{
-    auth::now_timestamp,
     commands::{
         validate_non_empty, CommandError, CommandResult, RuntimeRunDto,
         UpdateRuntimeRunControlsRequestDto,
     },
     db::project_store::{self, RuntimeRunSnapshotRecord, RuntimeRunStatus},
     runtime::{
+        create_owned_agent_run, register_existing_initial_agent_continuation,
         AgentAutoCompactPreference, AutonomousToolRuntime, ContinueOwnedAgentRunRequest,
         DesktopAgentCoreRuntime, DesktopRunDriveMode, OwnedAgentRunRequest,
     },
@@ -33,7 +35,32 @@ use super::runtime_support::{
 };
 
 const QUEUED_PROMPT_DRIVE_POLL_INTERVAL: Duration = Duration::from_millis(250);
-const QUEUED_PROMPT_DRIVE_TIMEOUT: Duration = Duration::from_secs(15 * 60);
+static OWNED_RUNTIME_PROMPT_DRIVE_WORKERS: OnceLock<Mutex<HashSet<String>>> = OnceLock::new();
+
+struct OwnedRuntimePromptDriveWorkerRegistration {
+    key: String,
+}
+
+impl OwnedRuntimePromptDriveWorkerRegistration {
+    fn try_register(project_id: &str, run_id: &str) -> Option<Self> {
+        let key = format!("{project_id}\0{run_id}");
+        let workers = OWNED_RUNTIME_PROMPT_DRIVE_WORKERS.get_or_init(|| Mutex::new(HashSet::new()));
+        let mut workers = workers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        workers.insert(key.clone()).then_some(Self { key })
+    }
+}
+
+impl Drop for OwnedRuntimePromptDriveWorkerRegistration {
+    fn drop(&mut self) {
+        let workers = OWNED_RUNTIME_PROMPT_DRIVE_WORKERS.get_or_init(|| Mutex::new(HashSet::new()));
+        workers
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .remove(&self.key);
+    }
+}
 
 #[tauri::command]
 pub async fn update_runtime_run_controls<R: Runtime + 'static>(
@@ -44,6 +71,7 @@ pub async fn update_runtime_run_controls<R: Runtime + 'static>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.agent_session_id, "agentSessionId")?;
     validate_non_empty(&request.run_id, "runId")?;
+    validate_non_empty(&request.continuation_request_id, "continuationRequestId")?;
 
     let state = state.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
@@ -119,6 +147,7 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
         existing,
         &next_provider_id,
         request.controls.clone(),
+        &request.continuation_request_id,
         request.prompt.clone(),
         &request.attachments,
         &request.linked_paths,
@@ -130,28 +159,12 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
         &before,
         &Some(after.clone()),
     )?;
-    let auto_compact = derive_auto_compact_preference(&after)?;
-    if let Some(prompt) = normalized_prompt(request.prompt.as_deref()) {
-        let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
-        if agent_core.is_active(&after.run.run_id)? {
-            spawn_owned_runtime_prompt_drive_when_idle(
-                app.clone(),
-                state.clone(),
-                repo_root.clone(),
-                after.clone(),
-            );
-            return Ok(runtime_run_dto_from_snapshot(&after));
-        }
-        mark_existing_agent_run_accepted(&repo_root, &after)?;
-        spawn_owned_runtime_prompt_drive(
+    if normalized_prompt(request.prompt.as_deref()).is_some() {
+        spawn_owned_runtime_prompt_drive_when_idle(
             app.clone(),
             state.clone(),
             repo_root.clone(),
             after.clone(),
-            prompt,
-            request.attachments.clone(),
-            request.linked_paths.clone(),
-            auto_compact,
         );
     }
 
@@ -193,175 +206,245 @@ fn spawn_owned_runtime_prompt_drive_when_idle<R: Runtime + 'static>(
     repo_root: std::path::PathBuf,
     snapshot: RuntimeRunSnapshotRecord,
 ) {
-    thread::spawn(move || {
-        let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
-        let started_at = Instant::now();
-        loop {
-            match agent_core.is_active(&snapshot.run.run_id) {
-                Ok(false) => break,
-                Ok(true) if started_at.elapsed() < QUEUED_PROMPT_DRIVE_TIMEOUT => {
-                    thread::sleep(QUEUED_PROMPT_DRIVE_POLL_INTERVAL);
-                }
-                Ok(true) => return,
-                Err(_) => return,
-            }
-        }
-
-        let latest = match load_persisted_runtime_run(
-            &repo_root,
-            &snapshot.run.project_id,
-            &snapshot.run.agent_session_id,
-        ) {
-            Ok(Some(latest)) if latest.run.run_id == snapshot.run.run_id => latest,
-            _ => return,
-        };
-        let Some(pending) = latest.controls.pending.as_ref() else {
-            return;
-        };
-        let Some(prompt) = normalized_prompt(pending.queued_prompt.as_deref()) else {
-            return;
-        };
-        let attachments = queued_attachments_as_staged(&pending.queued_attachments);
-        let linked_paths = queued_linked_paths_as_dto(&pending.queued_linked_paths);
-        let auto_compact = match derive_auto_compact_preference(&latest) {
-            Ok(auto_compact) => auto_compact,
-            Err(error) => {
-                let _ = fail_owned_runtime_run(
-                    &app,
-                    &repo_root,
-                    &latest,
-                    &error,
-                    "Owned agent task failed.",
-                );
-                return;
-            }
-        };
-        if let Err(error) = mark_existing_agent_run_accepted(&repo_root, &latest) {
-            let _ = fail_owned_runtime_run(
-                &app,
-                &repo_root,
-                &latest,
-                &error,
-                "Owned agent task failed.",
-            );
-            return;
-        }
-        spawn_owned_runtime_prompt_drive(
-            app,
-            state,
-            repo_root,
-            latest,
-            prompt,
-            attachments,
-            linked_paths,
-            auto_compact,
-        );
-    });
-}
-
-fn mark_existing_agent_run_accepted(
-    repo_root: &Path,
-    snapshot: &RuntimeRunSnapshotRecord,
-) -> CommandResult<()> {
-    let run = match project_store::load_agent_run_record(
-        repo_root,
+    let Some(worker_registration) = OwnedRuntimePromptDriveWorkerRegistration::try_register(
         &snapshot.run.project_id,
         &snapshot.run.run_id,
-    ) {
-        Ok(run) => run,
-        Err(error) if error.code == "agent_run_not_found" => return Ok(()),
-        Err(error) => return Err(error),
+    ) else {
+        return;
     };
-    if matches!(
-        run.status,
-        project_store::AgentRunStatus::Starting | project_store::AgentRunStatus::Running
-    ) {
-        return Ok(());
-    }
-    project_store::update_agent_run_status(
-        repo_root,
-        &snapshot.run.project_id,
-        &snapshot.run.run_id,
-        project_store::AgentRunStatus::Running,
-        None,
-        &now_timestamp(),
-    )?;
-    Ok(())
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the async handoff owns the complete prompt drive context"
-)]
-fn spawn_owned_runtime_prompt_drive<R: Runtime + 'static>(
-    app: AppHandle<R>,
-    state: DesktopState,
-    repo_root: std::path::PathBuf,
-    snapshot: RuntimeRunSnapshotRecord,
-    prompt: String,
-    attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
-    linked_paths: Vec<crate::commands::RuntimeLinkedPathDto>,
-    auto_compact: Option<AgentAutoCompactPreference>,
-) {
-    thread::spawn(move || {
-        let before = Some(snapshot.clone());
-        match drive_owned_runtime_prompt(
-            &app,
-            &state,
-            &repo_root,
-            &snapshot,
-            prompt,
-            attachments,
-            linked_paths,
-            auto_compact,
-        ) {
-            Ok(Some(rebound)) => {
-                let _ = emit_runtime_run_updated_if_changed(
-                    &app,
+    let _ = thread::Builder::new()
+        .name("xero-runtime-prompt-recovery".into())
+        .spawn(move || {
+            let _worker_registration = worker_registration;
+            let agent_core = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+            loop {
+                if matches!(agent_core.is_active(&snapshot.run.run_id), Ok(true)) {
+                    thread::sleep(QUEUED_PROMPT_DRIVE_POLL_INTERVAL);
+                    continue;
+                }
+                let latest = match load_persisted_runtime_run(
+                    &repo_root,
                     &snapshot.run.project_id,
                     &snapshot.run.agent_session_id,
-                    &before,
-                    &Some(rebound),
-                );
-            }
-            Ok(None) => {
-                match apply_owned_runtime_run_pending_controls_with_status(
-                    &repo_root,
-                    &snapshot,
-                    RuntimeRunStatus::Running,
-                    "Owned agent runtime accepted the queued prompt.",
                 ) {
-                    Ok(applied) => {
+                    Ok(Some(latest)) if latest.run.run_id == snapshot.run.run_id => latest,
+                    _ => return,
+                };
+                let Some(pending) = latest.controls.pending.as_ref() else {
+                    return;
+                };
+                let Some(prompt) = normalized_prompt(pending.queued_prompt.as_deref()) else {
+                    return;
+                };
+                let Some(continuation_request_id) = pending
+                    .queued_prompt_continuation_request_id
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|request_id| !request_id.is_empty())
+                    .map(ToOwned::to_owned)
+                else {
+                    return;
+                };
+                let attachments = queued_attachments_as_staged(&pending.queued_attachments);
+                let linked_paths = queued_linked_paths_as_dto(&pending.queued_linked_paths);
+                let auto_compact = match derive_auto_compact_preference(&latest) {
+                    Ok(auto_compact) => auto_compact,
+                    Err(error) => {
+                        let _ = fail_owned_runtime_run(
+                            &app,
+                            &repo_root,
+                            &latest,
+                            &error,
+                            "Owned agent task failed.",
+                        );
+                        return;
+                    }
+                };
+                let before = Some(latest.clone());
+                match drive_owned_runtime_prompt(
+                    &app,
+                    &state,
+                    &repo_root,
+                    &latest,
+                    continuation_request_id.clone(),
+                    prompt,
+                    attachments,
+                    linked_paths,
+                    auto_compact,
+                ) {
+                    Ok(Some(rebound)) => {
                         let _ = emit_runtime_run_updated_if_changed(
                             &app,
-                            &snapshot.run.project_id,
-                            &snapshot.run.agent_session_id,
+                            &latest.run.project_id,
+                            &latest.run.agent_session_id,
                             &before,
-                            &Some(applied),
+                            &Some(rebound),
                         );
+                        return;
+                    }
+                    Ok(None) => {
+                        match project_store::load_agent_continuation_request_by_id(
+                            &repo_root,
+                            &latest.run.project_id,
+                            &continuation_request_id,
+                        ) {
+                            Ok(Some(request))
+                                if request.state
+                                    == project_store::AgentContinuationRequestState::Prepared =>
+                            {
+                                if let Ok(agent_snapshot) = project_store::load_agent_run(
+                                    &repo_root,
+                                    &latest.run.project_id,
+                                    &latest.run.run_id,
+                                ) {
+                                    if agent_snapshot.run.status
+                                        == project_store::AgentRunStatus::Failed
+                                    {
+                                        let diagnostic = agent_snapshot.run.last_error.unwrap_or(
+                                            project_store::AgentRunDiagnosticRecord {
+                                                code: "agent_continuation_pre_dispatch_failed".into(),
+                                                message: "The queued prompt failed before provider dispatch and was not retried automatically.".into(),
+                                            },
+                                        );
+                                        let _ = fail_owned_runtime_run(
+                                            &app,
+                                            &repo_root,
+                                            &latest,
+                                            &CommandError::user_fixable(
+                                                diagnostic.code,
+                                                diagnostic.message,
+                                            ),
+                                            "Owned agent task failed before provider dispatch.",
+                                        );
+                                        return;
+                                    }
+                                }
+                                thread::sleep(QUEUED_PROMPT_DRIVE_POLL_INTERVAL);
+                                continue;
+                            }
+                            Ok(Some(request))
+                                if request.state
+                                    == project_store::AgentContinuationRequestState::Driving =>
+                            {
+                                // Provider dispatch may have happened. Keep the runtime prompt
+                                // durable for explicit reconciliation; never replay it blindly.
+                                return;
+                            }
+                            Err(error) => {
+                                let _ = fail_owned_runtime_run(
+                                    &app,
+                                    &repo_root,
+                                    &latest,
+                                    &error,
+                                    "Owned agent task failed.",
+                                );
+                                return;
+                            }
+                            _ => {}
+                        }
+                        let current = match load_persisted_runtime_run(
+                            &repo_root,
+                            &latest.run.project_id,
+                            &latest.run.agent_session_id,
+                        ) {
+                            Ok(Some(current)) if current.run.run_id == latest.run.run_id => current,
+                            _ => return,
+                        };
+                        let still_current =
+                            current.controls.pending.as_ref().is_some_and(|pending| {
+                                pending.queued_prompt_continuation_request_id.as_deref()
+                                    == Some(continuation_request_id.as_str())
+                            });
+                        if !still_current {
+                            continue;
+                        }
+                        match apply_owned_runtime_run_pending_controls_with_status(
+                            &repo_root,
+                            &current,
+                            RuntimeRunStatus::Running,
+                            "Owned agent runtime accepted the queued prompt.",
+                        ) {
+                            Ok(applied) => {
+                                let _ = emit_runtime_run_updated_if_changed(
+                                    &app,
+                                    &current.run.project_id,
+                                    &current.run.agent_session_id,
+                                    &Some(current.clone()),
+                                    &Some(applied),
+                                );
+                                return;
+                            }
+                            Err(error) if error.code == "runtime_run_write_conflict" => continue,
+                            Err(error) => {
+                                let _ = fail_owned_runtime_run(
+                                    &app,
+                                    &repo_root,
+                                    &current,
+                                    &error,
+                                    "Owned agent task failed.",
+                                );
+                                return;
+                            }
+                        }
+                    }
+                    Err(error) if queued_prompt_drive_race_is_benign(&error) => {
+                        thread::sleep(QUEUED_PROMPT_DRIVE_POLL_INTERVAL);
                     }
                     Err(error) => {
                         let _ = fail_owned_runtime_run(
                             &app,
                             &repo_root,
-                            &snapshot,
+                            &latest,
                             &error,
                             "Owned agent task failed.",
                         );
+                        return;
                     }
                 }
             }
-            Err(error) => {
-                let _ = fail_owned_runtime_run(
-                    &app,
-                    &repo_root,
-                    &snapshot,
-                    &error,
-                    "Owned agent task failed.",
-                );
-            }
-        }
+        });
+}
+
+pub(crate) fn recover_pending_runtime_prompts_for_project<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    repo_root: std::path::PathBuf,
+    project_id: &str,
+) -> CommandResult<()> {
+    for snapshot in project_store::list_runtime_runs_for_project(&repo_root, project_id)? {
+        recover_pending_runtime_prompt_snapshot(
+            app.clone(),
+            state.clone(),
+            repo_root.clone(),
+            snapshot,
+        );
+    }
+    Ok(())
+}
+
+pub(crate) fn recover_pending_runtime_prompt_snapshot<R: Runtime + 'static>(
+    app: AppHandle<R>,
+    state: DesktopState,
+    repo_root: std::path::PathBuf,
+    snapshot: RuntimeRunSnapshotRecord,
+) {
+    let recoverable = snapshot.controls.pending.as_ref().is_some_and(|pending| {
+        normalized_prompt(pending.queued_prompt.as_deref()).is_some()
+            && pending
+                .queued_prompt_continuation_request_id
+                .as_deref()
+                .is_some_and(|request_id| !request_id.trim().is_empty())
     });
+    if recoverable {
+        spawn_owned_runtime_prompt_drive_when_idle(app, state, repo_root, snapshot);
+    }
+}
+
+fn queued_prompt_drive_race_is_benign(error: &CommandError) -> bool {
+    matches!(
+        error.code.as_str(),
+        "agent_run_already_active" | "runtime_run_write_conflict"
+    )
 }
 
 #[expect(
@@ -373,6 +456,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     state: &DesktopState,
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
+    continuation_request_id: String,
     prompt: String,
     attachments: Vec<crate::commands::StagedAgentAttachmentDto>,
     linked_paths: Vec<crate::commands::RuntimeLinkedPathDto>,
@@ -390,8 +474,20 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
     }
 
     if is_cursor_runtime_provider(&snapshot.run.provider_id) {
-        drive_cursor_runtime_prompt(app, state, repo_root, snapshot, prompt, attachments)?;
-        return Ok(None);
+        drive_cursor_runtime_prompt(
+            app,
+            state,
+            repo_root,
+            snapshot,
+            &continuation_request_id,
+            prompt,
+            attachments,
+        )?;
+        return load_persisted_runtime_run(
+            repo_root,
+            &snapshot.run.project_id,
+            &snapshot.run.agent_session_id,
+        );
     }
 
     let controls = Some(runtime_run_controls_as_input(snapshot));
@@ -432,6 +528,7 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 repo_root: repo_root.to_path_buf(),
                 project_id: snapshot.run.project_id.clone(),
                 run_id: snapshot.run.run_id.clone(),
+                continuation_request_id: continuation_request_id.clone(),
                 prompt,
                 attachments: attachments
                     .iter()
@@ -447,17 +544,12 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 auto_compact,
                 internal_resume: None,
             };
-            let prepared =
+            if continuation_request_id.starts_with("runtime-start:") {
+                register_existing_initial_agent_continuation(&continuation, &agent_snapshot)?;
+            }
+            let mut prepared =
                 agent_core.continue_run(continuation, DesktopRunDriveMode::CreateOnly)?;
             let target_run_id = prepared.drive_request.run_id.clone();
-            if target_run_id != snapshot.run.run_id && agent_core.is_active(&target_run_id)? {
-                return Err(CommandError::user_fixable(
-                    "agent_run_already_active",
-                    format!(
-                        "Xero is already driving owned-agent run `{target_run_id}`. Wait for it to finish or cancel it before sending another message."
-                    ),
-                ));
-            }
             let rebound = if target_run_id != snapshot.run.run_id {
                 Some(bind_owned_runtime_run_to_agent_handoff(
                     repo_root,
@@ -468,9 +560,11 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 None
             };
             if prepared.drive_required {
+                let drive_lease = prepared.drive_lease.take();
                 agent_core.spawn_owned_agent_continuation(
                     prepared.snapshot.run.agent_session_id.clone(),
                     prepared.drive_request,
+                    drive_lease,
                 )?;
             }
             Ok(rebound)
@@ -481,18 +575,46 @@ fn drive_owned_runtime_prompt<R: Runtime + 'static>(
                 project_id: snapshot.run.project_id.clone(),
                 agent_session_id: snapshot.run.agent_session_id.clone(),
                 run_id: snapshot.run.run_id.clone(),
-                prompt,
+                prompt: prompt.clone(),
                 attachments: attachments
                     .iter()
                     .map(super::runtime_support::staged_attachment_dto_to_message_attachment)
                     .collect(),
+                linked_paths: linked_paths.clone(),
+                controls: controls.clone(),
+                tool_runtime: tool_runtime.clone(),
+                provider_config: provider_config.clone(),
+                provider_preflight: Some(provider_preflight.clone()),
+            };
+            let created = create_owned_agent_run(&request)?;
+            let continuation = ContinueOwnedAgentRunRequest {
+                repo_root: repo_root.to_path_buf(),
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                continuation_request_id,
+                prompt,
+                attachments: request.attachments,
                 linked_paths,
                 controls,
                 tool_runtime,
                 provider_config,
                 provider_preflight: Some(provider_preflight),
+                answer_pending_actions: false,
+                answer_pending_action_id: None,
+                auto_compact,
+                internal_resume: None,
             };
-            agent_core.start_run(request, DesktopRunDriveMode::Background)?;
+            register_existing_initial_agent_continuation(&continuation, &created)?;
+            let mut prepared =
+                agent_core.continue_run(continuation, DesktopRunDriveMode::CreateOnly)?;
+            if prepared.drive_required {
+                let drive_lease = prepared.drive_lease.take();
+                agent_core.spawn_owned_agent_continuation(
+                    prepared.snapshot.run.agent_session_id.clone(),
+                    prepared.drive_request,
+                    drive_lease,
+                )?;
+            }
             Ok(None)
         }
         Err(error) => Err(error),
@@ -556,4 +678,31 @@ fn normalized_prompt(prompt: Option<&str>) -> Option<String> {
         .map(str::trim)
         .filter(|prompt| !prompt.is_empty())
         .map(ToOwned::to_owned)
+}
+
+#[cfg(test)]
+mod worker_registration_tests {
+    use super::*;
+
+    #[test]
+    fn prompt_drive_worker_registration_deduplicates_and_cleans_up() {
+        let first = OwnedRuntimePromptDriveWorkerRegistration::try_register(
+            "worker-registry-project",
+            "worker-registry-run",
+        )
+        .expect("first worker registration");
+        assert!(OwnedRuntimePromptDriveWorkerRegistration::try_register(
+            "worker-registry-project",
+            "worker-registry-run",
+        )
+        .is_none());
+
+        drop(first);
+
+        assert!(OwnedRuntimePromptDriveWorkerRegistration::try_register(
+            "worker-registry-project",
+            "worker-registry-run",
+        )
+        .is_some());
+    }
 }

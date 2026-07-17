@@ -1,3 +1,5 @@
+use std::path::Path;
+
 use serde_json::Value as JsonValue;
 use tauri::{AppHandle, Runtime, State};
 
@@ -18,15 +20,14 @@ use crate::{
             WorkflowDeliveryStateEntityTypeDto, WorkflowDeliveryStateResponseDto,
             WorkflowInputBindingDto, WorkflowNodeDto, WorkflowNodeRunStatusDto,
             WorkflowRunBlockerResponseDto, WorkflowRunBundleResponseDto, WorkflowRunDto,
-            WorkflowRunResponseDto, WorkflowRunStatusDto, WorkflowStateQueryDto,
-            WorkflowTerminalStatusDto, WorkflowValidationReportDto,
+            WorkflowRunResponseDto, WorkflowStateQueryDto, WorkflowValidationReportDto,
             WriteWorkflowDeliveryStateRequestDto,
         },
         runtime_support::resolve_project_root,
         validate_non_empty, CommandError, CommandResult,
     },
     db::project_store,
-    runtime::{workflow_orchestrator, DesktopAgentCoreRuntime},
+    runtime::workflow_orchestrator,
     state::DesktopState,
 };
 
@@ -93,6 +94,7 @@ pub fn update_workflow_definition<R: Runtime>(
     let definition = project_store::update_workflow_definition(
         &repo_root,
         &request.workflow_id,
+        request.expected_version,
         &request.definition,
     )?;
     Ok(WorkflowDefinitionResponseDto { definition })
@@ -142,26 +144,9 @@ pub fn start_workflow_run<R: Runtime + 'static>(
 ) -> CommandResult<WorkflowRunResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.workflow_id, "workflowId")?;
+    validate_non_empty(&request.idempotency_key, "idempotencyKey")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let definition = project_store::get_workflow_definition(
-        &repo_root,
-        &request.project_id,
-        &request.workflow_id,
-    )?
-    .ok_or_else(|| {
-        CommandError::user_fixable(
-            "workflow_definition_not_found",
-            format!("Xero could not find Workflow `{}`.", request.workflow_id),
-        )
-    })?;
-    let initial_input = request.initial_input;
-    validate_workflow_initial_input(&definition, initial_input.as_ref())?;
-    let run = project_store::create_workflow_run(
-        &repo_root,
-        &request.project_id,
-        &request.workflow_id,
-        initial_input,
-    )?;
+    let run = persist_workflow_start_request(&repo_root, &request)?;
     let run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
         state.inner(),
@@ -170,6 +155,52 @@ pub fn start_workflow_run<R: Runtime + 'static>(
     )?;
     workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
     Ok(WorkflowRunResponseDto { run })
+}
+
+fn persist_workflow_start_request(
+    repo_root: &Path,
+    request: &StartWorkflowRunRequestDto,
+) -> CommandResult<WorkflowRunDto> {
+    if let Some(run) = project_store::get_workflow_run_start_replay(
+        repo_root,
+        &request.project_id,
+        &request.workflow_id,
+        &request.idempotency_key,
+        request.initial_input.as_ref(),
+    )? {
+        return Ok(run);
+    }
+
+    for _ in 0..3 {
+        let definition = project_store::get_workflow_definition(
+            repo_root,
+            &request.project_id,
+            &request.workflow_id,
+        )?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "workflow_definition_not_found",
+                format!("Xero could not find Workflow `{}`.", request.workflow_id),
+            )
+        })?;
+        validate_workflow_initial_input(&definition, request.initial_input.as_ref())?;
+        match project_store::create_workflow_run_idempotently(
+            repo_root,
+            &request.project_id,
+            &request.workflow_id,
+            &request.idempotency_key,
+            definition.version,
+            request.initial_input.clone(),
+        ) {
+            Err(error) if error.code == "workflow_definition_changed_during_start" => continue,
+            result => return result,
+        }
+    }
+
+    Err(CommandError::retryable(
+        "workflow_definition_changed_during_start",
+        "The Workflow kept changing while Xero tried to start it. Try again after the current edit is saved.",
+    ))
 }
 
 fn validate_workflow_initial_input(
@@ -340,7 +371,23 @@ pub fn resume_workflow_next_incomplete_phase<R: Runtime + 'static>(
 ) -> CommandResult<WorkflowRunResponseDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
+    validate_non_empty(&request.idempotency_key, "idempotencyKey")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
+    if let Some(replayed) = project_store::get_workflow_resume_phase_replay(
+        &repo_root,
+        &request.project_id,
+        &request.run_id,
+        &request.idempotency_key,
+    )? {
+        let run = workflow_orchestrator::driver::reconcile_workflow_run(
+            &app,
+            state.inner(),
+            &request.project_id,
+            &replayed.id,
+        )?;
+        workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
+        return Ok(WorkflowRunResponseDto { run });
+    }
     let source_run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
         state.inner(),
@@ -375,25 +422,20 @@ pub fn resume_workflow_next_incomplete_phase<R: Runtime + 'static>(
         records,
     )?;
     validate_workflow_initial_input(&definition, Some(&selection.initial_input))?;
-    let run = project_store::create_workflow_run(
+    let run = project_store::create_workflow_resume_phase_run_idempotently(
         &repo_root,
         &request.project_id,
-        &definition.id,
-        Some(selection.initial_input.clone()),
-    )?;
-    project_store::insert_workflow_event(
-        &repo_root,
-        &request.project_id,
-        &run.id,
-        None,
-        "workflow_resume_next_incomplete_phase",
-        &serde_json::json!({
-            "sourceRunId": source_run.id,
-            "loopNodeId": selection.loop_node_id,
-            "phaseId": selection.phase_id,
-            "phaseKey": selection.phase_key,
-            "inputPath": selection.input_path,
-        }),
+        &request.idempotency_key,
+        &project_store::WorkflowResumePhaseStartRecord {
+            workflow_id: definition.id.clone(),
+            expected_workflow_version: definition.version,
+            source_run_id: source_run.id.clone(),
+            initial_input: selection.initial_input.clone(),
+            loop_node_id: selection.loop_node_id,
+            phase_id: selection.phase_id,
+            phase_key: selection.phase_key,
+            input_path: selection.input_path,
+        },
     )?;
     let run = workflow_orchestrator::driver::reconcile_workflow_run(
         &app,
@@ -745,7 +787,7 @@ pub fn list_workflow_runs<R: Runtime + 'static>(
 }
 
 #[tauri::command]
-pub fn cancel_workflow_run<R: Runtime>(
+pub fn cancel_workflow_run<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: State<'_, DesktopState>,
     request: CancelWorkflowRunRequestDto,
@@ -753,55 +795,56 @@ pub fn cancel_workflow_run<R: Runtime>(
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.run_id, "runId")?;
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
-    let run = project_store::get_workflow_run(&repo_root, &request.project_id, &request.run_id)?
-        .ok_or_else(|| {
-            CommandError::user_fixable(
-                "workflow_run_not_found",
-                format!("Xero could not find Workflow run `{}`.", request.run_id),
-            )
-        })?;
-
-    let runtime = DesktopAgentCoreRuntime::new(state.inner().agent_run_supervisor().clone());
-    for node in run.nodes.iter().filter(|node| {
-        node.status == crate::commands::contracts::workflows::WorkflowNodeRunStatusDto::Running
-    }) {
-        if let Some(runtime_run_id) = node.runtime_run_id.as_ref() {
-            let _ = runtime.cancel_run(
-                repo_root.clone(),
-                request.project_id.clone(),
-                runtime_run_id.clone(),
-            );
-        }
-        project_store::update_workflow_run_node(
-            &repo_root,
-            &request.project_id,
-            &node.id,
-            crate::commands::contracts::workflows::WorkflowNodeRunStatusDto::Cancelled,
-            None,
-            None,
-            Some("cancelled"),
-        )?;
-    }
-    project_store::update_workflow_run_status(
+    project_store::request_workflow_run_cancellation(
         &repo_root,
         &request.project_id,
         &request.run_id,
-        WorkflowRunStatusDto::Cancelled,
-        Some(WorkflowTerminalStatusDto::Cancelled),
         request.reason.as_deref(),
     )?;
-    let run = project_store::get_workflow_run(&repo_root, &request.project_id, &request.run_id)?
-        .ok_or_else(|| {
-            CommandError::system_fault(
-                "workflow_run_missing_after_cancel",
-                format!(
-                    "Workflow run `{}` disappeared during cancellation.",
-                    request.run_id
-                ),
-            )
-        })?;
+    let reconciliation = workflow_orchestrator::driver::reconcile_workflow_run(
+        &app,
+        state.inner(),
+        &request.project_id,
+        &request.run_id,
+    );
+    let run = accepted_workflow_cancellation_run(
+        &repo_root,
+        &request.project_id,
+        &request.run_id,
+        reconciliation,
+    )?;
+    workflow_orchestrator::driver::ensure_workflow_run_driver_if_active(&app, &run);
     workflow_orchestrator::driver::emit_workflow_run_updated(&app, &run);
     Ok(WorkflowRunResponseDto { run })
+}
+
+fn accepted_workflow_cancellation_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    reconciliation: CommandResult<WorkflowRunDto>,
+) -> CommandResult<WorkflowRunDto> {
+    match reconciliation {
+        Ok(run) => Ok(run),
+        Err(reconciliation_error) => {
+            let persisted = project_store::get_workflow_run(repo_root, project_id, run_id)?;
+            match persisted {
+                Some(run)
+                    if reconciliation_error.retryable
+                        && matches!(
+                        run.status,
+                        crate::commands::contracts::workflows::WorkflowRunStatusDto::Cancelling
+                            | crate::commands::contracts::workflows::WorkflowRunStatusDto::Cancelled
+                    ) =>
+                {
+                    // Cancellation intent is already durable. A transient drain
+                    // conflict is background work, not a rejected user command.
+                    Ok(run)
+                }
+                _ => Err(reconciliation_error),
+            }
+        }
+    }
 }
 
 #[tauri::command]
@@ -935,9 +978,18 @@ pub fn wipe_workflow_delivery_state<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Barrier};
+
     use super::*;
-    use crate::commands::contracts::workflows::WorkflowRunPolicyDto;
+    use crate::{
+        commands::contracts::workflows::WorkflowRunPolicyDto,
+        db::{
+            configure_connection, migrations::migrations, register_project_database_path_for_tests,
+        },
+    };
+    use rusqlite::Connection;
     use serde_json::json;
+    use tempfile::TempDir;
 
     fn definition_with_delivery_phase_loop(
         controls: WorkflowCollectionLoopControlsDto,
@@ -977,6 +1029,157 @@ mod tests {
             created_at: None,
             updated_at: None,
         }
+    }
+
+    fn repo_with_workflow() -> (TempDir, WorkflowDefinitionDto) {
+        let temp = TempDir::new().expect("create temp repo");
+        let database_path = temp.path().join("state.db");
+        register_project_database_path_for_tests(temp.path(), database_path.clone());
+        let mut connection = Connection::open(&database_path).expect("open project db");
+        configure_connection(&connection).expect("configure project db");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate project db");
+        connection
+            .execute(
+                r#"
+                INSERT INTO projects (
+                    id,
+                    name,
+                    description,
+                    milestone,
+                    total_phases,
+                    completed_phases,
+                    active_phase,
+                    branch,
+                    created_at,
+                    updated_at
+                )
+                VALUES ('project-1', 'Project', '', '', 0, 0, 0, 'main', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z')
+                "#,
+                [],
+            )
+            .expect("seed project");
+        let definition =
+            definition_with_delivery_phase_loop(WorkflowCollectionLoopControlsDto::default());
+        let created = project_store::create_workflow_definition(temp.path(), &definition)
+            .expect("create workflow");
+        (temp, created)
+    }
+
+    #[test]
+    fn workflow_start_command_replays_the_same_request_and_rejects_key_reuse() {
+        let (temp, definition) = repo_with_workflow();
+        let request = StartWorkflowRunRequestDto {
+            project_id: "project-1".into(),
+            workflow_id: definition.id.clone(),
+            idempotency_key: "command-start-1".into(),
+            initial_input: Some(json!({ "goal": "ship" })),
+        };
+        let first = persist_workflow_start_request(temp.path(), &request).expect("start run");
+        let replay =
+            persist_workflow_start_request(temp.path(), &request).expect("replay start run");
+        assert_eq!(first.id, replay.id);
+
+        let mut conflicting = request;
+        conflicting.initial_input = Some(json!({ "goal": "different" }));
+        let error = persist_workflow_start_request(temp.path(), &conflicting)
+            .expect_err("same key with another payload must fail");
+        assert_eq!(error.code, "workflow_run_idempotency_conflict");
+    }
+
+    #[test]
+    fn concurrent_workflow_start_commands_return_one_run() {
+        let (temp, definition) = repo_with_workflow();
+        let repo_root = temp.path().to_path_buf();
+        let barrier = Arc::new(Barrier::new(2));
+        let handles = [(), ()].map(|()| {
+            let repo_root = repo_root.clone();
+            let barrier = Arc::clone(&barrier);
+            let request = StartWorkflowRunRequestDto {
+                project_id: "project-1".into(),
+                workflow_id: definition.id.clone(),
+                idempotency_key: "concurrent-command-start".into(),
+                initial_input: Some(json!({ "goal": "ship" })),
+            };
+            std::thread::spawn(move || {
+                barrier.wait();
+                persist_workflow_start_request(&repo_root, &request)
+            })
+        });
+        let runs = handles.map(|handle| {
+            handle
+                .join()
+                .expect("join command")
+                .expect("start or replay run")
+        });
+
+        assert_eq!(runs[0].id, runs[1].id);
+        assert_eq!(
+            project_store::list_workflow_runs(temp.path(), "project-1", Some(&definition.id),)
+                .expect("list runs")
+                .len(),
+            1,
+        );
+    }
+
+    #[test]
+    fn accepted_cancellation_survives_an_immediate_reconcile_failure() {
+        let (temp, definition) = repo_with_workflow();
+        let run =
+            project_store::create_workflow_run(temp.path(), "project-1", &definition.id, None)
+                .expect("create run");
+        project_store::update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &run.id,
+            crate::commands::contracts::workflows::WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start run");
+        assert!(project_store::request_workflow_run_cancellation(
+            temp.path(),
+            "project-1",
+            &run.id,
+            Some("stop"),
+        )
+        .expect("persist cancellation"));
+
+        let accepted = accepted_workflow_cancellation_run(
+            temp.path(),
+            "project-1",
+            &run.id,
+            Err(CommandError::retryable(
+                "workflow_cancellation_execution_still_active",
+                "A foreign execution owner is still draining.",
+            )),
+        )
+        .expect("return accepted cancellation");
+
+        assert_eq!(
+            accepted.status,
+            crate::commands::contracts::workflows::WorkflowRunStatusDto::Cancelling,
+        );
+        assert!(accepted
+            .events
+            .iter()
+            .any(|event| event.event_type == "workflow_cancellation_requested"));
+
+        let system_error = CommandError::system_fault(
+            "workflow_snapshot_corrupt",
+            "The Workflow snapshot could not be decoded.",
+        );
+        assert_eq!(
+            accepted_workflow_cancellation_run(
+                temp.path(),
+                "project-1",
+                &run.id,
+                Err(system_error.clone()),
+            )
+            .expect_err("non-retryable reconciliation failures must remain visible"),
+            system_error,
+        );
     }
 
     #[test]

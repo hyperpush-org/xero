@@ -1,4 +1,5 @@
 pub mod artifacts;
+mod command_policy;
 pub mod condition_eval;
 pub mod definition_validator;
 pub mod driver;

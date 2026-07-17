@@ -42,7 +42,7 @@ use crate::{
         cancelled_error,
         process_tree::{
             cleanup_process_group_after_root_exit, configure_process_tree_root,
-            terminate_process_tree,
+            register_process_tree_root, terminate_process_tree,
         },
         redaction::{
             find_prohibited_persistence_content, redact_command_argv_for_persistence,
@@ -1065,6 +1065,13 @@ impl AutonomousToolRuntime {
                 ),
             ),
         })?;
+        if let Err(error) = register_process_tree_root(&child) {
+            let _ = terminate_process_tree(&mut child);
+            return Err(CommandError::system_fault(
+                "autonomous_tool_process_manager_tree_registration_failed",
+                format!("Xero could not establish owned process-tree containment: {error}"),
+            ));
+        }
 
         let stdin = if wants_stdin {
             child.stdin.take()

@@ -85,6 +85,7 @@ describe('runtime run control schemas', () => {
         projectId: 'project-1',
         agentSessionId: 'agent-session-main',
         runId: 'run-1',
+        continuationRequestId: 'runtime-update-1',
         attachments: [
           {
             kind: 'text',

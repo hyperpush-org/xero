@@ -746,10 +746,6 @@ fn subscribe_owned_runtime_stream(
 ) -> CommandResult<SubscribeRuntimeStreamResponseDto> {
     let run_id = runtime_run.run.run_id.clone();
     let runtime_kind = runtime_run.run.runtime_kind.clone();
-    let runtime_terminal = matches!(
-        runtime_run.run.status,
-        RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed
-    );
     let session_id = format!("owned-agent:{run_id}");
     let subscription = subscribe_agent_events(&request.project_id, &run_id);
     let mut projection = RuntimeStreamProjection::new(RuntimeStreamProjectionContext {
@@ -761,7 +757,7 @@ fn subscribe_owned_runtime_stream(
         flow_id: None,
         subscribed_item_kinds: item_kinds.clone(),
     });
-    let (last_event_id, terminal) = replay_owned_agent_events(
+    let (last_event_id, replay_terminal) = replay_owned_agent_events(
         repo_root,
         &request.project_id,
         &run_id,
@@ -773,8 +769,28 @@ fn subscribe_owned_runtime_stream(
         request.replay_limit,
         &asset_state,
     )?;
+    let current_agent_run_status =
+        match project_store::load_agent_run_record(repo_root, &request.project_id, &run_id) {
+            Ok(run) => Some(run.status),
+            Err(error) if error.code == "agent_run_not_found" => None,
+            Err(error) => return Err(error),
+        };
+    let terminal = match current_agent_run_status.as_ref() {
+        Some(status) => owned_agent_run_status_ends_runtime_stream(
+            repo_root,
+            &request.project_id,
+            &run_id,
+            status,
+            &[],
+        )?,
+        None => replay_terminal,
+    };
 
-    if !terminal && !runtime_terminal {
+    if should_start_live_owned_agent_stream(
+        &runtime_run.run.status,
+        current_agent_run_status.as_ref(),
+        terminal,
+    ) {
         let requested_item_kinds = item_kinds.clone();
         let project_id = request.project_id.clone();
         let run_id_for_thread = run_id.clone();
@@ -805,6 +821,26 @@ fn subscribe_owned_runtime_stream(
         session_id,
         flow_id: None,
         subscribed_item_kinds: item_kinds,
+    })
+}
+
+fn should_start_live_owned_agent_stream(
+    runtime_status: &RuntimeRunStatus,
+    agent_status: Option<&AgentRunStatus>,
+    agent_terminal: bool,
+) -> bool {
+    if agent_terminal {
+        return false;
+    }
+
+    !matches!(
+        runtime_status,
+        RuntimeRunStatus::Stopped | RuntimeRunStatus::Failed
+    ) || agent_status.is_some_and(|status| {
+        matches!(
+            status,
+            AgentRunStatus::Starting | AgentRunStatus::Running | AgentRunStatus::Cancelling
+        )
     })
 }
 
@@ -1014,33 +1050,208 @@ fn stream_live_owned_agent_events(
     loop {
         let event = match subscription.recv_timeout(IDLE_TIMEOUT) {
             Ok(event) => event,
-            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                let catchup = stream_persisted_owned_agent_events_after(
+                    &repo_root,
+                    &project_id,
+                    &run_id,
+                    &session_id,
+                    &item_kinds,
+                    &channel,
+                    &mut projection,
+                    last_event_id,
+                    None,
+                    &asset_state,
+                );
+                match catchup {
+                    Ok(outcome) => {
+                        last_event_id = outcome.last_event_id;
+                        if outcome.terminal {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+                continue;
+            }
             Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
         };
         if event.project_id != project_id || event.run_id != run_id || event.id <= last_event_id {
             continue;
         }
-        let terminal = owned_agent_event_ends_live_stream(&event);
+        if event.id > last_event_id.saturating_add(1) {
+            let catchup = stream_persisted_owned_agent_events_after(
+                &repo_root,
+                &project_id,
+                &run_id,
+                &session_id,
+                &item_kinds,
+                &channel,
+                &mut projection,
+                last_event_id,
+                Some(event.id),
+                &asset_state,
+            );
+            match catchup {
+                Ok(outcome) => {
+                    last_event_id = outcome.last_event_id;
+                    if outcome.terminal {
+                        break;
+                    }
+                    if event.id <= last_event_id {
+                        continue;
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let terminal_event = owned_agent_event_ends_live_stream(&event);
         last_event_id = event.id;
-        if let Some(item) = owned_agent_event_runtime_item_with_media(
+        if send_live_owned_agent_event(
             &repo_root,
             &project_id,
             event,
             &session_id,
-            None,
-            Some(&asset_state),
-        ) {
-            if should_emit_owned_runtime_item(&item_kinds, &item.kind) {
-                let live_item = projection.apply_item_to_projection(item);
-                if send_runtime_stream_item(&channel, live_item).is_err() {
-                    return;
-                }
+            &item_kinds,
+            &channel,
+            &mut projection,
+            &asset_state,
+        )
+        .is_err()
+        {
+            return;
+        }
+        if terminal_event {
+            match current_owned_agent_run_ends_live_stream(&repo_root, &project_id, &run_id) {
+                Ok(true) | Err(_) => break,
+                Ok(false) => {}
             }
         }
-        if terminal {
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct OwnedAgentStreamCatchupOutcome {
+    last_event_id: i64,
+    delivered_item_count: usize,
+    terminal: bool,
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "persisted catch-up needs the stream cursor, projection, filters, and channel context together"
+)]
+fn stream_persisted_owned_agent_events_after(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    session_id: &str,
+    item_kinds: &[RuntimeStreamItemKind],
+    channel: &Channel<serde_json::Value>,
+    projection: &mut RuntimeStreamProjection,
+    after_event_id: i64,
+    before_event_id: Option<i64>,
+    asset_state: &ProjectAssetState,
+) -> CommandResult<OwnedAgentStreamCatchupOutcome> {
+    const CATCHUP_BATCH_LIMIT: usize = 500;
+
+    let mut last_event_id = after_event_id;
+    let mut delivered_item_count = 0;
+    loop {
+        let events = project_store::read_agent_events_after(
+            repo_root,
+            project_id,
+            run_id,
+            last_event_id,
+            CATCHUP_BATCH_LIMIT,
+        )?;
+        if events.is_empty() {
+            break;
+        }
+
+        let batch_len = events.len();
+        let mut reached_before_event = false;
+        for event in events {
+            if before_event_id.is_some_and(|before| event.id >= before) {
+                reached_before_event = true;
+                break;
+            }
+
+            last_event_id = event.id;
+            if send_live_owned_agent_event(
+                repo_root,
+                project_id,
+                event,
+                session_id,
+                item_kinds,
+                channel,
+                projection,
+                asset_state,
+            )? {
+                delivered_item_count += 1;
+            }
+        }
+
+        if reached_before_event || batch_len < CATCHUP_BATCH_LIMIT {
             break;
         }
     }
+
+    let current_run_is_terminal =
+        current_owned_agent_run_ends_live_stream(repo_root, project_id, run_id)?;
+    let terminal = if before_event_id.is_some() {
+        current_run_is_terminal && runtime_stream_status_is_terminal(&projection.status)
+    } else {
+        current_run_is_terminal
+    };
+
+    Ok(OwnedAgentStreamCatchupOutcome {
+        last_event_id,
+        delivered_item_count,
+        terminal,
+    })
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "live projection needs persisted media context plus stream filters and delivery state"
+)]
+fn send_live_owned_agent_event(
+    repo_root: &Path,
+    project_id: &str,
+    event: AgentEventRecord,
+    session_id: &str,
+    item_kinds: &[RuntimeStreamItemKind],
+    channel: &Channel<serde_json::Value>,
+    projection: &mut RuntimeStreamProjection,
+    asset_state: &ProjectAssetState,
+) -> CommandResult<bool> {
+    let Some(item) = owned_agent_event_runtime_item_with_media(
+        repo_root,
+        project_id,
+        event,
+        session_id,
+        None,
+        Some(asset_state),
+    ) else {
+        return Ok(false);
+    };
+    if !should_emit_owned_runtime_item(item_kinds, &item.kind) {
+        return Ok(false);
+    }
+
+    let live_item = projection.apply_item_to_projection(item);
+    send_runtime_stream_item(channel, live_item)?;
+    Ok(true)
+}
+
+fn current_owned_agent_run_ends_live_stream(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> CommandResult<bool> {
+    let run = project_store::load_agent_run_record(repo_root, project_id, run_id)?;
+    owned_agent_run_status_ends_runtime_stream(repo_root, project_id, run_id, &run.status, &[])
 }
 
 fn owned_agent_run_status_ends_runtime_stream(
@@ -3403,6 +3614,236 @@ mod tests {
             )
             .expect("append replay test event");
         }
+    }
+
+    fn append_replay_event(
+        repo_root: &Path,
+        event_kind: AgentRunEventKind,
+        payload_json: serde_json::Value,
+    ) -> AgentEventRecord {
+        project_store::append_agent_event(
+            repo_root,
+            &project_store::NewAgentEventRecord {
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                event_kind,
+                payload_json: payload_json.to_string(),
+                created_at: "2026-04-24T00:00:00Z".into(),
+            },
+        )
+        .expect("append replay event")
+    }
+
+    fn runtime_item_channel() -> (
+        Channel<serde_json::Value>,
+        std::sync::mpsc::Receiver<serde_json::Value>,
+    ) {
+        let (sender, receiver) = std::sync::mpsc::sync_channel(32);
+        let channel = Channel::<serde_json::Value>::new(move |body| {
+            sender
+                .send(
+                    body.deserialize::<serde_json::Value>()
+                        .expect("deserialize runtime stream item"),
+                )
+                .expect("capture runtime stream item");
+            Ok(())
+        });
+        (channel, receiver)
+    }
+
+    #[test]
+    fn persisted_live_catchup_fills_gap_in_order_without_duplicates_and_keeps_filters() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let repo_root = seed_replay_project(&root);
+        seed_replay_run(&repo_root, 0);
+        let hidden = append_replay_event(
+            &repo_root,
+            AgentRunEventKind::ReasoningSummary,
+            serde_json::json!({"summary": "hidden activity"}),
+        );
+        let missing = append_replay_event(
+            &repo_root,
+            AgentRunEventKind::MessageDelta,
+            serde_json::json!({"role": "assistant", "text": "missing"}),
+        );
+        let received = append_replay_event(
+            &repo_root,
+            AgentRunEventKind::MessageDelta,
+            serde_json::json!({"role": "assistant", "text": "received"}),
+        );
+        let (channel, receiver) = runtime_item_channel();
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+        let item_kinds = [RuntimeStreamItemKind::Transcript];
+        let asset_state = ProjectAssetState::default();
+
+        let outcome = stream_persisted_owned_agent_events_after(
+            &repo_root,
+            "project-1",
+            "run-1",
+            "owned-agent:run-1",
+            &item_kinds,
+            &channel,
+            &mut projection,
+            0,
+            Some(received.id),
+            &asset_state,
+        )
+        .expect("catch up persisted gap");
+        send_live_owned_agent_event(
+            &repo_root,
+            "project-1",
+            received.clone(),
+            "owned-agent:run-1",
+            &item_kinds,
+            &channel,
+            &mut projection,
+            &asset_state,
+        )
+        .expect("deliver received live event");
+
+        let delivered_sequences = receiver
+            .try_iter()
+            .map(|payload| {
+                payload
+                    .get("sequence")
+                    .and_then(serde_json::Value::as_i64)
+                    .expect("runtime item sequence")
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(hidden.id, 1);
+        assert_eq!(missing.id, 2);
+        assert_eq!(received.id, 3);
+        assert_eq!(outcome.last_event_id, missing.id);
+        assert_eq!(outcome.delivered_item_count, 1);
+        assert!(!outcome.terminal);
+        assert_eq!(delivered_sequences, vec![missing.id, received.id]);
+        assert_eq!(projection.last_sequence, Some(received.id as u64));
+    }
+
+    #[test]
+    fn persisted_idle_catchup_delivers_unpublished_terminal_event() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let repo_root = seed_replay_project(&root);
+        seed_replay_run(&repo_root, 0);
+        let before = append_replay_event(
+            &repo_root,
+            AgentRunEventKind::MessageDelta,
+            serde_json::json!({"role": "assistant", "text": "done"}),
+        );
+        let completed = append_replay_event(
+            &repo_root,
+            AgentRunEventKind::RunCompleted,
+            serde_json::json!({"summary": "complete"}),
+        );
+        project_store::update_agent_run_status(
+            &repo_root,
+            "project-1",
+            "run-1",
+            AgentRunStatus::Completed,
+            None,
+            "2026-04-24T00:00:01Z",
+        )
+        .expect("complete replay run");
+        let (channel, receiver) = runtime_item_channel();
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+
+        let outcome = stream_persisted_owned_agent_events_after(
+            &repo_root,
+            "project-1",
+            "run-1",
+            "owned-agent:run-1",
+            &[RuntimeStreamItemKind::Transcript],
+            &channel,
+            &mut projection,
+            before.id,
+            None,
+            &ProjectAssetState::default(),
+        )
+        .expect("catch up unpublished completion");
+
+        let payload = receiver.try_recv().expect("completion payload");
+        assert_eq!(outcome.last_event_id, completed.id);
+        assert_eq!(outcome.delivered_item_count, 1);
+        assert!(outcome.terminal);
+        assert_eq!(
+            payload.get("kind").and_then(serde_json::Value::as_str),
+            Some("complete")
+        );
+        assert!(receiver.try_recv().is_err());
+        assert_eq!(projection.status, RuntimeStreamViewStatusDto::Complete);
+    }
+
+    #[test]
+    fn persisted_catchup_crosses_prior_completion_for_running_continuation() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let repo_root = seed_replay_project(&root);
+        seed_replay_run(&repo_root, 0);
+        let completed = append_replay_event(
+            &repo_root,
+            AgentRunEventKind::RunCompleted,
+            serde_json::json!({"summary": "first turn complete"}),
+        );
+        project_store::update_agent_run_status(
+            &repo_root,
+            "project-1",
+            "run-1",
+            AgentRunStatus::Completed,
+            None,
+            "2026-04-24T00:00:01Z",
+        )
+        .expect("complete first turn");
+        let continued = append_replay_event(
+            &repo_root,
+            AgentRunEventKind::MessageDelta,
+            serde_json::json!({"role": "user", "text": "continue"}),
+        );
+        project_store::reopen_agent_run_for_continuation(
+            &repo_root,
+            "project-1",
+            "run-1",
+            "2026-04-24T00:00:02Z",
+        )
+        .expect("reopen continued run");
+        let (channel, receiver) = runtime_item_channel();
+        let mut projection = RuntimeStreamProjection::new(projection_context());
+
+        let outcome = stream_persisted_owned_agent_events_after(
+            &repo_root,
+            "project-1",
+            "run-1",
+            "owned-agent:run-1",
+            &[RuntimeStreamItemKind::Transcript],
+            &channel,
+            &mut projection,
+            0,
+            None,
+            &ProjectAssetState::default(),
+        )
+        .expect("catch up running continuation");
+        let delivered_sequences = receiver
+            .try_iter()
+            .map(|payload| {
+                payload
+                    .get("sequence")
+                    .and_then(serde_json::Value::as_i64)
+                    .expect("runtime item sequence")
+            })
+            .collect::<Vec<_>>();
+
+        assert_eq!(outcome.last_event_id, continued.id);
+        assert_eq!(outcome.delivered_item_count, 2);
+        assert!(!outcome.terminal);
+        assert_eq!(delivered_sequences, vec![completed.id, continued.id]);
+        assert_eq!(projection.status, RuntimeStreamViewStatusDto::Live);
+    }
+
+    #[test]
+    fn running_agent_continuation_overrides_stale_stopped_runtime_status() {
+        assert!(should_start_live_owned_agent_stream(
+            &RuntimeRunStatus::Stopped,
+            Some(&AgentRunStatus::Running),
+            false,
+        ));
     }
 
     #[test]

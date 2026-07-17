@@ -1,7 +1,16 @@
 use std::{
-    collections::{BTreeMap, BTreeSet},
-    process::{Command, Stdio},
-    time::{Duration as StdDuration, Instant},
+    collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
+    fs::{File, OpenOptions},
+    io::{self, Read},
+    path::{Path, PathBuf},
+    process::{self, Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
+    sync::{
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc::{self, RecvTimeoutError, Sender},
+        Arc, Condvar, Mutex, OnceLock,
+    },
+    thread::{self, JoinHandle},
+    time::{Duration as StdDuration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use serde_json::{json, Value as JsonValue};
@@ -16,9 +25,9 @@ use crate::{
             workflow_agents::AgentRefDto,
             workflows::{
                 WorkflowCollectionLoopControlsDto, WorkflowConditionDto, WorkflowDefinitionDto,
-                WorkflowEdgeDto, WorkflowEdgeTypeDto, WorkflowHumanCheckpointTypeDto,
-                WorkflowInputBindingDto, WorkflowMergeWaitPolicyDto, WorkflowNodeDto,
-                WorkflowNodeRunStatusDto, WorkflowOutputContractDto, WorkflowOutputExtractionDto,
+                WorkflowEdgeDto, WorkflowEdgeTypeDto, WorkflowInputBindingDto,
+                WorkflowMergeWaitPolicyDto, WorkflowNodeDto, WorkflowNodeRunStatusDto,
+                WorkflowOutputContractDto, WorkflowOutputExtractionDto,
                 WorkflowResourceConflictModeDto, WorkflowRunDto, WorkflowRunNodeDto,
                 WorkflowRunOverrideDto, WorkflowRunStatusDto, WorkflowStallDetectorDto,
                 WorkflowStateQueryDto, WorkflowStateWriteOperationDto, WorkflowSubgraphDto,
@@ -29,9 +38,15 @@ use crate::{
     },
     db::project_store::{
         self, AgentRunRecord, AgentRunSnapshotRecord, AgentRunStatus, AgentSessionCreateRecord,
-        DeliveryStateWriteContext,
     },
-    runtime::DesktopAgentCoreRuntime,
+    runtime::{
+        process_tree::{
+            cleanup_process_group_after_root_exit, configure_process_tree_root,
+            process_birth_identity, process_identity_is_live, register_process_tree_root,
+            terminate_process_tree,
+        },
+        DesktopAgentCoreRuntime,
+    },
     state::DesktopState,
 };
 
@@ -40,14 +55,639 @@ use super::{
         build_agent_node_prompt, extract_workflow_artifact_payload, final_assistant_text,
         validate_workflow_artifact_payload,
     },
+    command_policy::{
+        append_workflow_command_arguments, harden_workflow_command_process,
+        resolve_workflow_command_executable, validate_workflow_command_policy,
+    },
     condition_eval::{evaluate_workflow_condition, json_path_lookup, WorkflowConditionContext},
 };
 
 const MAX_RECONCILE_STEPS: usize = 32;
 const RUNTIME_ACTIVITY_TIMEOUT_FAILURE_CLASS: &str = "runtime_activity_timeout";
-const USER_SKIPPED_FAILURE_CLASS: &str = "skipped_by_user";
+const COMMAND_INTERRUPTED_FAILURE_CLASS: &str = "workflow_command_interrupted";
 const SUBGRAPH_NODE_SEPARATOR: &str = "::";
 const SUBGRAPH_INPUT_ARTIFACT_TYPE: &str = "subgraph_input";
+const MAX_COMMAND_STREAM_CAPTURE_BYTES: usize = 1024 * 1024;
+const COMMAND_STREAM_DRAIN_TIMEOUT: StdDuration = StdDuration::from_millis(500);
+const COMMAND_TERMINATION_CONFIRM_TIMEOUT: StdDuration = StdDuration::from_secs(10);
+const COMMAND_LEASE_HEARTBEAT_INTERVAL: StdDuration = StdDuration::from_secs(2);
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RunningCommandKey {
+    project_id: String,
+    run_id: String,
+    node_run_id: String,
+}
+
+impl RunningCommandKey {
+    fn new(project_id: &str, run_id: &str, node_run_id: &str) -> Self {
+        Self {
+            project_id: project_id.to_owned(),
+            run_id: run_id.to_owned(),
+            node_run_id: node_run_id.to_owned(),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RunningCommandControl {
+    child: Mutex<Option<Child>>,
+    termination_requested: AtomicBool,
+}
+
+impl RunningCommandControl {
+    fn attach_child(&self, child: Child) {
+        let mut slot = self
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *slot = Some(child);
+    }
+
+    fn request_termination(&self) {
+        self.termination_requested.store(true, Ordering::Release);
+    }
+
+    fn termination_requested(&self) -> bool {
+        self.termination_requested.load(Ordering::Acquire)
+    }
+
+    fn has_child(&self) -> bool {
+        self.child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_some()
+    }
+
+    fn try_wait(&self) -> io::Result<Option<ExitStatus>> {
+        let mut slot = self
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let child = slot.as_mut().ok_or_else(|| {
+            io::Error::other("Workflow command child was not attached to its control handle.")
+        })?;
+        let child_id = child.id();
+        let status = child.try_wait()?;
+        if status.is_some() {
+            *slot = None;
+            drop(slot);
+            cleanup_process_group_after_root_exit(child_id);
+        }
+        Ok(status)
+    }
+
+    fn terminate(&self) -> io::Result<ExitStatus> {
+        let mut slot = self
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let mut child = slot.take().ok_or_else(|| {
+            io::Error::other("Workflow command child was not attached to its control handle.")
+        })?;
+        match terminate_process_tree(&mut child) {
+            Ok(status) => Ok(status),
+            Err(tree_error) => {
+                let child_id = child.id();
+                match child.try_wait() {
+                    Ok(Some(status)) => {
+                        cleanup_process_group_after_root_exit(child_id);
+                        return Ok(status);
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        *slot = Some(child);
+                        return Err(error);
+                    }
+                }
+                if let Err(kill_error) = child.kill() {
+                    *slot = Some(child);
+                    return Err(io::Error::new(
+                        kill_error.kind(),
+                        format!(
+                            "process-tree termination failed ({tree_error}); direct child termination also failed ({kill_error})"
+                        ),
+                    ));
+                }
+                match child.wait() {
+                    Ok(status) => {
+                        cleanup_process_group_after_root_exit(child_id);
+                        Ok(status)
+                    }
+                    Err(error) => {
+                        *slot = Some(child);
+                        Err(error)
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct RunningCommandRegistration {
+    key: RunningCommandKey,
+    control: Arc<RunningCommandControl>,
+    owner_instance_id: String,
+    owner_process_id: u32,
+    owner_process_birth_identity: String,
+    lease_token: String,
+    repo_root: Option<PathBuf>,
+    heartbeat_stop: Option<Sender<()>>,
+    heartbeat_thread: Option<JoinHandle<()>>,
+}
+
+impl RunningCommandRegistration {
+    fn activate_persisted_lease(&mut self, repo_root: &Path) -> CommandResult<()> {
+        let (heartbeat_stop, stop_receiver) = mpsc::channel();
+        let heartbeat_repo_root = repo_root.to_path_buf();
+        let heartbeat_project_id = self.key.project_id.clone();
+        let heartbeat_node_run_id = self.key.node_run_id.clone();
+        let heartbeat_owner_instance_id = self.owner_instance_id.clone();
+        let heartbeat_lease_token = self.lease_token.clone();
+        let heartbeat_control = self.control.clone();
+        let heartbeat_thread = thread::Builder::new()
+            .name(format!("workflow-command-lease-{}", self.key.node_run_id))
+            .spawn(move || loop {
+                match stop_receiver.recv_timeout(COMMAND_LEASE_HEARTBEAT_INTERVAL) {
+                    Ok(()) | Err(RecvTimeoutError::Disconnected) => break,
+                    Err(RecvTimeoutError::Timeout) => {
+                        let renewed = project_store::renew_workflow_command_lease(
+                            &heartbeat_repo_root,
+                            &heartbeat_project_id,
+                            &heartbeat_node_run_id,
+                            &heartbeat_owner_instance_id,
+                            &heartbeat_lease_token,
+                            &crate::auth::now_timestamp(),
+                        );
+                        if !matches!(renewed, Ok(true)) {
+                            heartbeat_control.request_termination();
+                            break;
+                        }
+                    }
+                }
+            })
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "workflow_command_lease_heartbeat_spawn_failed",
+                    format!("Xero could not start the Workflow command lease heartbeat: {error}"),
+                )
+            })?;
+        self.repo_root = Some(repo_root.to_path_buf());
+        self.heartbeat_stop = Some(heartbeat_stop);
+        self.heartbeat_thread = Some(heartbeat_thread);
+        Ok(())
+    }
+}
+
+impl Drop for RunningCommandRegistration {
+    fn drop(&mut self) {
+        if let Some(stop) = self.heartbeat_stop.take() {
+            let _ = stop.send(());
+        }
+        self.control.request_termination();
+        if self.control.has_child() {
+            let _ = self.control.terminate();
+        }
+        if let Some(worker) = self.heartbeat_thread.take() {
+            let _ = worker.join();
+        }
+        if let Some(repo_root) = self.repo_root.as_ref() {
+            let _ = project_store::release_workflow_command_lease(
+                repo_root,
+                &self.key.project_id,
+                &self.key.node_run_id,
+                &self.owner_instance_id,
+                &self.lease_token,
+            );
+        }
+        let mut commands = running_workflow_commands()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if commands
+            .get(&self.key)
+            .is_some_and(|registered| Arc::ptr_eq(registered, &self.control))
+        {
+            commands.remove(&self.key);
+        }
+    }
+}
+
+fn running_workflow_commands(
+) -> &'static Mutex<HashMap<RunningCommandKey, Arc<RunningCommandControl>>> {
+    static COMMANDS: OnceLock<Mutex<HashMap<RunningCommandKey, Arc<RunningCommandControl>>>> =
+        OnceLock::new();
+    COMMANDS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn register_running_workflow_command(
+    project_id: &str,
+    run_id: &str,
+    node_run_id: &str,
+) -> CommandResult<RunningCommandRegistration> {
+    let key = RunningCommandKey::new(project_id, run_id, node_run_id);
+    let control = Arc::new(RunningCommandControl::default());
+    let mut commands = running_workflow_commands()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if commands.contains_key(&key) {
+        return Err(CommandError::retryable(
+            "workflow_command_already_running",
+            format!("Workflow command node run `{node_run_id}` is already running."),
+        ));
+    }
+    let owner_process_birth_identity = process_birth_identity(process::id()).ok_or_else(|| {
+        CommandError::system_fault(
+            "workflow_command_owner_identity_unavailable",
+            "Xero could not identify the Workflow command owner process safely.",
+        )
+    })?;
+    commands.insert(key.clone(), control.clone());
+    Ok(RunningCommandRegistration {
+        key,
+        control,
+        owner_instance_id: workflow_command_owner_instance_id().to_owned(),
+        owner_process_id: process::id(),
+        owner_process_birth_identity,
+        lease_token: unique_workflow_command_identity("lease"),
+        repo_root: None,
+        heartbeat_stop: None,
+        heartbeat_thread: None,
+    })
+}
+
+fn workflow_command_owner_instance_id() -> &'static str {
+    static INSTANCE_ID: OnceLock<String> = OnceLock::new();
+    INSTANCE_ID
+        .get_or_init(|| unique_workflow_command_identity("app"))
+        .as_str()
+}
+
+fn unique_workflow_command_identity(prefix: &str) -> String {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+    let sequence = NEXT_ID.fetch_add(1, Ordering::Relaxed);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    format!("{prefix}-{}-{nanos:x}-{sequence:x}", process::id())
+}
+
+fn running_workflow_command_is_registered(
+    project_id: &str,
+    run_id: &str,
+    node_run_id: &str,
+) -> bool {
+    let key = RunningCommandKey::new(project_id, run_id, node_run_id);
+    running_workflow_commands()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .contains_key(&key)
+}
+
+/// Requests termination without waiting for the command thread. The command
+/// thread owns the child handle and performs process-tree cleanup, allowing
+/// cancellation and branch controls to commit durable state immediately.
+pub(crate) fn terminate_running_workflow_commands(
+    project_id: &str,
+    run_id: &str,
+    node_run_id: Option<&str>,
+) -> usize {
+    let controls = running_workflow_commands()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .iter()
+        .filter(|(key, _)| {
+            key.project_id == project_id
+                && key.run_id == run_id
+                && node_run_id.is_none_or(|node_run_id| key.node_run_id == node_run_id)
+        })
+        .map(|(_, control)| control.clone())
+        .collect::<Vec<_>>();
+    for control in &controls {
+        control.request_termination();
+    }
+    controls.len()
+}
+
+pub(crate) fn shutdown_running_workflow_commands() -> usize {
+    let controls = running_workflow_commands()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .values()
+        .cloned()
+        .collect::<Vec<_>>();
+    for control in &controls {
+        control.request_termination();
+        if control.has_child() {
+            let _ = control.terminate();
+        }
+    }
+    controls.len()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BoundedCommandCapture {
+    bytes: Vec<u8>,
+    truncated: bool,
+    drain_incomplete: bool,
+    read_error: Option<String>,
+}
+
+fn read_bounded_command_stream(
+    mut reader: impl Read,
+    max_bytes: usize,
+) -> io::Result<BoundedCommandCapture> {
+    let mut bytes = Vec::with_capacity(max_bytes.min(8192));
+    let mut truncated = false;
+    let mut buffer = [0_u8; 8192];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        let remaining = max_bytes.saturating_sub(bytes.len());
+        let retained = remaining.min(read);
+        bytes.extend_from_slice(&buffer[..retained]);
+        truncated |= retained < read;
+    }
+    Ok(BoundedCommandCapture {
+        bytes,
+        truncated,
+        drain_incomplete: false,
+        read_error: None,
+    })
+}
+
+#[derive(Debug)]
+struct BoundedCommandReaderState {
+    capture: BoundedCommandCapture,
+    completed: bool,
+}
+
+struct BoundedCommandReader {
+    state: Arc<(Mutex<BoundedCommandReaderState>, Condvar)>,
+    stop: Arc<AtomicBool>,
+    thread: JoinHandle<()>,
+}
+
+trait PollableCommandStream: Read + Send + 'static {
+    fn wait_until_readable(&self, timeout: StdDuration) -> io::Result<bool>;
+}
+
+#[cfg(unix)]
+fn unix_command_stream_readable(
+    stream: &impl std::os::fd::AsRawFd,
+    timeout: StdDuration,
+) -> io::Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe {
+            libc::poll(
+                &mut descriptor,
+                1,
+                timeout.as_millis().min(i32::MAX as u128) as i32,
+            )
+        };
+        if result >= 0 {
+            return Ok(result > 0);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_command_stream_readable(
+    stream: &impl std::os::windows::io::AsRawHandle,
+    timeout: StdDuration,
+) -> io::Result<bool> {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        #[link_name = "PeekNamedPipe"]
+        fn peek_named_pipe(
+            pipe: *mut c_void,
+            buffer: *mut c_void,
+            buffer_size: u32,
+            bytes_read: *mut u32,
+            total_bytes_available: *mut u32,
+            bytes_left_this_message: *mut u32,
+        ) -> i32;
+    }
+
+    const ERROR_BROKEN_PIPE: i32 = 109;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut available = 0_u32;
+        let result = unsafe {
+            peek_named_pipe(
+                stream.as_raw_handle().cast(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if result != 0 {
+            if available > 0 {
+                return Ok(true);
+            }
+        } else {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) {
+                return Ok(true);
+            }
+            return Err(error);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(StdDuration::from_millis(5));
+    }
+}
+
+impl PollableCommandStream for ChildStdout {
+    fn wait_until_readable(&self, timeout: StdDuration) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            unix_command_stream_readable(self, timeout)
+        }
+        #[cfg(windows)]
+        {
+            windows_command_stream_readable(self, timeout)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = timeout;
+            Ok(true)
+        }
+    }
+}
+
+impl PollableCommandStream for ChildStderr {
+    fn wait_until_readable(&self, timeout: StdDuration) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            unix_command_stream_readable(self, timeout)
+        }
+        #[cfg(windows)]
+        {
+            windows_command_stream_readable(self, timeout)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = timeout;
+            Ok(true)
+        }
+    }
+}
+
+#[cfg(test)]
+impl<T> PollableCommandStream for std::io::Cursor<T>
+where
+    std::io::Cursor<T>: Read + Send + 'static,
+{
+    fn wait_until_readable(&self, _timeout: StdDuration) -> io::Result<bool> {
+        Ok(true)
+    }
+}
+
+fn spawn_bounded_command_reader(mut reader: impl PollableCommandStream) -> BoundedCommandReader {
+    let state = Arc::new((
+        Mutex::new(BoundedCommandReaderState {
+            capture: BoundedCommandCapture {
+                bytes: Vec::with_capacity(MAX_COMMAND_STREAM_CAPTURE_BYTES.min(8192)),
+                truncated: false,
+                drain_incomplete: false,
+                read_error: None,
+            },
+            completed: false,
+        }),
+        Condvar::new(),
+    ));
+    let reader_state = state.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_stop = stop.clone();
+    let thread = thread::spawn(move || {
+        let mut buffer = [0_u8; 8192];
+        loop {
+            if reader_stop.load(Ordering::Acquire) {
+                let (state, completed) = &*reader_state;
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.completed = true;
+                completed.notify_all();
+                return;
+            }
+            match reader.wait_until_readable(StdDuration::from_millis(25)) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    let (state, completed) = &*reader_state;
+                    let mut state = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state.capture.read_error = Some(error.to_string());
+                    state.completed = true;
+                    completed.notify_all();
+                    return;
+                }
+            }
+            match reader.read(&mut buffer) {
+                Ok(0) => {
+                    let (state, completed) = &*reader_state;
+                    let mut state = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state.completed = true;
+                    completed.notify_all();
+                    return;
+                }
+                Ok(read) => {
+                    let (state, _) = &*reader_state;
+                    let mut state = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    let remaining =
+                        MAX_COMMAND_STREAM_CAPTURE_BYTES.saturating_sub(state.capture.bytes.len());
+                    let retained = remaining.min(read);
+                    state.capture.bytes.extend_from_slice(&buffer[..retained]);
+                    state.capture.truncated |= retained < read;
+                }
+                Err(error) => {
+                    let (state, completed) = &*reader_state;
+                    let mut state = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state.capture.read_error = Some(error.to_string());
+                    state.completed = true;
+                    completed.notify_all();
+                    return;
+                }
+            }
+        }
+    });
+    BoundedCommandReader {
+        state,
+        stop,
+        thread,
+    }
+}
+
+fn finish_bounded_command_reader(
+    reader: BoundedCommandReader,
+    deadline: Instant,
+) -> BoundedCommandCapture {
+    let BoundedCommandReader {
+        state,
+        stop,
+        thread,
+    } = reader;
+    let (capture_state, completed) = &*state;
+    let mut capture_guard = capture_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    while !capture_guard.completed {
+        let now = Instant::now();
+        if now >= deadline {
+            capture_guard.capture.truncated = true;
+            capture_guard.capture.drain_incomplete = true;
+            break;
+        }
+        let (next_state, wait_result) = completed
+            .wait_timeout(capture_guard, deadline.saturating_duration_since(now))
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        capture_guard = next_state;
+        if wait_result.timed_out() && !capture_guard.completed {
+            capture_guard.capture.truncated = true;
+            capture_guard.capture.drain_incomplete = true;
+            break;
+        }
+    }
+    drop(capture_guard);
+    stop.store(true, Ordering::Release);
+    let reader_panicked = thread.join().is_err();
+    let mut capture = capture_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .capture
+        .clone();
+    if reader_panicked {
+        capture.truncated = true;
+        capture.drain_incomplete = true;
+        capture.read_error = Some("command stream reader panicked".into());
+    }
+    capture
+}
 
 pub fn reconcile_workflow_run<R: Runtime + 'static>(
     app: &AppHandle<R>,
@@ -64,28 +704,53 @@ pub fn reconcile_workflow_run<R: Runtime + 'static>(
                     format!("Xero could not find Workflow run `{run_id}`."),
                 )
             })?;
+        if project_store::workflow_run_cancellation_pending(&repo_root, project_id, run_id)? {
+            complete_pending_workflow_cancellation(state, &repo_root, project_id, &run)?;
+            continue;
+        }
         if is_terminal_run(run.status) || run.status == WorkflowRunStatusDto::Paused {
             return Ok(run);
         }
 
-        if run.status == WorkflowRunStatusDto::Queued {
-            project_store::update_workflow_run_status(
+        if run.status == WorkflowRunStatusDto::Queued
+            || (run.status == WorkflowRunStatusDto::Running && run.nodes.is_empty())
+        {
+            let start_node_id = run.definition_snapshot.start_node_id.as_str();
+            let start_node_type = find_node(&run.definition_snapshot, start_node_id)
+                .map(|node| node.node_type().as_str())
+                .ok_or_else(|| {
+                    CommandError::system_fault(
+                        "workflow_start_node_missing",
+                        format!("Workflow start node `{start_node_id}` is missing."),
+                    )
+                })?;
+            project_store::start_workflow_run_atomically(
                 &repo_root,
                 project_id,
                 run_id,
-                WorkflowRunStatusDto::Running,
-                None,
-                None,
+                start_node_id,
+                start_node_type,
             )?;
-            ensure_node_run(&repo_root, &run, &run.definition_snapshot.start_node_id, 0)?;
             continue;
         }
 
-        if reconcile_running_agent_nodes(&repo_root, project_id, &run)? {
+        if complete_ready_top_level_terminal(state, &repo_root, project_id, &run)? {
             continue;
         }
 
-        if route_completed_nodes(&repo_root, project_id, &run)? {
+        if reconcile_interrupted_command_nodes(&repo_root, project_id, &run)? {
+            continue;
+        }
+
+        if reconcile_starting_agent_nodes(app, state, &repo_root, project_id, &run)? {
+            continue;
+        }
+
+        if reconcile_running_agent_nodes(state, &repo_root, project_id, &run)? {
+            continue;
+        }
+
+        if route_completed_nodes(state, &repo_root, project_id, &run)? {
             continue;
         }
 
@@ -107,6 +772,104 @@ pub fn reconcile_workflow_run<R: Runtime + 'static>(
             format!("Workflow run `{run_id}` disappeared during reconcile."),
         )
     })
+}
+
+fn complete_ready_top_level_terminal(
+    state: &DesktopState,
+    repo_root: &Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+) -> CommandResult<bool> {
+    let ready = run.nodes.iter().find_map(|node_run| {
+        matches!(
+            node_run.status,
+            WorkflowNodeRunStatusDto::Eligible | WorkflowNodeRunStatusDto::Succeeded
+        )
+        .then(|| find_node(&run.definition_snapshot, &node_run.node_id))
+        .flatten()
+        .and_then(|node| match node {
+            WorkflowNodeDto::Terminal {
+                terminal_status, ..
+            } if subgraph_context_for_node_id(&run.definition_snapshot, &node_run.node_id)
+                .is_none() =>
+            {
+                Some((node_run, *terminal_status))
+            }
+            _ => None,
+        })
+    });
+    let Some((node_run, terminal_status)) = ready else {
+        return Ok(false);
+    };
+    complete_for_terminal(state, repo_root, project_id, run, node_run, terminal_status)?;
+    Ok(true)
+}
+
+fn complete_pending_workflow_cancellation(
+    state: &DesktopState,
+    repo_root: &Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+) -> CommandResult<()> {
+    for node_run in &run.nodes {
+        if matches!(
+            find_node(&run.definition_snapshot, &node_run.node_id),
+            Some(WorkflowNodeDto::Agent { .. } | WorkflowNodeDto::Command { .. })
+        ) {
+            terminate_workflow_node_execution(state, repo_root, project_id, run, node_run)?;
+        }
+    }
+    project_store::cancel_workflow_run_execution(
+        repo_root,
+        project_id,
+        &run.id,
+        run.cancellation_reason.as_deref(),
+    )?;
+    Ok(())
+}
+
+fn reconcile_starting_agent_nodes<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    repo_root: &Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+) -> CommandResult<bool> {
+    for node_run in run
+        .nodes
+        .iter()
+        .filter(|node| node.status == WorkflowNodeRunStatusDto::Starting)
+    {
+        let Some(WorkflowNodeDto::Agent {
+            title,
+            agent_ref,
+            input_bindings,
+            run_overrides,
+            ..
+        }) = find_node(&run.definition_snapshot, &node_run.node_id)
+        else {
+            continue;
+        };
+        let input_bindings = runtime_input_bindings_for_node(
+            &run.definition_snapshot,
+            &node_run.node_id,
+            input_bindings,
+        );
+        start_agent_node(
+            app,
+            state,
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            title,
+            agent_ref,
+            &input_bindings,
+            run_overrides.as_ref(),
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
 }
 
 pub fn resume_workflow_checkpoint<R: Runtime + 'static>(
@@ -136,121 +899,119 @@ pub fn resume_workflow_checkpoint<R: Runtime + 'static>(
                 format!("Xero could not find Workflow checkpoint node run `{node_run_id}`."),
             )
         })?;
-    let checkpoint_node = find_node(&run.definition_snapshot, &node_run.node_id);
-    let checkpoint_type = checkpoint_type_for_node(&run.definition_snapshot, &node_run.node_id)
-        .unwrap_or(WorkflowHumanCheckpointTypeDto::Decision);
-    if let Some(WorkflowNodeDto::HumanCheckpoint {
+    let Some(WorkflowNodeDto::HumanCheckpoint {
+        checkpoint_type,
         decision_options,
         resume_payload_schema,
+        state_updates,
         ..
-    }) = checkpoint_node
+    }) = find_node(&run.definition_snapshot, &node_run.node_id)
+    else {
+        return Err(CommandError::user_fixable(
+            "workflow_checkpoint_node_invalid",
+            format!(
+                "Workflow node `{}` is not a human checkpoint and cannot be resumed.",
+                node_run.node_id
+            ),
+        ));
+    };
+    if decision.trim().is_empty()
+        || (!decision_options.is_empty()
+            && !decision_options.iter().any(|option| option == decision))
     {
-        if !decision_options.is_empty() && !decision_options.iter().any(|option| option == decision)
-        {
-            return Err(CommandError::user_fixable(
-                "workflow_checkpoint_decision_invalid",
-                format!(
-                    "Decision `{decision}` is not allowed for Workflow checkpoint `{}`.",
-                    node_run.node_id
-                ),
-            ));
-        }
-        if let Some(schema) = resume_payload_schema.as_ref() {
-            let payload_value = payload.as_ref().unwrap_or(&JsonValue::Null);
-            validate_workflow_artifact_payload(
-                &WorkflowOutputContractDto {
-                    artifact_type: "human_decision".into(),
-                    schema_version: 1,
-                    extraction: WorkflowOutputExtractionDto::JsonObject,
-                    required: true,
-                    render_text_path: None,
-                },
-                Some(schema),
-                payload_value,
-            )
-            .map_err(|error| {
-                CommandError::user_fixable(
-                    "workflow_checkpoint_payload_invalid",
-                    format!(
-                        "Xero rejected the resume payload for checkpoint `{}`: {}",
-                        node_run.node_id, error.message
-                    ),
-                )
-            })?;
-        }
+        return Err(CommandError::user_fixable(
+            "workflow_checkpoint_decision_invalid",
+            format!(
+                "Decision `{decision}` is not allowed for Workflow checkpoint `{}`.",
+                node_run.node_id
+            ),
+        ));
     }
-    project_store::insert_workflow_gate_decision(
-        &repo_root,
-        project_id,
-        run_id,
-        node_run_id,
-        checkpoint_type,
-        decision,
-        payload.as_ref(),
-    )?;
-    project_store::insert_workflow_artifact(
-        &repo_root,
-        project_id,
-        run_id,
-        node_run_id,
-        "human_decision",
-        1,
-        &json!({ "decision": decision, "payload": payload.clone() }),
-        Some(decision),
-    )?;
-    if let Some(WorkflowNodeDto::HumanCheckpoint { state_updates, .. }) = checkpoint_node {
-        let decision_context = json!({ "decision": decision, "payload": payload.clone() });
-        for operation in state_updates {
+    if let Some(schema) = resume_payload_schema.as_ref() {
+        let payload_value = payload.as_ref().unwrap_or(&JsonValue::Null);
+        validate_workflow_artifact_payload(
+            &WorkflowOutputContractDto {
+                artifact_type: "human_decision".into(),
+                schema_version: 1,
+                extraction: WorkflowOutputExtractionDto::JsonObject,
+                required: true,
+                render_text_path: None,
+            },
+            Some(schema),
+            payload_value,
+        )
+        .map_err(|error| {
+            CommandError::user_fixable(
+                "workflow_checkpoint_payload_invalid",
+                format!(
+                    "Xero rejected the resume payload for checkpoint `{}`: {}",
+                    node_run.node_id, error.message
+                ),
+            )
+        })?;
+    }
+    if let Some(existing) = run
+        .gate_decisions
+        .iter()
+        .find(|existing| existing.node_run_id == node_run.id)
+    {
+        let resume_committed = run.events.iter().any(|event| {
+            event.node_run_id.as_deref() == Some(node_run.id.as_str())
+                && event.event_type == "workflow_checkpoint_resumed"
+        });
+        if resume_committed
+            && existing.checkpoint_type == *checkpoint_type
+            && existing.decision == decision
+            && existing.decision_payload == payload
+        {
+            return Ok(run);
+        }
+        return Err(CommandError::user_fixable(
+            "workflow_checkpoint_already_resumed",
+            format!(
+                "Workflow checkpoint `{}` was already resumed with a different decision or payload.",
+                node_run.id
+            ),
+        ));
+    }
+    if run.status != WorkflowRunStatusDto::Paused
+        || node_run.status != WorkflowNodeRunStatusDto::WaitingOnGate
+    {
+        return Err(CommandError::user_fixable(
+            "workflow_checkpoint_not_waiting",
+            format!("Workflow checkpoint `{node_run_id}` is not waiting in a paused Workflow run."),
+        ));
+    }
+    let decision_context = json!({ "decision": decision, "payload": payload.clone() });
+    let resolved_state_updates = state_updates
+        .iter()
+        .map(|operation| {
             let operation = runtime_state_write_operation_for_node(
                 &run.definition_snapshot,
                 &node_run.node_id,
                 operation,
             );
-            let resolved_operation =
-                resolve_state_write_operation(&operation, &run, Some(&decision_context))?;
-            let result = project_store::write_delivery_state(
-                &repo_root,
-                project_id,
-                DeliveryStateWriteContext {
-                    workflow_run_id: Some(&run.id),
-                    node_run_id: Some(&node_run.id),
-                },
-                &resolved_operation,
-            )?;
-            project_store::insert_workflow_event(
-                &repo_root,
-                project_id,
-                run_id,
-                Some(&node_run.id),
-                "workflow_checkpoint_state_written",
-                &json!({
-                    "nodeId": node_run.node_id,
-                    "entityType": resolved_operation.entity_type.as_str(),
-                    "action": resolved_operation.action.as_str(),
-                    "entityId": result.get("id"),
-                    "decision": decision,
-                }),
-            )?;
-        }
-    }
-    project_store::update_workflow_run_node(
+            resolve_state_write_operation(&operation, &run, Some(&decision_context))
+        })
+        .collect::<CommandResult<Vec<_>>>()?;
+    let _committed = project_store::resume_workflow_checkpoint_atomically(
         &repo_root,
         project_id,
-        node_run_id,
-        WorkflowNodeRunStatusDto::Succeeded,
-        None,
-        None,
-        None,
+        &project_store::WorkflowCheckpointResumeRecord {
+            run_id: run.id.clone(),
+            node_run_id: node_run.id.clone(),
+            checkpoint_type: *checkpoint_type,
+            decision: decision.into(),
+            payload,
+            state_updates: resolved_state_updates,
+        },
     )?;
-    project_store::update_workflow_run_status(
-        &repo_root,
-        project_id,
-        run_id,
-        WorkflowRunStatusDto::Running,
-        None,
-        None,
-    )?;
-    reconcile_workflow_run(app, state, project_id, run_id)
+    project_store::get_workflow_run(&repo_root, project_id, run_id)?.ok_or_else(|| {
+        CommandError::system_fault(
+            "workflow_run_missing_after_checkpoint_resume",
+            format!("Workflow run `{run_id}` disappeared after its checkpoint was resumed."),
+        )
+    })
 }
 
 pub fn retry_workflow_node_run<R: Runtime + 'static>(
@@ -270,11 +1031,13 @@ pub fn retry_workflow_node_run<R: Runtime + 'static>(
         })?;
     if matches!(
         run.status,
-        WorkflowRunStatusDto::Completed | WorkflowRunStatusDto::Cancelled
+        WorkflowRunStatusDto::Completed
+            | WorkflowRunStatusDto::Cancelling
+            | WorkflowRunStatusDto::Cancelled
     ) {
         return Err(CommandError::user_fixable(
             "workflow_run_not_retryable",
-            "Completed or cancelled Workflow runs cannot be retried from a node.",
+            "Completed, cancelling, or cancelled Workflow runs cannot be retried from a node.",
         ));
     }
     let node_run = run
@@ -306,34 +1069,81 @@ pub fn retry_workflow_node_run<R: Runtime + 'static>(
             ),
         ));
     }
-    if has_control_event_after_completion(&run, &node_run, "workflow_node_retry_requested") {
-        return reconcile_workflow_run(app, state, project_id, run_id);
+    for candidate in &run.nodes {
+        if !matches!(
+            find_node(&run.definition_snapshot, &candidate.node_id),
+            Some(WorkflowNodeDto::Agent { .. })
+        ) {
+            continue;
+        }
+        let snapshot = if let Some(runtime_run_id) = candidate.runtime_run_id.as_deref() {
+            Some(project_store::load_agent_run(
+                &repo_root,
+                project_id,
+                runtime_run_id,
+            )?)
+        } else {
+            load_existing_agent_run_for_node(&repo_root, project_id, candidate)?
+        };
+        let Some(snapshot) = snapshot else {
+            continue;
+        };
+        let AgentHandoffLeafResolution::Leaf(leaf) =
+            resolve_agent_handoff_leaf(&repo_root, project_id, snapshot, false)?
+        else {
+            return Err(CommandError::retryable(
+                "workflow_retry_handoff_unresolved",
+                "The Workflow cannot retry while an owned-agent handoff has unresolved lineage.",
+            ));
+        };
+        if matches!(
+            leaf.run.status,
+            AgentRunStatus::Starting
+                | AgentRunStatus::Running
+                | AgentRunStatus::Paused
+                | AgentRunStatus::Cancelling
+        ) {
+            return Err(CommandError::user_fixable(
+                "workflow_retry_execution_still_active",
+                format!(
+                    "Owned-agent run `{}` is still active, so the Workflow cannot rewind for retry.",
+                    leaf.run.run_id
+                ),
+            ));
+        }
     }
-
-    let attempt = next_attempt_for_node(&run, &node_run.node_id);
-    let retry_node = ensure_node_run(&repo_root, &run, &node_run.node_id, attempt)?;
-    project_store::insert_workflow_event(
+    if workflow_node_execution_is_live(state, &repo_root, project_id, &run, &node_run)? {
+        return Err(CommandError::user_fixable(
+            "workflow_node_execution_still_active",
+            format!(
+                "Workflow node run `{node_run_id}` still owns a live execution and cannot be retried yet."
+            ),
+        ));
+    }
+    let node_type = find_node(&run.definition_snapshot, &node_run.node_id)
+        .map(|node| node.node_type().as_str().to_owned())
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "workflow_retry_node_missing",
+                format!("Workflow node `{}` is missing.", node_run.node_id),
+            )
+        })?;
+    project_store::retry_workflow_node_atomically(
         &repo_root,
         project_id,
-        run_id,
-        Some(&node_run.id),
-        "workflow_node_retry_requested",
-        &json!({
-            "nodeId": node_run.node_id,
-            "previousStatus": node_run.status.as_str(),
-            "retryNodeRunId": retry_node.id,
-            "attemptNumber": retry_node.attempt_number,
-        }),
+        &project_store::WorkflowNodeRetryRecord {
+            run_id: run.id.clone(),
+            source_node_run_id: node_run.id.clone(),
+            node_id: node_run.node_id.clone(),
+            node_type,
+        },
     )?;
-    project_store::update_workflow_run_status(
-        &repo_root,
-        project_id,
-        run_id,
-        WorkflowRunStatusDto::Running,
-        None,
-        None,
-    )?;
-    reconcile_workflow_run(app, state, project_id, run_id)
+    project_store::get_workflow_run(&repo_root, project_id, run_id)?.ok_or_else(|| {
+        CommandError::system_fault(
+            "workflow_run_missing_after_retry",
+            format!("Workflow run `{run_id}` disappeared after retry was committed."),
+        )
+    })
 }
 
 pub fn skip_workflow_branch<R: Runtime + 'static>(
@@ -352,10 +1162,10 @@ pub fn skip_workflow_branch<R: Runtime + 'static>(
                 format!("Xero could not find Workflow run `{run_id}`."),
             )
         })?;
-    if is_terminal_run(run.status) {
+    if is_terminal_run(run.status) || run.status == WorkflowRunStatusDto::Cancelling {
         return Err(CommandError::user_fixable(
             "workflow_run_not_skippable",
-            "Completed, failed, or cancelled Workflow runs cannot skip branches.",
+            "Completed, failed, cancelling, or cancelled Workflow runs cannot skip branches.",
         ));
     }
     let node_run = run
@@ -369,6 +1179,14 @@ pub fn skip_workflow_branch<R: Runtime + 'static>(
                 format!("Xero could not find Workflow node run `{node_run_id}`."),
             )
         })?;
+    if node_run.status == WorkflowNodeRunStatusDto::Skipped
+        && run.events.iter().any(|event| {
+            event.node_run_id.as_deref() == Some(node_run.id.as_str())
+                && event.event_type == "workflow_branch_skipped"
+        })
+    {
+        return Ok(run);
+    }
     if !is_skippable_node_status(node_run.status) {
         return Err(CommandError::user_fixable(
             "workflow_node_run_not_skippable",
@@ -379,54 +1197,30 @@ pub fn skip_workflow_branch<R: Runtime + 'static>(
         ));
     }
 
-    if let Some(runtime_run_id) = node_run.runtime_run_id.as_ref() {
-        let runtime = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
-        let _ = runtime.cancel_run(
-            repo_root.clone(),
-            project_id.to_owned(),
-            runtime_run_id.to_owned(),
-        );
-    }
-    project_store::update_workflow_run_node(
+    let merge_targets = direct_merge_targets_for_skipped_branch(&run, &node_run.node_id)?;
+    terminate_workflow_node_execution(state, &repo_root, project_id, &run, &node_run)?;
+    project_store::skip_workflow_branch_atomically(
         &repo_root,
         project_id,
-        &node_run.id,
-        WorkflowNodeRunStatusDto::Skipped,
-        None,
-        None,
-        Some(USER_SKIPPED_FAILURE_CLASS),
+        &project_store::WorkflowBranchSkipRecord {
+            run_id: run.id.clone(),
+            node_run_id: node_run.id.clone(),
+            node_id: node_run.node_id.clone(),
+            previous_status: node_run.status,
+            reason: reason.map(ToOwned::to_owned),
+            merge_targets,
+        },
     )?;
-    let merge_target_node_ids = ensure_direct_merge_targets_for_skipped_branch(
-        &repo_root,
-        project_id,
-        &run,
-        &node_run.node_id,
-    )?;
-    project_store::insert_workflow_event(
-        &repo_root,
-        project_id,
-        run_id,
-        Some(&node_run.id),
-        "workflow_branch_skipped",
-        &json!({
-            "nodeId": node_run.node_id,
-            "previousStatus": node_run.status.as_str(),
-            "reason": reason,
-            "mergeTargetNodeIds": merge_target_node_ids,
-        }),
-    )?;
-    project_store::update_workflow_run_status(
-        &repo_root,
-        project_id,
-        run_id,
-        WorkflowRunStatusDto::Running,
-        None,
-        None,
-    )?;
-    reconcile_workflow_run(app, state, project_id, run_id)
+    project_store::get_workflow_run(&repo_root, project_id, run_id)?.ok_or_else(|| {
+        CommandError::system_fault(
+            "workflow_run_missing_after_skip",
+            format!("Workflow run `{run_id}` disappeared after its branch was skipped."),
+        )
+    })
 }
 
 fn reconcile_running_agent_nodes(
+    state: &DesktopState,
     repo_root: &std::path::Path,
     project_id: &str,
     run: &WorkflowRunDto,
@@ -441,7 +1235,52 @@ fn reconcile_running_agent_nodes(
         let Some(runtime_run_id) = node_run.runtime_run_id.as_deref() else {
             continue;
         };
-        let snapshot = project_store::load_agent_run(repo_root, project_id, runtime_run_id)?;
+        let source_snapshot = project_store::load_agent_run(repo_root, project_id, runtime_run_id)?;
+        let snapshot =
+            match resolve_agent_handoff_leaf(repo_root, project_id, source_snapshot, true)? {
+                AgentHandoffLeafResolution::Leaf(snapshot) => snapshot,
+                AgentHandoffLeafResolution::Incomplete(reason) => {
+                    fail_node_with_recoverable_error(
+                        repo_root,
+                        project_id,
+                        run,
+                        node_run,
+                        "workflow_agent_handoff_incomplete",
+                        "workflow_agent_handoff_incomplete",
+                        &reason,
+                    )?;
+                    changed = true;
+                    continue;
+                }
+            };
+        let runtime_run_id = snapshot.run.run_id.as_str();
+        if node_run.runtime_run_id.as_deref() != Some(runtime_run_id) {
+            if !project_store::compare_and_set_workflow_run_node(
+                repo_root,
+                project_id,
+                &node_run.id,
+                &[WorkflowNodeRunStatusDto::Running],
+                WorkflowNodeRunStatusDto::Running,
+                Some(runtime_run_id),
+                Some(&snapshot.run.agent_session_id),
+                None,
+            )? {
+                continue;
+            }
+            project_store::insert_workflow_event(
+                repo_root,
+                project_id,
+                &run.id,
+                Some(&node_run.id),
+                "workflow_agent_handoff_followed",
+                &json!({
+                    "sourceRuntimeRunId": node_run.runtime_run_id,
+                    "targetRuntimeRunId": runtime_run_id,
+                    "targetAgentSessionId": snapshot.run.agent_session_id,
+                }),
+            )?;
+            changed = true;
+        }
         match snapshot.run.status {
             AgentRunStatus::Starting | AgentRunStatus::Running => {
                 if let Some(timeout_seconds) =
@@ -450,29 +1289,49 @@ fn reconcile_running_agent_nodes(
                     if let Some(last_activity_at) =
                         stale_agent_activity_at(&snapshot.run, timeout_seconds, now)
                     {
-                        project_store::update_workflow_run_node(
-                            repo_root,
-                            project_id,
-                            &node_run.id,
-                            WorkflowNodeRunStatusDto::Stalled,
-                            None,
-                            None,
-                            Some(RUNTIME_ACTIVITY_TIMEOUT_FAILURE_CLASS),
-                        )?;
-                        project_store::insert_workflow_event(
+                        let runtime =
+                            DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+                        let cancelled = match runtime.cancel_run(
+                            repo_root.to_path_buf(),
+                            project_id.to_owned(),
+                            runtime_run_id.to_owned(),
+                        ) {
+                            Ok(snapshot) => snapshot,
+                            Err(error) if error.code == "agent_run_active_in_another_process" => {
+                                continue;
+                            }
+                            Err(error) => return Err(error),
+                        };
+                        if !matches!(
+                            cancelled.run.status,
+                            AgentRunStatus::Cancelled
+                                | AgentRunStatus::HandedOff
+                                | AgentRunStatus::Completed
+                                | AgentRunStatus::Failed
+                        ) {
+                            return Err(CommandError::retryable(
+                                "workflow_activity_timeout_cancel_incomplete",
+                                format!(
+                                    "Owned-agent run `{runtime_run_id}` did not reach a terminal state after activity timeout cancellation."
+                                ),
+                            ));
+                        }
+                        if !project_store::stall_workflow_agent_for_activity_timeout(
                             repo_root,
                             project_id,
                             &run.id,
-                            Some(&node_run.id),
-                            "workflow_node_stalled",
+                            &node_run.id,
                             &json!({
                                 "nodeId": node_run.node_id,
                                 "runtimeRunId": runtime_run_id,
                                 "failureClass": RUNTIME_ACTIVITY_TIMEOUT_FAILURE_CLASS,
                                 "timeoutSeconds": timeout_seconds,
                                 "lastActivityAt": last_activity_at,
+                                "runtimeTerminalStatus": format!("{:?}", cancelled.run.status).to_lowercase(),
                             }),
-                        )?;
+                        )? {
+                            continue;
+                        }
                         changed = true;
                     }
                 }
@@ -506,47 +1365,47 @@ fn reconcile_running_agent_nodes(
                             }
                             Err(error) => return Err(error),
                         };
-                    project_store::insert_workflow_artifact(
+                    let event = json!({
+                        "nodeId": node_run.node_id,
+                        "artifactType": contract.artifact_type.as_str(),
+                        "schemaVersion": contract.schema_version,
+                        "validationStatus": "valid",
+                        "diagnostics": diagnostics.iter().map(|diagnostic| {
+                            json!({
+                                "code": diagnostic.code,
+                                "path": diagnostic.path,
+                                "message": diagnostic.message,
+                            })
+                        }).collect::<Vec<_>>(),
+                        "renderTextPath": contract.render_text_path.as_deref(),
+                    });
+                    if !project_store::complete_workflow_agent_node_with_artifact(
                         repo_root,
                         project_id,
-                        &run.id,
-                        &node_run.id,
-                        &contract.artifact_type,
-                        contract.schema_version,
-                        &payload,
-                        render_text.as_deref(),
-                    )?;
-                    project_store::insert_workflow_event(
-                        repo_root,
-                        project_id,
-                        &run.id,
-                        Some(&node_run.id),
-                        "workflow_artifact_extracted",
-                        &json!({
-                            "nodeId": node_run.node_id,
-                            "artifactType": contract.artifact_type,
-                            "schemaVersion": contract.schema_version,
-                            "validationStatus": "valid",
-                            "diagnostics": diagnostics.iter().map(|diagnostic| {
-                                json!({
-                                    "code": diagnostic.code,
-                                    "path": diagnostic.path,
-                                    "message": diagnostic.message,
-                                })
-                            }).collect::<Vec<_>>(),
-                            "renderTextPath": contract.render_text_path,
-                        }),
-                    )?;
-                }
-                project_store::update_workflow_run_node(
+                        &project_store::WorkflowAgentArtifactCompletionRecord {
+                            run_id: run.id.clone(),
+                            node_run_id: node_run.id.clone(),
+                            artifact_type: contract.artifact_type.clone(),
+                            schema_version: contract.schema_version,
+                            payload,
+                            render_text,
+                            event,
+                        },
+                    )? {
+                        continue;
+                    }
+                } else if !project_store::compare_and_set_workflow_run_node(
                     repo_root,
                     project_id,
                     &node_run.id,
+                    &[WorkflowNodeRunStatusDto::Running],
                     WorkflowNodeRunStatusDto::Succeeded,
                     None,
                     None,
                     None,
-                )?;
+                )? {
+                    continue;
+                }
                 changed = true;
             }
             AgentRunStatus::Failed => {
@@ -556,33 +1415,97 @@ fn reconcile_running_agent_nodes(
                     .as_ref()
                     .map(|error| error.code.as_str())
                     .unwrap_or("agent_failed");
-                project_store::update_workflow_run_node(
+                if project_store::compare_and_set_workflow_run_node(
                     repo_root,
                     project_id,
                     &node_run.id,
+                    &[WorkflowNodeRunStatusDto::Running],
                     WorkflowNodeRunStatusDto::Failed,
                     None,
                     None,
                     Some(failure_class),
-                )?;
-                changed = true;
+                )? {
+                    changed = true;
+                }
             }
             AgentRunStatus::Cancelled => {
-                project_store::update_workflow_run_node(
+                if project_store::compare_and_set_workflow_run_node(
                     repo_root,
                     project_id,
                     &node_run.id,
+                    &[WorkflowNodeRunStatusDto::Running],
                     WorkflowNodeRunStatusDto::Cancelled,
                     None,
                     None,
                     Some("cancelled"),
-                )?;
-                changed = true;
+                )? {
+                    changed = true;
+                }
             }
             _ => {}
         }
     }
     Ok(changed)
+}
+
+enum AgentHandoffLeafResolution {
+    Leaf(AgentRunSnapshotRecord),
+    Incomplete(String),
+}
+
+fn resolve_agent_handoff_leaf(
+    repo_root: &Path,
+    project_id: &str,
+    mut snapshot: AgentRunSnapshotRecord,
+    require_completed_lineage: bool,
+) -> CommandResult<AgentHandoffLeafResolution> {
+    const MAX_HANDOFF_DEPTH: usize = 32;
+    let mut visited = BTreeSet::new();
+
+    for _ in 0..MAX_HANDOFF_DEPTH {
+        if snapshot.run.status != AgentRunStatus::HandedOff {
+            return Ok(AgentHandoffLeafResolution::Leaf(snapshot));
+        }
+        if !visited.insert(snapshot.run.run_id.clone()) {
+            return Ok(AgentHandoffLeafResolution::Incomplete(format!(
+                "Owned-agent handoff lineage contains a cycle at run `{}`.",
+                snapshot.run.run_id
+            )));
+        }
+        let lineage = project_store::list_agent_handoff_lineage_for_source(
+            repo_root,
+            project_id,
+            &snapshot.run.run_id,
+        )?
+        .into_iter()
+        .next();
+        let Some(lineage) = lineage else {
+            return Ok(AgentHandoffLeafResolution::Incomplete(format!(
+                "Owned-agent run `{}` was handed off without durable lineage.",
+                snapshot.run.run_id
+            )));
+        };
+        if require_completed_lineage
+            && lineage.status != project_store::AgentHandoffLineageStatus::Completed
+        {
+            return Ok(AgentHandoffLeafResolution::Incomplete(format!(
+                "Owned-agent handoff `{}` is `{}` instead of completed.",
+                lineage.handoff_id,
+                format!("{:?}", lineage.status).to_lowercase()
+            )));
+        }
+        let Some(target_run_id) = lineage.target_run_id else {
+            return Ok(AgentHandoffLeafResolution::Incomplete(format!(
+                "Owned-agent handoff `{}` has no target run.",
+                lineage.handoff_id
+            )));
+        };
+        snapshot = project_store::load_agent_run(repo_root, project_id, &target_run_id)?;
+    }
+
+    Ok(AgentHandoffLeafResolution::Incomplete(format!(
+        "Owned-agent handoff lineage exceeded {MAX_HANDOFF_DEPTH} links."
+    )))
 }
 
 fn activity_timeout_seconds_for_node(
@@ -621,6 +1544,7 @@ fn stale_agent_activity_at(
 }
 
 fn route_completed_nodes(
+    state: &DesktopState,
     repo_root: &std::path::Path,
     project_id: &str,
     run: &WorkflowRunDto,
@@ -634,6 +1558,9 @@ fn route_completed_nodes(
                 | WorkflowNodeRunStatusDto::Cancelled
         ) && !has_routed_node_run(run, node)
     }) {
+        if workflow_node_execution_is_live(state, repo_root, project_id, run, node_run)? {
+            continue;
+        }
         let Some(node) = find_node(&run.definition_snapshot, &node_run.node_id) else {
             continue;
         };
@@ -646,7 +1573,14 @@ fn route_completed_nodes(
             terminal_status, ..
         } = node
         {
-            complete_for_terminal(repo_root, project_id, run, *terminal_status)?;
+            complete_for_terminal(
+                state,
+                repo_root,
+                project_id,
+                run,
+                node_run,
+                *terminal_status,
+            )?;
             return Ok(true);
         }
 
@@ -661,7 +1595,7 @@ fn route_completed_nodes(
         outgoing.sort_by_key(|edge| edge.priority);
 
         let mut matched_edges = Vec::new();
-        let mut default_edge = None;
+        let mut default_edge: Option<(WorkflowEdgeDto, JsonValue, JsonValue)> = None;
         for edge in outgoing {
             let evaluation = evaluate_workflow_condition(&edge.condition, &context);
             let condition_json = encode_workflow_condition(&edge.condition)?;
@@ -687,7 +1621,16 @@ fn route_completed_nodes(
                 edge.condition,
                 crate::commands::contracts::workflows::WorkflowConditionDto::Always
             ) {
-                default_edge = Some((edge, condition_json, evaluation.evidence));
+                let should_replace = match default_edge.as_ref() {
+                    Some((current, _, _)) => {
+                        default_edge_specificity(edge.r#type)
+                            >= default_edge_specificity(current.r#type)
+                    }
+                    None => true,
+                };
+                if should_replace {
+                    default_edge = Some((edge, condition_json, evaluation.evidence));
+                }
                 continue;
             }
             matched_edges.push((edge, condition_json, evaluation.evidence));
@@ -702,7 +1645,6 @@ fn route_completed_nodes(
         }
 
         if !matched_edges.is_empty() {
-            let mut created = false;
             if node_run.status == WorkflowNodeRunStatusDto::Succeeded
                 && had_prior_unsuccessful_attempt(run, node_run)
                 && !has_metric_event_for_node(run, node_run, "recovery_success")
@@ -719,24 +1661,40 @@ fn route_completed_nodes(
                     }),
                 )?;
             }
+            let mut route_decisions = Vec::with_capacity(matched_edges.len());
             for (edge, condition_json, evidence) in matched_edges {
-                let target_node_id =
-                    loop_target_for_edge(repo_root, project_id, run, node_run, &edge)?;
-                project_store::insert_workflow_edge_decision(
-                    repo_root,
-                    project_id,
-                    &run.id,
-                    &edge.from_node_id,
-                    &target_node_id,
-                    &edge.id,
-                    &condition_json,
-                    &evidence,
+                let resolution = loop_target_for_edge(repo_root, project_id, run, node_run, &edge)?;
+                let target_node_id = resolution.target_node_id;
+                let target_node = find_node(&run.definition_snapshot, &target_node_id).ok_or_else(
+                    || {
+                        CommandError::system_fault(
+                            "workflow_target_node_missing",
+                            format!(
+                                "Workflow target node `{target_node_id}` was missing from its snapshot."
+                            ),
+                        )
+                    },
                 )?;
                 let attempt = next_attempt_for_node(run, &target_node_id);
-                ensure_node_run(repo_root, run, &target_node_id, attempt)?;
-                created = true;
+                route_decisions.push(project_store::WorkflowRouteDecisionRecord {
+                    source_node_run_id: node_run.id.clone(),
+                    source_status: resolution.source_status,
+                    from_node_id: edge.from_node_id,
+                    to_node_id: target_node_id.clone(),
+                    edge_id: edge.id,
+                    condition: condition_json,
+                    evidence,
+                    target_node_type: target_node.node_type().as_str().into(),
+                    target_attempt_number: attempt,
+                    target_idempotency_key: format!("{}:{target_node_id}:{attempt}", run.id),
+                });
             }
-            return Ok(created);
+            return project_store::commit_workflow_route(
+                repo_root,
+                project_id,
+                &run.id,
+                &route_decisions,
+            );
         }
 
         project_store::insert_workflow_event(
@@ -779,6 +1737,19 @@ fn start_eligible_nodes<R: Runtime + 'static>(
                 )
         })
         .count();
+    let running_command_count = run
+        .nodes
+        .iter()
+        .filter(|node| {
+            matches!(
+                node.status,
+                WorkflowNodeRunStatusDto::Starting | WorkflowNodeRunStatusDto::Running
+            ) && matches!(
+                find_node(&run.definition_snapshot, &node.node_id),
+                Some(WorkflowNodeDto::Command { .. })
+            )
+        })
+        .count();
     for node_run in run
         .nodes
         .iter()
@@ -816,6 +1787,13 @@ fn start_eligible_nodes<R: Runtime + 'static>(
                         return Ok(true);
                     }
                     continue;
+                }
+                if !project_store::claim_workflow_run_node_starting(
+                    repo_root,
+                    project_id,
+                    &node_run.id,
+                )? {
+                    return Ok(true);
                 }
                 let input_bindings = runtime_input_bindings_for_node(
                     &run.definition_snapshot,
@@ -985,6 +1963,9 @@ fn start_eligible_nodes<R: Runtime + 'static>(
                 parser,
                 ..
             } => {
+                if running_command_count > 0 {
+                    continue;
+                }
                 let args = runtime_template_strings_for_node(
                     &run.definition_snapshot,
                     &node_run.node_id,
@@ -997,7 +1978,7 @@ fn start_eligible_nodes<R: Runtime + 'static>(
                         value,
                     )
                 });
-                run_command_node(
+                spawn_command_node(
                     repo_root,
                     project_id,
                     run,
@@ -1046,22 +2027,552 @@ fn start_eligible_nodes<R: Runtime + 'static>(
                         &context,
                     )?;
                 } else {
-                    project_store::update_workflow_run_node(
+                    complete_for_terminal(
+                        state,
                         repo_root,
                         project_id,
-                        &node_run.id,
-                        WorkflowNodeRunStatusDto::Succeeded,
-                        None,
-                        None,
-                        None,
+                        run,
+                        node_run,
+                        *terminal_status,
                     )?;
-                    complete_for_terminal(repo_root, project_id, run, *terminal_status)?;
                 }
                 return Ok(true);
             }
         }
     }
     Ok(false)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_command_node(
+    repo_root: &Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+    node_run: &WorkflowRunNodeDto,
+    command: &str,
+    args: &[String],
+    allowed_commands: &[String],
+    working_directory: Option<&str>,
+    timeout_seconds: u32,
+    success_exit_codes: &[i32],
+    output_contract: &WorkflowOutputContractDto,
+    parser_extraction: WorkflowOutputExtractionDto,
+    parser_render_text_path: Option<&str>,
+) -> CommandResult<()> {
+    if allowed_commands.is_empty() {
+        return fail_node_with_recoverable_error(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            "workflow_command_allowlist_empty",
+            "workflow_command_allowlist_empty",
+            &format!(
+                "Command node `{}` cannot run without an explicit command allowlist.",
+                node_run.node_id
+            ),
+        );
+    }
+    if !workflow_command_is_allowlisted(command, allowed_commands) {
+        return fail_node_with_recoverable_error(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            "workflow_command_not_allowed",
+            "workflow_command_not_allowed",
+            &format!(
+                "Command node `{}` is not in its allowlist.",
+                node_run.node_id
+            ),
+        );
+    }
+    if let Err(violation) = validate_workflow_command_policy(command, args) {
+        return fail_node_with_recoverable_error(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            violation.code,
+            violation.code,
+            &violation.message,
+        );
+    }
+    let canonical_working_directory =
+        match resolve_workflow_command_working_directory(repo_root, working_directory) {
+            Ok(cwd) => cwd,
+            Err(error) => {
+                return fail_node_with_recoverable_error(
+                    repo_root,
+                    project_id,
+                    run,
+                    node_run,
+                    "workflow_command_working_directory_invalid",
+                    &error.code,
+                    &error.message,
+                );
+            }
+        };
+    let mut registration = register_running_workflow_command(project_id, &run.id, &node_run.id)?;
+    if !project_store::claim_workflow_command_node_starting(
+        repo_root,
+        project_id,
+        &run.id,
+        &node_run.id,
+        &registration.owner_instance_id,
+        registration.owner_process_id,
+        &registration.owner_process_birth_identity,
+        &registration.lease_token,
+        &crate::auth::now_timestamp(),
+    )? {
+        return Ok(());
+    }
+    if let Err(error) = registration.activate_persisted_lease(repo_root) {
+        let _ = project_store::compare_and_set_workflow_run_node(
+            repo_root,
+            project_id,
+            &node_run.id,
+            &[WorkflowNodeRunStatusDto::Starting],
+            WorkflowNodeRunStatusDto::Failed,
+            None,
+            None,
+            Some("workflow_command_lease_heartbeat_failed"),
+        );
+        return Err(error);
+    }
+    if !project_store::compare_and_set_workflow_run_node(
+        repo_root,
+        project_id,
+        &node_run.id,
+        &[WorkflowNodeRunStatusDto::Starting],
+        WorkflowNodeRunStatusDto::Running,
+        None,
+        None,
+        None,
+    )? {
+        return Ok(());
+    }
+
+    let owned_repo_root = repo_root.to_path_buf();
+    let owned_project_id = project_id.to_owned();
+    let owned_run = run.clone();
+    let owned_node_run = node_run.clone();
+    let owned_command = command.to_owned();
+    let owned_args = args.to_vec();
+    let owned_allowed_commands = allowed_commands.to_vec();
+    let owned_working_directory = canonical_working_directory.to_string_lossy().into_owned();
+    let owned_success_exit_codes = success_exit_codes.to_vec();
+    let owned_output_contract = output_contract.clone();
+    let owned_parser_render_text_path = parser_render_text_path.map(ToOwned::to_owned);
+    let spawn_result = thread::Builder::new()
+        .name("workflow-command".into())
+        .spawn(move || {
+            let _ = run_command_node(
+                &owned_repo_root,
+                &owned_project_id,
+                &owned_run,
+                &owned_node_run,
+                &owned_command,
+                &owned_args,
+                &owned_allowed_commands,
+                Some(owned_working_directory.as_str()),
+                timeout_seconds,
+                &owned_success_exit_codes,
+                &owned_output_contract,
+                parser_extraction,
+                owned_parser_render_text_path.as_deref(),
+                registration,
+            );
+        });
+    if let Err(error) = spawn_result {
+        return fail_node_with_recoverable_error(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            "workflow_command_thread_spawn_failed",
+            "workflow_command_thread_spawn_failed",
+            &format!(
+                "Xero could not start the execution thread for command node `{}`: {error}",
+                node_run.node_id
+            ),
+        );
+    }
+    Ok(())
+}
+
+fn reconcile_interrupted_command_nodes(
+    repo_root: &std::path::Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+) -> CommandResult<bool> {
+    for node_run in run.nodes.iter().filter(|node| {
+        node.node_type == "command"
+            && matches!(
+                node.status,
+                WorkflowNodeRunStatusDto::Starting | WorkflowNodeRunStatusDto::Running
+            )
+            && !running_workflow_command_is_registered(project_id, &run.id, &node.id)
+    }) {
+        let lease =
+            project_store::load_workflow_command_lease(repo_root, project_id, &node_run.id)?;
+        if lease.as_ref().is_some_and(workflow_command_lease_is_live) {
+            continue;
+        }
+        let recovered = if let Some(lease) = lease.as_ref() {
+            project_store::claim_interrupted_workflow_command(
+                repo_root,
+                project_id,
+                &run.id,
+                lease,
+                COMMAND_INTERRUPTED_FAILURE_CLASS,
+            )?
+        } else {
+            project_store::compare_and_set_workflow_run_node(
+                repo_root,
+                project_id,
+                &node_run.id,
+                &[
+                    WorkflowNodeRunStatusDto::Starting,
+                    WorkflowNodeRunStatusDto::Running,
+                ],
+                WorkflowNodeRunStatusDto::Stalled,
+                None,
+                None,
+                Some(COMMAND_INTERRUPTED_FAILURE_CLASS),
+            )?
+        };
+        if !recovered {
+            return Ok(true);
+        }
+        if let Some((command_process_id, command_process_birth_identity)) =
+            lease.as_ref().and_then(|lease| {
+                lease
+                    .command_process_id
+                    .zip(lease.command_process_birth_identity.as_deref())
+            })
+        {
+            terminate_orphaned_workflow_command(command_process_id, command_process_birth_identity);
+        }
+        project_store::insert_workflow_event(
+            repo_root,
+            project_id,
+            &run.id,
+            Some(&node_run.id),
+            "workflow_command_interrupted",
+            &json!({
+                "nodeId": node_run.node_id,
+                "failureClass": COMMAND_INTERRUPTED_FAILURE_CLASS,
+                "previousOwnerInstanceId": lease.as_ref().map(|lease| lease.owner_instance_id.as_str()),
+                "previousOwnerProcessId": lease.as_ref().map(|lease| lease.owner_process_id),
+                "commandProcessId": lease.as_ref().and_then(|lease| lease.command_process_id),
+                "commandProcessBirthIdentity": lease.as_ref().and_then(|lease| lease.command_process_birth_identity.as_deref()),
+            }),
+        )?;
+        return Ok(true);
+    }
+    Ok(false)
+}
+
+fn workflow_command_lease_is_live(lease: &project_store::WorkflowCommandLeaseRecord) -> bool {
+    // A live owner can still be executing an external side effect even when
+    // its heartbeat thread is delayed. Without an execution epoch understood
+    // by the child process, stealing on heartbeat age would let a replacement
+    // route past the command while the old process continues to mutate state.
+    process_identity_is_live(lease.owner_process_id, &lease.owner_process_birth_identity)
+}
+
+fn workflow_node_execution_is_live(
+    _state: &DesktopState,
+    repo_root: &Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+    node_run: &WorkflowRunNodeDto,
+) -> CommandResult<bool> {
+    match find_node(&run.definition_snapshot, &node_run.node_id) {
+        Some(WorkflowNodeDto::Agent { .. }) => {
+            let snapshot = if let Some(runtime_run_id) = node_run.runtime_run_id.as_deref() {
+                Some(project_store::load_agent_run(
+                    repo_root,
+                    project_id,
+                    runtime_run_id,
+                )?)
+            } else {
+                load_existing_agent_run_for_node(repo_root, project_id, node_run)?
+            };
+            Ok(snapshot.is_some_and(|snapshot| {
+                matches!(
+                    snapshot.run.status,
+                    AgentRunStatus::Starting
+                        | AgentRunStatus::Running
+                        | AgentRunStatus::Paused
+                        | AgentRunStatus::Cancelling
+                )
+            }))
+        }
+        Some(WorkflowNodeDto::Command { .. }) => {
+            if running_workflow_command_is_registered(project_id, &run.id, &node_run.id) {
+                return Ok(true);
+            }
+            Ok(
+                project_store::load_workflow_command_lease(repo_root, project_id, &node_run.id)?
+                    .as_ref()
+                    .is_some_and(workflow_command_lease_is_live),
+            )
+        }
+        _ => Ok(false),
+    }
+}
+
+pub(super) fn terminate_workflow_node_execution(
+    state: &DesktopState,
+    repo_root: &Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+    node_run: &WorkflowRunNodeDto,
+) -> CommandResult<()> {
+    match find_node(&run.definition_snapshot, &node_run.node_id) {
+        Some(WorkflowNodeDto::Agent { .. }) => {
+            let snapshot = if let Some(runtime_run_id) = node_run.runtime_run_id.as_deref() {
+                Some(project_store::load_agent_run(
+                    repo_root,
+                    project_id,
+                    runtime_run_id,
+                )?)
+            } else {
+                load_existing_agent_run_for_node(repo_root, project_id, node_run)?
+            };
+            let Some(snapshot) = snapshot else {
+                return Ok(());
+            };
+            let snapshot = match resolve_agent_handoff_leaf(repo_root, project_id, snapshot, false)?
+            {
+                AgentHandoffLeafResolution::Leaf(snapshot) => snapshot,
+                AgentHandoffLeafResolution::Incomplete(reason) => {
+                    return Err(CommandError::retryable(
+                        "workflow_agent_handoff_termination_unresolved",
+                        reason,
+                    ));
+                }
+            };
+            let runtime_run_id = snapshot.run.run_id.clone();
+            if matches!(
+                snapshot.run.status,
+                AgentRunStatus::Cancelled
+                    | AgentRunStatus::HandedOff
+                    | AgentRunStatus::Completed
+                    | AgentRunStatus::Failed
+            ) {
+                return Ok(());
+            }
+            let runtime = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+            let cancelled = runtime.cancel_run(
+                repo_root.to_path_buf(),
+                project_id.to_owned(),
+                runtime_run_id.clone(),
+            )?;
+            if matches!(
+                cancelled.run.status,
+                AgentRunStatus::Cancelled
+                    | AgentRunStatus::HandedOff
+                    | AgentRunStatus::Completed
+                    | AgentRunStatus::Failed
+            ) {
+                Ok(())
+            } else {
+                Err(CommandError::retryable(
+                    "workflow_agent_termination_incomplete",
+                    format!(
+                        "Owned-agent run `{runtime_run_id}` did not become terminal before Workflow control continued."
+                    ),
+                ))
+            }
+        }
+        Some(WorkflowNodeDto::Command { .. }) => {
+            if let Some(lease) =
+                project_store::load_workflow_command_lease(repo_root, project_id, &node_run.id)?
+            {
+                if workflow_command_lease_is_live(&lease)
+                    && lease.owner_instance_id != workflow_command_owner_instance_id()
+                {
+                    return Err(CommandError::retryable(
+                        "workflow_command_active_in_another_process",
+                        format!(
+                            "Workflow command node `{}` is owned by another live Xero process and cannot be controlled here.",
+                            node_run.id
+                        ),
+                    ));
+                }
+                if !workflow_command_lease_is_live(&lease) {
+                    if let Some((process_id, birth_identity)) = lease
+                        .command_process_id
+                        .zip(lease.command_process_birth_identity.as_deref())
+                    {
+                        terminate_orphaned_workflow_command(process_id, birth_identity);
+                    }
+                    project_store::release_workflow_command_lease(
+                        repo_root,
+                        project_id,
+                        &node_run.id,
+                        &lease.owner_instance_id,
+                        &lease.lease_token,
+                    )?;
+                }
+            }
+            terminate_running_workflow_commands(project_id, &run.id, Some(&node_run.id));
+            let deadline = Instant::now() + COMMAND_TERMINATION_CONFIRM_TIMEOUT;
+            loop {
+                let registered =
+                    running_workflow_command_is_registered(project_id, &run.id, &node_run.id);
+                let lease = project_store::load_workflow_command_lease(
+                    repo_root,
+                    project_id,
+                    &node_run.id,
+                )?;
+                if let Some(lease) = lease.as_ref() {
+                    if workflow_command_lease_is_live(lease)
+                        && lease.owner_instance_id != workflow_command_owner_instance_id()
+                    {
+                        return Err(CommandError::retryable(
+                            "workflow_command_active_in_another_process",
+                            format!(
+                                "Workflow command node `{}` became owned by another live Xero process.",
+                                node_run.id
+                            ),
+                        ));
+                    }
+                    if !workflow_command_lease_is_live(lease) {
+                        if let Some((process_id, birth_identity)) = lease
+                            .command_process_id
+                            .zip(lease.command_process_birth_identity.as_deref())
+                        {
+                            terminate_orphaned_workflow_command(process_id, birth_identity);
+                        }
+                        project_store::release_workflow_command_lease(
+                            repo_root,
+                            project_id,
+                            &node_run.id,
+                            &lease.owner_instance_id,
+                            &lease.lease_token,
+                        )?;
+                        continue;
+                    }
+                }
+                if !registered && lease.is_none() {
+                    return Ok(());
+                }
+                if Instant::now() >= deadline {
+                    return Err(CommandError::retryable(
+                        "workflow_command_termination_unconfirmed",
+                        format!(
+                            "Workflow command node `{}` did not confirm termination before the control timeout.",
+                            node_run.id
+                        ),
+                    ));
+                }
+                thread::sleep(StdDuration::from_millis(25));
+            }
+        }
+        _ => Ok(()),
+    }
+}
+
+fn workflow_command_process_birth_identity(command_process_id: u32) -> Option<String> {
+    #[cfg(target_os = "linux")]
+    {
+        let stat = std::fs::read_to_string(format!("/proc/{command_process_id}/stat")).ok()?;
+        let fields_after_name = stat.rsplit_once(") ")?.1;
+        let start_ticks = fields_after_name.split_whitespace().nth(19)?;
+        let boot_id = std::fs::read_to_string("/proc/sys/kernel/random/boot_id").ok()?;
+        return Some(format!("linux:{}:{start_ticks}", boot_id.trim()));
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let process_id = libc::pid_t::try_from(command_process_id).ok()?;
+        let mut info = std::mem::MaybeUninit::<libc::proc_bsdinfo>::zeroed();
+        let size = std::mem::size_of::<libc::proc_bsdinfo>();
+        let read = unsafe {
+            libc::proc_pidinfo(
+                process_id,
+                libc::PROC_PIDTBSDINFO,
+                0,
+                info.as_mut_ptr().cast(),
+                i32::try_from(size).ok()?,
+            )
+        };
+        if read != i32::try_from(size).ok()? {
+            return None;
+        }
+        let info = unsafe { info.assume_init() };
+        return Some(format!(
+            "macos:{}:{}",
+            info.pbi_start_tvsec, info.pbi_start_tvusec
+        ));
+    }
+    #[cfg(windows)]
+    {
+        let script = format!(
+            "(Get-Process -Id {command_process_id} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks"
+        );
+        let output = Command::new("powershell")
+            .args(["-NoProfile", "-NonInteractive", "-Command", &script])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let birth = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        return (!birth.is_empty()).then(|| format!("windows:{birth}"));
+    }
+    #[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+    {
+        let output = Command::new("ps")
+            .args(["-o", "lstart=", "-p", &command_process_id.to_string()])
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let birth = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        return (!birth.is_empty()).then(|| format!("unix:{birth}"));
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = command_process_id;
+        None
+    }
+}
+
+fn terminate_orphaned_workflow_command(
+    command_process_id: u32,
+    expected_birth_identity: &str,
+) -> bool {
+    if workflow_command_process_birth_identity(command_process_id).as_deref()
+        != Some(expected_birth_identity)
+    {
+        return false;
+    }
+    #[cfg(unix)]
+    {
+        let Ok(process_group_id) = libc::pid_t::try_from(command_process_id) else {
+            return false;
+        };
+        let process_group_id = -process_group_id;
+        return unsafe { libc::kill(process_group_id, libc::SIGKILL) } == 0;
+    }
+    #[cfg(windows)]
+    {
+        return Command::new("taskkill")
+            .args(["/PID", &command_process_id.to_string(), "/T", "/F"])
+            .status()
+            .is_ok_and(|status| status.success());
+    }
+    #[cfg(not(any(unix, windows)))]
+    {
+        let _ = command_process_id;
+        let _ = expected_birth_identity;
+        false
+    }
 }
 
 struct ResourceConflict {
@@ -1162,31 +2673,6 @@ fn start_agent_node<R: Runtime + 'static>(
     input_bindings: &[WorkflowInputBindingDto],
     run_overrides: Option<&WorkflowRunOverrideDto>,
 ) -> CommandResult<()> {
-    if let Some(snapshot) = load_existing_agent_run_for_node(repo_root, project_id, node_run)? {
-        project_store::update_workflow_run_node(
-            repo_root,
-            project_id,
-            &node_run.id,
-            WorkflowNodeRunStatusDto::Running,
-            Some(&snapshot.run.run_id),
-            Some(&snapshot.run.agent_session_id),
-            None,
-        )?;
-        project_store::insert_workflow_event(
-            repo_root,
-            project_id,
-            &run.id,
-            Some(&node_run.id),
-            "workflow_agent_reconnected",
-            &json!({
-                "nodeId": node_run.node_id,
-                "runtimeRunId": snapshot.run.run_id,
-                "agentSessionId": snapshot.run.agent_session_id
-            }),
-        )?;
-        return Ok(());
-    }
-
     let default_output_contract = WorkflowOutputContractDto::default();
     let output_contract = output_contract_for_node(&run.definition_snapshot, &node_run.node_id)
         .unwrap_or(&default_output_contract);
@@ -1222,8 +2708,10 @@ fn start_agent_node<R: Runtime + 'static>(
         agent_ref,
         run_overrides,
     )?;
-    let session = project_store::create_agent_session(
+    let expected_session_id = format!("workflow-agent-session:{}", node_run.idempotency_key);
+    let session = project_store::create_agent_session_with_id(
         repo_root,
+        &expected_session_id,
         &AgentSessionCreateRecord {
             project_id: project_id.into(),
             title: format!("Workflow: {title}"),
@@ -1256,22 +2744,31 @@ fn start_agent_node<R: Runtime + 'static>(
         state,
         StartAgentTaskRequestDto {
             project_id: project_id.into(),
-            agent_session_id: session.agent_session_id.clone(),
+            agent_session_id: expected_session_id,
             run_id: Some(node_run.idempotency_key.clone()),
             prompt,
             controls: Some(controls),
             attachments: Vec::new(),
         },
     )?;
-    project_store::update_workflow_run_node(
+    if !project_store::compare_and_set_workflow_run_node(
         repo_root,
         project_id,
         &node_run.id,
+        &[WorkflowNodeRunStatusDto::Starting],
         WorkflowNodeRunStatusDto::Running,
         Some(&agent_run.run_id),
         Some(&session.agent_session_id),
         None,
-    )?;
+    )? {
+        let runtime = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+        let _ = runtime.cancel_run(
+            repo_root.to_path_buf(),
+            project_id.to_owned(),
+            agent_run.run_id,
+        );
+        return Ok(());
+    }
     project_store::insert_workflow_event(
         repo_root,
         project_id,
@@ -1306,45 +2803,16 @@ fn run_state_query_node(
     query: &WorkflowStateQueryDto,
     output_artifact_type: &str,
 ) -> CommandResult<()> {
-    let payload = project_store::query_delivery_state(repo_root, project_id, query)?;
-    project_store::insert_workflow_artifact(
+    project_store::complete_workflow_state_query_node_atomically(
         repo_root,
         project_id,
         &run.id,
         &node_run.id,
+        &node_run.node_id,
+        query,
         output_artifact_type,
-        1,
-        &payload,
-        Some(&format!(
-            "{} {} record(s)",
-            query.entity_type.as_str(),
-            payload
-                .get("count")
-                .and_then(JsonValue::as_u64)
-                .unwrap_or(0)
-        )),
-    )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&node_run.id),
-        "workflow_state_read",
-        &json!({
-            "nodeId": node_run.node_id,
-            "entityType": query.entity_type.as_str(),
-            "recordCount": payload.get("count"),
-        }),
-    )?;
-    project_store::update_workflow_run_node(
-        repo_root,
-        project_id,
-        &node_run.id,
-        WorkflowNodeRunStatusDto::Succeeded,
-        None,
-        None,
-        None,
     )
+    .map(|_| ())
 }
 
 fn run_state_write_node(
@@ -1355,51 +2823,15 @@ fn run_state_write_node(
     operation: &WorkflowStateWriteOperationDto,
 ) -> CommandResult<()> {
     let resolved_operation = resolve_state_write_operation(operation, run, None)?;
-    let payload = project_store::write_delivery_state(
+    project_store::complete_workflow_state_write_node_atomically(
         repo_root,
         project_id,
-        DeliveryStateWriteContext {
-            workflow_run_id: Some(&run.id),
-            node_run_id: Some(&node_run.id),
-        },
+        &run.id,
+        &node_run.id,
+        &node_run.node_id,
         &resolved_operation,
-    )?;
-    project_store::insert_workflow_artifact(
-        repo_root,
-        project_id,
-        &run.id,
-        &node_run.id,
-        &operation.output_artifact_type,
-        1,
-        &payload,
-        payload
-            .get("record")
-            .and_then(|record| record.get("title"))
-            .and_then(JsonValue::as_str)
-            .or_else(|| payload.get("id").and_then(JsonValue::as_str)),
-    )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&node_run.id),
-        "workflow_state_written",
-        &json!({
-            "nodeId": node_run.node_id,
-            "entityType": operation.entity_type.as_str(),
-            "action": operation.action.as_str(),
-            "entityId": payload.get("id"),
-        }),
-    )?;
-    project_store::update_workflow_run_node(
-        repo_root,
-        project_id,
-        &node_run.id,
-        WorkflowNodeRunStatusDto::Succeeded,
-        None,
-        None,
-        None,
     )
+    .map(|_| ())
 }
 
 fn resolve_state_write_operation(
@@ -2058,46 +3490,39 @@ fn run_collection_loop_node(
             "to": control_selection.to_value,
         },
     });
-    project_store::insert_workflow_artifact(
+    project_store::complete_prepared_workflow_state_node_atomically(
         repo_root,
         project_id,
-        &run.id,
-        &node_run.id,
-        item_artifact_type,
-        1,
-        &artifact_payload,
-        item_id.as_deref().or(Some(if has_item {
-            "Collection item selected"
-        } else {
-            "Collection complete"
-        })),
-    )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&node_run.id),
-        if has_item {
-            "workflow_collection_item_started"
-        } else {
-            "workflow_collection_completed"
+        &project_store::WorkflowPreparedStateNodeCompletionRecord {
+            run_id: run.id.clone(),
+            node_run_id: node_run.id.clone(),
+            artifact_type: item_artifact_type.to_owned(),
+            payload: artifact_payload,
+            render_text: item_id.clone().or_else(|| {
+                Some(
+                    if has_item {
+                        "Collection item selected"
+                    } else {
+                        "Collection complete"
+                    }
+                    .to_owned(),
+                )
+            }),
+            event_type: if has_item {
+                "workflow_collection_item_started"
+            } else {
+                "workflow_collection_completed"
+            }
+            .to_owned(),
+            event: json!({
+                "loopNodeId": node_run.node_id,
+                "itemId": item_id,
+                "processedCount": processed_count,
+                "remainingCount": records.len().saturating_sub(processed.len()),
+            }),
         },
-        &json!({
-            "loopNodeId": node_run.node_id,
-            "itemId": item_id,
-            "processedCount": processed_count,
-            "remainingCount": records.len().saturating_sub(processed.len()),
-        }),
-    )?;
-    project_store::update_workflow_run_node(
-        repo_root,
-        project_id,
-        &node_run.id,
-        WorkflowNodeRunStatusDto::Succeeded,
-        None,
-        None,
-        None,
     )
+    .map(|_| ())
 }
 
 fn apply_collection_controls(
@@ -2262,6 +3687,268 @@ fn compare_control_values(left: &JsonValue, right: &JsonValue) -> std::cmp::Orde
     }
 }
 
+fn resolve_workflow_command_working_directory(
+    repo_root: &Path,
+    working_directory: Option<&str>,
+) -> CommandResult<PathBuf> {
+    let canonical_repo_root = repo_root.canonicalize().map_err(|error| {
+        CommandError::system_fault(
+            "workflow_project_root_unavailable",
+            format!(
+                "Xero could not resolve the Workflow project root `{}`: {error}",
+                repo_root.display()
+            ),
+        )
+    })?;
+    let requested = working_directory
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| canonical_repo_root.clone());
+    let candidate = if requested.is_absolute() {
+        requested
+    } else {
+        canonical_repo_root.join(requested)
+    };
+    let canonical_candidate = candidate.canonicalize().map_err(|error| {
+        CommandError::user_fixable(
+            "workflow_command_working_directory_invalid",
+            format!(
+                "Workflow command working directory `{}` does not resolve to an existing directory: {error}",
+                candidate.display()
+            ),
+        )
+    })?;
+    if !canonical_candidate.is_dir() {
+        return Err(CommandError::user_fixable(
+            "workflow_command_working_directory_invalid",
+            format!(
+                "Workflow command working directory `{}` is not a directory.",
+                canonical_candidate.display()
+            ),
+        ));
+    }
+    if !canonical_candidate.starts_with(&canonical_repo_root) {
+        return Err(CommandError::user_fixable(
+            "workflow_command_working_directory_outside_project",
+            format!(
+                "Workflow command working directory `{}` resolves outside project root `{}`.",
+                canonical_candidate.display(),
+                canonical_repo_root.display()
+            ),
+        ));
+    }
+    Ok(canonical_candidate)
+}
+
+struct OpenedWorkflowCommandWorkingDirectory {
+    display_path: PathBuf,
+    #[cfg(unix)]
+    directory: File,
+}
+
+impl OpenedWorkflowCommandWorkingDirectory {
+    fn display_path(&self) -> &Path {
+        &self.display_path
+    }
+
+    fn configure_process(&self, command: &mut Command) -> io::Result<()> {
+        #[cfg(unix)]
+        {
+            use std::os::{fd::AsRawFd, unix::process::CommandExt};
+
+            let directory = self.directory.try_clone()?;
+            unsafe {
+                command.pre_exec(move || {
+                    if libc::fchdir(directory.as_raw_fd()) == 0 {
+                        Ok(())
+                    } else {
+                        Err(io::Error::last_os_error())
+                    }
+                });
+            }
+            Ok(())
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = command;
+            Err(io::Error::new(
+                io::ErrorKind::Unsupported,
+                "secure directory-handle command launch is unavailable on this platform",
+            ))
+        }
+    }
+
+    #[cfg(unix)]
+    fn repository_access(&self) -> io::Result<(File, PathBuf)> {
+        use std::os::fd::AsRawFd;
+
+        let directory = self.directory.try_clone()?;
+        let descriptor = directory.as_raw_fd();
+        #[cfg(target_os = "macos")]
+        let path = {
+            use std::{ffi::CStr, os::unix::ffi::OsStrExt};
+
+            let mut buffer = [0_i8; libc::PATH_MAX as usize];
+            let result = unsafe { libc::fcntl(descriptor, libc::F_GETPATH, buffer.as_mut_ptr()) };
+            if result < 0 {
+                return Err(io::Error::last_os_error());
+            }
+            let bytes = unsafe { CStr::from_ptr(buffer.as_ptr()) }.to_bytes();
+            PathBuf::from(std::ffi::OsStr::from_bytes(bytes))
+        };
+        #[cfg(target_os = "linux")]
+        let path = std::fs::read_link(format!("/proc/self/fd/{descriptor}"))?;
+        #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+        let path = std::fs::canonicalize(format!("/dev/fd/{descriptor}"))?;
+        ensure_path_matches_open_directory(&path, &directory)?;
+        Ok((directory, path))
+    }
+}
+
+#[cfg(unix)]
+fn ensure_path_matches_open_directory(path: &Path, directory: &File) -> io::Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let path_metadata = std::fs::metadata(path)?;
+    let descriptor_metadata = directory.metadata()?;
+    if path_metadata.dev() == descriptor_metadata.dev()
+        && path_metadata.ino() == descriptor_metadata.ino()
+    {
+        Ok(())
+    } else {
+        Err(io::Error::other(
+            "the pinned Workflow command directory no longer matches its filesystem path",
+        ))
+    }
+}
+
+fn open_workflow_command_working_directory(
+    repo_root: &Path,
+    working_directory: Option<&str>,
+) -> CommandResult<OpenedWorkflowCommandWorkingDirectory> {
+    #[cfg(not(unix))]
+    {
+        let _ = (repo_root, working_directory);
+        return Err(CommandError::user_fixable(
+            "workflow_command_secure_launch_unsupported",
+            "Secure Workflow command execution is not available on this platform.",
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::{
+            ffi::CString,
+            os::{
+                fd::FromRawFd,
+                unix::{ffi::OsStrExt, fs::OpenOptionsExt},
+            },
+            path::Component,
+        };
+
+        let canonical_repo_root = repo_root.canonicalize().map_err(|error| {
+            CommandError::system_fault(
+                "workflow_project_root_unavailable",
+                format!(
+                    "Xero could not resolve the Workflow project root `{}`: {error}",
+                    repo_root.display()
+                ),
+            )
+        })?;
+        let requested = working_directory
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(PathBuf::from);
+        let relative = match requested.as_ref() {
+            None => PathBuf::new(),
+            Some(requested) if requested.is_absolute() => requested
+                .strip_prefix(&canonical_repo_root)
+                .map(Path::to_path_buf)
+                .map_err(|_| {
+                    CommandError::user_fixable(
+                        "workflow_command_working_directory_outside_project",
+                        format!(
+                            "Workflow command working directory `{}` is outside project root `{}`.",
+                            requested.display(),
+                            canonical_repo_root.display()
+                        ),
+                    )
+                })?,
+            Some(requested) => requested.clone(),
+        };
+
+        let mut segments = Vec::new();
+        for component in relative.components() {
+            match component {
+                Component::CurDir => {}
+                Component::Normal(segment) => segments.push(segment.to_owned()),
+                Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
+                    return Err(CommandError::user_fixable(
+                        "workflow_command_working_directory_outside_project",
+                        format!(
+                            "Workflow command working directory `{}` cannot traverse outside the project.",
+                            relative.display()
+                        ),
+                    ));
+                }
+            }
+        }
+
+        let mut directory = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&canonical_repo_root)
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "workflow_project_root_unavailable",
+                    format!(
+                        "Xero could not securely open Workflow project root `{}`: {error}",
+                        canonical_repo_root.display()
+                    ),
+                )
+            })?;
+        let mut display_path = canonical_repo_root;
+        for segment in segments {
+            let name = CString::new(segment.as_bytes()).map_err(|_| {
+                CommandError::user_fixable(
+                    "workflow_command_working_directory_invalid",
+                    "Workflow command working directories cannot contain NUL bytes.",
+                )
+            })?;
+            use std::os::fd::AsRawFd;
+            let descriptor = unsafe {
+                libc::openat(
+                    directory.as_raw_fd(),
+                    name.as_ptr(),
+                    libc::O_RDONLY | libc::O_DIRECTORY | libc::O_NOFOLLOW | libc::O_CLOEXEC,
+                )
+            };
+            if descriptor < 0 {
+                let error = io::Error::last_os_error();
+                return Err(CommandError::user_fixable(
+                    "workflow_command_working_directory_invalid",
+                    format!(
+                        "Workflow command working directory `{}` could not be securely opened without following links: {error}",
+                        display_path.join(&segment).display()
+                    ),
+                ));
+            }
+            directory = unsafe { File::from_raw_fd(descriptor) };
+            display_path.push(segment);
+        }
+
+        Ok(OpenedWorkflowCommandWorkingDirectory {
+            display_path,
+            directory,
+        })
+    }
+}
+
+fn workflow_command_is_allowlisted(command: &str, allowed_commands: &[String]) -> bool {
+    !allowed_commands.is_empty() && allowed_commands.iter().any(|allowed| allowed == command)
+}
+
 #[allow(clippy::too_many_arguments)]
 fn run_command_node(
     repo_root: &std::path::Path,
@@ -2277,8 +3964,24 @@ fn run_command_node(
     output_contract: &WorkflowOutputContractDto,
     parser_extraction: WorkflowOutputExtractionDto,
     parser_render_text_path: Option<&str>,
+    registration: RunningCommandRegistration,
 ) -> CommandResult<()> {
-    if !allowed_commands.is_empty() && !allowed_commands.iter().any(|allowed| allowed == command) {
+    let control = registration.control.clone();
+    if allowed_commands.is_empty() {
+        return fail_node_with_recoverable_error(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            "workflow_command_allowlist_empty",
+            "workflow_command_allowlist_empty",
+            &format!(
+                "Command node `{}` cannot run without an explicit command allowlist.",
+                node_run.node_id
+            ),
+        );
+    }
+    if !workflow_command_is_allowlisted(command, allowed_commands) {
         return fail_node_with_recoverable_error(
             repo_root,
             project_id,
@@ -2296,63 +3999,252 @@ fn run_command_node(
         .iter()
         .map(|arg| resolve_template_string(arg, run).map(|value| template_value_to_string(&value)))
         .collect::<CommandResult<Vec<_>>>()?;
-    let cwd = working_directory
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| repo_root.to_path_buf());
+    if let Err(violation) = validate_workflow_command_policy(command, &resolved_args) {
+        return fail_node_with_recoverable_error(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            violation.code,
+            violation.code,
+            &violation.message,
+        );
+    }
+    let cwd = match open_workflow_command_working_directory(repo_root, working_directory) {
+        Ok(cwd) => cwd,
+        Err(error) => {
+            return fail_node_with_recoverable_error(
+                repo_root,
+                project_id,
+                run,
+                node_run,
+                "workflow_command_working_directory_invalid",
+                &error.code,
+                &error.message,
+            );
+        }
+    };
+    if control.termination_requested() {
+        return Ok(());
+    }
+    if command == "git" {
+        return run_internal_git_status_node(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            command,
+            &resolved_args,
+            timeout_seconds,
+            success_exit_codes,
+            output_contract,
+            parser_extraction,
+            parser_render_text_path,
+            registration,
+            &cwd,
+        );
+    }
+    let executable = match resolve_workflow_command_executable(command) {
+        Ok(executable) => executable,
+        Err(violation) => {
+            return fail_node_with_recoverable_error(
+                repo_root,
+                project_id,
+                run,
+                node_run,
+                violation.code,
+                violation.code,
+                &violation.message,
+            );
+        }
+    };
     let started = Instant::now();
-    let mut child = Command::new(command)
-        .args(&resolved_args)
-        .current_dir(&cwd)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|error| {
-            CommandError::retryable(
+    let mut process = Command::new(executable);
+    harden_workflow_command_process(command, repo_root, &mut process);
+    append_workflow_command_arguments(command, &resolved_args, &mut process);
+    process.stdout(Stdio::piped()).stderr(Stdio::piped());
+    if let Err(error) = cwd.configure_process(&mut process) {
+        return fail_node_with_recoverable_error(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            "workflow_command_working_directory_invalid",
+            "workflow_command_working_directory_invalid",
+            &format!(
+                "Xero could not pin the working directory for command node `{}`: {error}",
+                node_run.node_id
+            ),
+        );
+    }
+    configure_process_tree_root(&mut process);
+    let mut child = match process.spawn() {
+        Ok(child) => child,
+        Err(error) => {
+            return fail_node_with_recoverable_error(
+                repo_root,
+                project_id,
+                run,
+                node_run,
                 "workflow_command_spawn_failed",
-                format!(
+                "workflow_command_spawn_failed",
+                &format!(
                     "Xero could not start command node `{}`: {error}",
                     node_run.node_id
                 ),
-            )
-        })?;
+            );
+        }
+    };
+    if let Err(error) = register_process_tree_root(&child) {
+        let _ = terminate_process_tree(&mut child);
+        return fail_node_with_recoverable_error(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            "workflow_command_tree_registration_failed",
+            "workflow_command_tree_registration_failed",
+            &format!(
+                "Xero could not establish process-tree ownership for command node `{}`: {error}",
+                node_run.node_id
+            ),
+        );
+    }
+    let command_process_id = child.id();
+    let command_process_birth_identity =
+        workflow_command_process_birth_identity(command_process_id);
+    match project_store::attach_workflow_command_process(
+        repo_root,
+        project_id,
+        &node_run.id,
+        &registration.owner_instance_id,
+        &registration.lease_token,
+        command_process_id,
+        command_process_birth_identity.as_deref(),
+        &crate::auth::now_timestamp(),
+    ) {
+        Ok(true) => {}
+        Ok(false) => {
+            let _ = terminate_process_tree(&mut child);
+            return Ok(());
+        }
+        Err(error) => {
+            let _ = terminate_process_tree(&mut child);
+            return Err(error);
+        }
+    }
+    let Some(stdout) = child.stdout.take() else {
+        let _ = terminate_process_tree(&mut child);
+        return Err(CommandError::system_fault(
+            "workflow_command_stdout_unavailable",
+            format!(
+                "Workflow command node `{}` started without a stdout pipe.",
+                node_run.node_id
+            ),
+        ));
+    };
+    let Some(stderr) = child.stderr.take() else {
+        let _ = terminate_process_tree(&mut child);
+        return Err(CommandError::system_fault(
+            "workflow_command_stderr_unavailable",
+            format!(
+                "Workflow command node `{}` started without a stderr pipe.",
+                node_run.node_id
+            ),
+        ));
+    };
+    let stdout_reader = spawn_bounded_command_reader(stdout);
+    let stderr_reader = spawn_bounded_command_reader(stderr);
+    control.attach_child(child);
     let timeout = StdDuration::from_secs(timeout_seconds.into());
-    let timed_out;
-    loop {
-        if child
-            .try_wait()
-            .map_err(|error| {
+    let (exit_status, timed_out, externally_terminated) = loop {
+        if control.termination_requested() {
+            let status = control.terminate().map_err(|error| {
                 CommandError::retryable(
+                    "workflow_command_termination_failed",
+                    format!(
+                        "Xero could not terminate command node `{}`: {error}",
+                        node_run.node_id
+                    ),
+                )
+            })?;
+            break (status, false, true);
+        }
+        match control.try_wait() {
+            Ok(Some(status)) => break (status, false, false),
+            Ok(None) => {}
+            Err(error) => {
+                let _ = control.terminate();
+                return Err(CommandError::retryable(
                     "workflow_command_wait_failed",
                     format!(
                         "Xero could not poll command node `{}`: {error}",
                         node_run.node_id
                     ),
-                )
-            })?
-            .is_some()
-        {
-            timed_out = false;
-            break;
+                ));
+            }
         }
         if started.elapsed() >= timeout {
-            let _ = child.kill();
-            timed_out = true;
-            break;
+            let status = control.terminate().map_err(|error| {
+                CommandError::retryable(
+                    "workflow_command_termination_failed",
+                    format!(
+                        "Xero could not terminate timed-out command node `{}`: {error}",
+                        node_run.node_id
+                    ),
+                )
+            })?;
+            break (status, true, false);
         }
         std::thread::sleep(StdDuration::from_millis(25));
+    };
+    let stream_drain_deadline = Instant::now() + COMMAND_STREAM_DRAIN_TIMEOUT;
+    let stdout_capture = finish_bounded_command_reader(stdout_reader, stream_drain_deadline);
+    let stderr_capture = finish_bounded_command_reader(stderr_reader, stream_drain_deadline);
+    if externally_terminated || control.termination_requested() {
+        return Ok(());
     }
-    let output = child.wait_with_output().map_err(|error| {
-        CommandError::retryable(
-            "workflow_command_output_failed",
-            format!(
-                "Xero could not collect command node `{}` output: {error}",
-                node_run.node_id
-            ),
-        )
-    })?;
-    let exit_code = output.status.code().unwrap_or(-1);
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
+    persist_workflow_command_captures(
+        repo_root,
+        project_id,
+        run,
+        node_run,
+        command,
+        &resolved_args,
+        cwd.display_path(),
+        exit_status.code().unwrap_or(-1),
+        timed_out,
+        stdout_capture,
+        stderr_capture,
+        success_exit_codes,
+        output_contract,
+        parser_extraction,
+        parser_render_text_path,
+        &registration,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn persist_workflow_command_captures(
+    repo_root: &Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+    node_run: &WorkflowRunNodeDto,
+    command: &str,
+    resolved_args: &[String],
+    cwd: &Path,
+    exit_code: i32,
+    timed_out: bool,
+    stdout_capture: BoundedCommandCapture,
+    stderr_capture: BoundedCommandCapture,
+    success_exit_codes: &[i32],
+    output_contract: &WorkflowOutputContractDto,
+    parser_extraction: WorkflowOutputExtractionDto,
+    parser_render_text_path: Option<&str>,
+    registration: &RunningCommandRegistration,
+) -> CommandResult<()> {
+    let stdout = String::from_utf8_lossy(&stdout_capture.bytes).to_string();
+    let stderr = String::from_utf8_lossy(&stderr_capture.bytes).to_string();
     let (parsed, parse_error) = match parser_extraction {
         WorkflowOutputExtractionDto::GenericText => (JsonValue::String(stdout.clone()), None),
         WorkflowOutputExtractionDto::JsonObject | WorkflowOutputExtractionDto::JsonArray => {
@@ -2369,6 +4261,10 @@ fn run_command_node(
     };
     let ok = !timed_out
         && success_exit_codes.contains(&exit_code)
+        && !stdout_capture.truncated
+        && !stderr_capture.truncated
+        && stdout_capture.read_error.is_none()
+        && stderr_capture.read_error.is_none()
         && parse_error.is_none()
         && parser_shape_valid;
     let payload = json!({
@@ -2380,6 +4276,12 @@ fn run_command_node(
         "timedOut": timed_out,
         "stdout": stdout,
         "stderr": stderr,
+        "stdoutTruncated": stdout_capture.truncated,
+        "stderrTruncated": stderr_capture.truncated,
+        "stdoutDrainIncomplete": stdout_capture.drain_incomplete,
+        "stderrDrainIncomplete": stderr_capture.drain_incomplete,
+        "stdoutReadError": stdout_capture.read_error,
+        "stderrReadError": stderr_capture.read_error,
         "parsed": parsed,
         "parseError": parse_error,
     });
@@ -2404,57 +4306,314 @@ fn run_command_node(
         .and_then(|path| json_path_lookup(&payload, path))
         .and_then(JsonValue::as_str)
         .or(validated_render_text.as_deref())
-        .or_else(|| payload.get("stdout").and_then(JsonValue::as_str));
-    project_store::insert_workflow_artifact(
+        .or_else(|| payload.get("stdout").and_then(JsonValue::as_str))
+        .map(ToOwned::to_owned);
+    let event = json!({
+        "nodeId": node_run.node_id,
+        "command": command,
+        "exitCode": exit_code,
+        "timedOut": timed_out,
+        "stdoutTruncated": stdout_capture.truncated,
+        "stderrTruncated": stderr_capture.truncated,
+        "stdoutDrainIncomplete": stdout_capture.drain_incomplete,
+        "stderrDrainIncomplete": stderr_capture.drain_incomplete,
+        "stdoutReadError": stdout_capture.read_error,
+        "stderrReadError": stderr_capture.read_error,
+        "parseError": payload.get("parseError"),
+        "status": if ok { "passed" } else { "failed" },
+        "validationStatus": "valid",
+        "diagnostics": diagnostics.iter().map(|diagnostic| {
+            json!({
+                "code": diagnostic.code,
+                "path": diagnostic.path,
+                "message": diagnostic.message,
+            })
+        }).collect::<Vec<_>>(),
+    });
+    if registration.control.termination_requested() {
+        return Ok(());
+    }
+    project_store::complete_workflow_command_node(
         repo_root,
         project_id,
-        &run.id,
-        &node_run.id,
-        &output_contract.artifact_type,
-        output_contract.schema_version,
-        &payload,
-        render_text,
-    )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&node_run.id),
-        "workflow_command_completed",
-        &json!({
-            "nodeId": node_run.node_id,
-            "command": command,
-            "exitCode": exit_code,
-            "timedOut": timed_out,
-            "parseError": payload.get("parseError"),
-            "status": if ok { "passed" } else { "failed" },
-            "validationStatus": "valid",
-            "diagnostics": diagnostics.iter().map(|diagnostic| {
-                json!({
-                    "code": diagnostic.code,
-                    "path": diagnostic.path,
-                    "message": diagnostic.message,
+        &project_store::WorkflowCommandCompletionRecord {
+            run_id: run.id.clone(),
+            node_run_id: node_run.id.clone(),
+            artifact_type: output_contract.artifact_type.clone(),
+            schema_version: output_contract.schema_version,
+            payload,
+            render_text,
+            event,
+            status: if ok {
+                WorkflowNodeRunStatusDto::Succeeded
+            } else {
+                WorkflowNodeRunStatusDto::Failed
+            },
+            failure_class: (!ok)
+                .then(|| {
+                    if timed_out {
+                        "workflow_command_timeout"
+                    } else if stdout_capture.drain_incomplete || stderr_capture.drain_incomplete {
+                        "workflow_command_output_incomplete"
+                    } else if stdout_capture.read_error.is_some()
+                        || stderr_capture.read_error.is_some()
+                    {
+                        "workflow_command_output_failed"
+                    } else if stdout_capture.truncated || stderr_capture.truncated {
+                        "workflow_command_output_truncated"
+                    } else {
+                        "workflow_command_failed"
+                    }
                 })
-            }).collect::<Vec<_>>(),
-        }),
-    )?;
-    project_store::update_workflow_run_node(
-        repo_root,
-        project_id,
-        &node_run.id,
-        if ok {
-            WorkflowNodeRunStatusDto::Succeeded
-        } else {
-            WorkflowNodeRunStatusDto::Failed
+                .map(ToOwned::to_owned),
+            owner_instance_id: registration.owner_instance_id.clone(),
+            lease_token: registration.lease_token.clone(),
         },
-        None,
-        None,
-        (!ok).then_some(if timed_out {
-            "workflow_command_timeout"
-        } else {
-            "workflow_command_failed"
-        }),
     )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn run_internal_git_status_node(
+    repo_root: &Path,
+    project_id: &str,
+    run: &WorkflowRunDto,
+    node_run: &WorkflowRunNodeDto,
+    command: &str,
+    resolved_args: &[String],
+    timeout_seconds: u32,
+    success_exit_codes: &[i32],
+    output_contract: &WorkflowOutputContractDto,
+    parser_extraction: WorkflowOutputExtractionDto,
+    parser_render_text_path: Option<&str>,
+    registration: RunningCommandRegistration,
+    cwd: &OpenedWorkflowCommandWorkingDirectory,
+) -> CommandResult<()> {
+    #[cfg(not(unix))]
+    {
+        let _ = (
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            command,
+            resolved_args,
+            timeout_seconds,
+            success_exit_codes,
+            output_contract,
+            parser_extraction,
+            parser_render_text_path,
+            registration,
+            cwd,
+        );
+        return Err(CommandError::user_fixable(
+            "workflow_command_secure_launch_unsupported",
+            "Secure Workflow command execution is not available on this platform.",
+        ));
+    }
+
+    #[cfg(unix)]
+    {
+        let (directory_guard, repository_path) = cwd.repository_access().map_err(|error| {
+            CommandError::system_fault(
+                "workflow_command_working_directory_invalid",
+                format!("Xero could not retain the Workflow command directory: {error}"),
+            )
+        })?;
+        let args = resolved_args.to_vec();
+        let (sender, receiver) = mpsc::sync_channel(1);
+        thread::Builder::new()
+            .name("workflow-git-status".into())
+            .spawn(move || {
+                let result = read_internal_git_status(&repository_path, &directory_guard, &args);
+                let _ = sender.send(result);
+            })
+            .map_err(|error| {
+                CommandError::retryable(
+                    "workflow_command_thread_spawn_failed",
+                    format!("Xero could not start the in-process Git status worker: {error}"),
+                )
+            })?;
+
+        let started = Instant::now();
+        let timeout = StdDuration::from_secs(timeout_seconds.into());
+        let result = loop {
+            if registration.control.termination_requested() {
+                return Ok(());
+            }
+            if started.elapsed() >= timeout {
+                break None;
+            }
+            match receiver.recv_timeout(StdDuration::from_millis(25)) {
+                Ok(result) => break Some(result),
+                Err(RecvTimeoutError::Timeout) => {}
+                Err(RecvTimeoutError::Disconnected) => {
+                    break Some(Err(
+                        "The in-process Git status worker stopped without a result.".into(),
+                    ));
+                }
+            }
+        };
+
+        let empty_capture = || BoundedCommandCapture {
+            bytes: Vec::new(),
+            truncated: false,
+            drain_incomplete: false,
+            read_error: None,
+        };
+        let (exit_code, timed_out, stdout_capture, stderr_capture) = match result {
+            Some(Ok(stdout)) => (0, false, stdout, empty_capture()),
+            Some(Err(error)) => {
+                let stderr = read_bounded_command_stream(
+                    std::io::Cursor::new(error.into_bytes()),
+                    MAX_COMMAND_STREAM_CAPTURE_BYTES,
+                )
+                .map_err(|capture_error| {
+                    CommandError::system_fault(
+                        "workflow_command_output_failed",
+                        format!("Xero could not capture Git status failure: {capture_error}"),
+                    )
+                })?;
+                (1, false, empty_capture(), stderr)
+            }
+            None => (-1, true, empty_capture(), empty_capture()),
+        };
+        persist_workflow_command_captures(
+            repo_root,
+            project_id,
+            run,
+            node_run,
+            command,
+            resolved_args,
+            cwd.display_path(),
+            exit_code,
+            timed_out,
+            stdout_capture,
+            stderr_capture,
+            success_exit_codes,
+            output_contract,
+            parser_extraction,
+            parser_render_text_path,
+            &registration,
+        )
+    }
+}
+
+fn read_internal_git_status(
+    repository_path: &Path,
+    directory_guard: &File,
+    args: &[String],
+) -> Result<BoundedCommandCapture, String> {
+    #[cfg(unix)]
+    ensure_path_matches_open_directory(repository_path, directory_guard)
+        .map_err(|error| format!("The pinned Git status directory changed: {error}"))?;
+    let repository = git2::Repository::discover(repository_path)
+        .map_err(|error| format!("Xero could not open the Git repository: {error}"))?;
+    let include_untracked = !args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--untracked-files=no" | "-uno"));
+    let recurse_untracked = args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "--untracked-files=all" | "-uall"));
+    let nul_terminated = args
+        .iter()
+        .any(|argument| matches!(argument.as_str(), "-z" | "--null"));
+    let pathspecs = args
+        .iter()
+        .position(|argument| argument == "--")
+        .map(|separator| &args[separator + 1..])
+        .unwrap_or(&[]);
+
+    let mut options = git2::StatusOptions::new();
+    options
+        .include_untracked(include_untracked)
+        .recurse_untracked_dirs(recurse_untracked)
+        .renames_head_to_index(true)
+        .renames_index_to_workdir(true)
+        .include_ignored(false)
+        .include_unmodified(false)
+        .exclude_submodules(true)
+        .disable_pathspec_match(true);
+    for pathspec in pathspecs {
+        options.pathspec(pathspec.as_str());
+    }
+    let statuses = repository
+        .statuses(Some(&mut options))
+        .map_err(|error| format!("Xero could not read Git status: {error}"))?;
+    let mut capture = BoundedCommandCapture {
+        bytes: Vec::new(),
+        truncated: false,
+        drain_incomplete: false,
+        read_error: None,
+    };
+    for entry in statuses.iter() {
+        let Some(path) = entry.path() else {
+            continue;
+        };
+        let status = entry.status();
+        let code = git_status_porcelain_code(status);
+        let rendered_path = render_git_status_path(path, nul_terminated);
+        let terminator = if nul_terminated { "\0" } else { "\n" };
+        let line = format!("{code} {rendered_path}{terminator}");
+        let remaining = MAX_COMMAND_STREAM_CAPTURE_BYTES.saturating_sub(capture.bytes.len());
+        if line.len() > remaining {
+            capture
+                .bytes
+                .extend_from_slice(&line.as_bytes()[..remaining]);
+            capture.truncated = true;
+            break;
+        }
+        capture.bytes.extend_from_slice(line.as_bytes());
+    }
+    #[cfg(unix)]
+    ensure_path_matches_open_directory(repository_path, directory_guard)
+        .map_err(|error| format!("The pinned Git status directory changed: {error}"))?;
+    Ok(capture)
+}
+
+fn git_status_porcelain_code(status: git2::Status) -> String {
+    if status.contains(git2::Status::WT_NEW) {
+        return "??".into();
+    }
+    let staged = if status.contains(git2::Status::CONFLICTED) {
+        'U'
+    } else if status.contains(git2::Status::INDEX_NEW) {
+        'A'
+    } else if status.contains(git2::Status::INDEX_MODIFIED) {
+        'M'
+    } else if status.contains(git2::Status::INDEX_DELETED) {
+        'D'
+    } else if status.contains(git2::Status::INDEX_RENAMED) {
+        'R'
+    } else if status.contains(git2::Status::INDEX_TYPECHANGE) {
+        'T'
+    } else {
+        ' '
+    };
+    let unstaged = if status.contains(git2::Status::CONFLICTED) {
+        'U'
+    } else if status.contains(git2::Status::WT_MODIFIED) {
+        'M'
+    } else if status.contains(git2::Status::WT_DELETED) {
+        'D'
+    } else if status.contains(git2::Status::WT_RENAMED) {
+        'R'
+    } else if status.contains(git2::Status::WT_TYPECHANGE) {
+        'T'
+    } else {
+        ' '
+    };
+    format!("{staged}{unstaged}")
+}
+
+fn render_git_status_path(path: &str, nul_terminated: bool) -> String {
+    if nul_terminated
+        || path
+            .chars()
+            .all(|character| !character.is_control() && !character.is_whitespace())
+    {
+        return path.into();
+    }
+    serde_json::to_string(path).unwrap_or_else(|_| "\"<unrenderable-path>\"".into())
 }
 
 fn run_subgraph_node(
@@ -2483,54 +4642,31 @@ fn run_subgraph_node(
         );
     };
     let input_payload = resolve_input_bindings_payload(run, input_bindings)?;
-    project_store::insert_workflow_artifact(
-        repo_root,
-        project_id,
-        &run.id,
-        &node_run.id,
-        SUBGRAPH_INPUT_ARTIFACT_TYPE,
-        1,
-        &input_payload,
-        Some("Subgraph input"),
-    )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&node_run.id),
-        "workflow_subgraph_started",
-        &json!({
-            "nodeId": node_run.node_id,
-            "subgraphId": subgraph_id,
-            "startNodeId": subgraph.start_node_id,
-            "outputArtifactType": output_contract.artifact_type,
-        }),
-    )?;
-    project_store::update_workflow_run_node(
-        repo_root,
-        project_id,
-        &node_run.id,
-        WorkflowNodeRunStatusDto::Running,
-        None,
-        None,
-        None,
-    )?;
     let child_node_id = namespaced_subgraph_node_id(&node_run.node_id, &subgraph.start_node_id);
-    let attempt = next_attempt_for_node(run, &child_node_id);
-    let child_run = ensure_node_run(repo_root, run, &child_node_id, attempt)?;
-    project_store::insert_workflow_event(
+    let child_node_type = find_node(&run.definition_snapshot, &child_node_id)
+        .map(|node| node.node_type().as_str().to_owned())
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "workflow_subgraph_start_node_missing",
+                format!("Subgraph start node `{child_node_id}` is missing."),
+            )
+        })?;
+    project_store::start_workflow_subgraph_atomically(
         repo_root,
         project_id,
-        &run.id,
-        Some(&node_run.id),
-        "workflow_subgraph_child_scheduled",
-        &json!({
-            "nodeId": node_run.node_id,
-            "subgraphId": subgraph_id,
-            "childNodeId": child_node_id,
-            "childNodeRunId": child_run.id,
-        }),
+        &project_store::WorkflowSubgraphStartRecord {
+            run_id: run.id.clone(),
+            parent_node_run_id: node_run.id.clone(),
+            parent_node_id: node_run.node_id.clone(),
+            subgraph_id: subgraph_id.to_owned(),
+            input_artifact_type: SUBGRAPH_INPUT_ARTIFACT_TYPE.to_owned(),
+            input_payload,
+            output_artifact_type: output_contract.artifact_type.clone(),
+            child_node_id,
+            child_node_type,
+        },
     )
+    .map(|_| ())
 }
 
 fn complete_subgraph_terminal(
@@ -2615,125 +4751,74 @@ fn complete_subgraph_terminal(
             }
         };
 
-    project_store::update_workflow_run_node(
-        repo_root,
-        project_id,
-        &terminal_node_run.id,
-        WorkflowNodeRunStatusDto::Succeeded,
-        None,
-        None,
-        None,
-    )?;
-    project_store::insert_workflow_artifact(
-        repo_root,
-        project_id,
-        &run.id,
-        &parent_node_run.id,
-        &output_contract.artifact_type,
-        output_contract.schema_version,
-        &payload,
-        render_text
-            .as_deref()
-            .or_else(|| payload.get("summary").and_then(JsonValue::as_str))
-            .or(Some(summary.as_str())),
-    )?;
-    project_store::insert_workflow_edge_decision(
-        repo_root,
-        project_id,
-        &run.id,
-        &terminal_node_run.node_id,
-        &context.parent_node_id,
-        "__subgraph_terminal__",
-        &encode_workflow_condition(&WorkflowConditionDto::Always)?,
-        &json!({
-            "terminalStatus": terminal_status.as_str(),
-            "subgraphId": subgraph_id,
-        }),
-    )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&terminal_node_run.id),
-        "workflow_subgraph_terminal_completed",
-        &json!({
-            "nodeId": terminal_node_run.node_id,
-            "parentNodeId": context.parent_node_id.clone(),
-            "subgraphId": subgraph_id,
-            "terminalStatus": terminal_status.as_str(),
-        }),
-    )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&parent_node_run.id),
-        "workflow_subgraph_completed",
-        &json!({
-            "nodeId": context.parent_node_id.clone(),
-            "subgraphId": subgraph_id,
-            "terminalNodeId": terminal_node_run.node_id,
-            "terminalStatus": terminal_status.as_str(),
-            "status": status,
-            "validationStatus": "valid",
-            "diagnostics": diagnostics.iter().map(|diagnostic| {
-                json!({
-                    "code": diagnostic.code,
-                    "path": diagnostic.path,
-                    "message": diagnostic.message,
-                })
-            }).collect::<Vec<_>>(),
-        }),
-    )?;
-
-    match terminal_status {
-        WorkflowTerminalStatusDto::Success => project_store::update_workflow_run_node(
-            repo_root,
-            project_id,
-            &parent_node_run.id,
-            WorkflowNodeRunStatusDto::Succeeded,
-            None,
-            None,
-            None,
-        ),
-        WorkflowTerminalStatusDto::Failure => project_store::update_workflow_run_node(
-            repo_root,
-            project_id,
-            &parent_node_run.id,
+    let (parent_status, parent_failure_class, pause_run) = match terminal_status {
+        WorkflowTerminalStatusDto::Success => (WorkflowNodeRunStatusDto::Succeeded, None, false),
+        WorkflowTerminalStatusDto::Failure => (
             WorkflowNodeRunStatusDto::Failed,
-            None,
-            None,
-            Some("workflow_subgraph_failed"),
+            Some("workflow_subgraph_failed".to_owned()),
+            false,
         ),
-        WorkflowTerminalStatusDto::Cancelled => project_store::update_workflow_run_node(
-            repo_root,
-            project_id,
-            &parent_node_run.id,
+        WorkflowTerminalStatusDto::Cancelled => (
             WorkflowNodeRunStatusDto::Cancelled,
-            None,
-            None,
-            Some("workflow_subgraph_cancelled"),
+            Some("workflow_subgraph_cancelled".to_owned()),
+            false,
         ),
         WorkflowTerminalStatusDto::NeedsHuman => {
-            project_store::update_workflow_run_node(
-                repo_root,
-                project_id,
-                &parent_node_run.id,
-                WorkflowNodeRunStatusDto::WaitingOnGate,
-                None,
-                None,
-                None,
-            )?;
-            project_store::update_workflow_run_status(
-                repo_root,
-                project_id,
-                &run.id,
-                WorkflowRunStatusDto::Paused,
-                Some(WorkflowTerminalStatusDto::NeedsHuman),
-                None,
-            )
+            (WorkflowNodeRunStatusDto::WaitingOnGate, None, true)
         }
-    }
+    };
+    let resolved_render_text = render_text
+        .or_else(|| {
+            payload
+                .get("summary")
+                .and_then(JsonValue::as_str)
+                .map(ToOwned::to_owned)
+        })
+        .or(Some(summary));
+    project_store::complete_workflow_subgraph_atomically(
+        repo_root,
+        project_id,
+        &project_store::WorkflowSubgraphCompletionRecord {
+            run_id: run.id.clone(),
+            terminal_node_run_id: terminal_node_run.id.clone(),
+            terminal_node_id: terminal_node_run.node_id.clone(),
+            parent_node_run_id: parent_node_run.id.clone(),
+            parent_node_id: context.parent_node_id.clone(),
+            parent_status,
+            parent_failure_class,
+            pause_run,
+            artifact_type: output_contract.artifact_type.clone(),
+            schema_version: output_contract.schema_version,
+            payload,
+            render_text: resolved_render_text,
+            edge_evidence: json!({
+                "terminalStatus": terminal_status.as_str(),
+                "subgraphId": subgraph_id,
+            }),
+            terminal_event: json!({
+                "nodeId": terminal_node_run.node_id,
+                "parentNodeId": context.parent_node_id.clone(),
+                "subgraphId": subgraph_id,
+                "terminalStatus": terminal_status.as_str(),
+            }),
+            parent_event: json!({
+                "nodeId": context.parent_node_id.clone(),
+                "subgraphId": subgraph_id,
+                "terminalNodeId": terminal_node_run.node_id,
+                "terminalStatus": terminal_status.as_str(),
+                "status": status,
+                "validationStatus": "valid",
+                "diagnostics": diagnostics.iter().map(|diagnostic| {
+                    json!({
+                        "code": diagnostic.code,
+                        "path": diagnostic.path,
+                        "message": diagnostic.message,
+                    })
+                }).collect::<Vec<_>>(),
+            }),
+        },
+    )
+    .map(|_| ())
 }
 
 fn subgraph_status_for_terminal(terminal_status: WorkflowTerminalStatusDto) -> &'static str {
@@ -2754,27 +4839,17 @@ fn fail_node_with_recoverable_error(
     failure_class: &str,
     message: &str,
 ) -> CommandResult<()> {
-    project_store::update_workflow_run_node(
-        repo_root,
-        project_id,
-        &node_run.id,
-        WorkflowNodeRunStatusDto::Failed,
-        None,
-        None,
-        Some(failure_class),
-    )?;
-    project_store::insert_workflow_event(
+    project_store::fail_workflow_node_with_event_atomically(
         repo_root,
         project_id,
         &run.id,
-        Some(&node_run.id),
+        &node_run.id,
+        &node_run.node_id,
         event_type,
-        &json!({
-            "nodeId": node_run.node_id,
-            "failureClass": failure_class,
-            "message": message,
-        }),
+        failure_class,
+        message,
     )
+    .map(|_| ())
 }
 
 fn compare_json_values_for_runtime(
@@ -2809,12 +4884,13 @@ fn controls_for_agent_ref(
             definition_id,
             version,
         } => {
-            let selection = project_store::resolve_agent_definition_version_for_run(
-                repo_root,
-                Some(definition_id),
-                Some(*version),
-                crate::commands::default_runtime_agent_id(),
-            )?;
+            let selection =
+                project_store::resolve_pinned_agent_definition_version_for_started_workflow(
+                    repo_root,
+                    definition_id,
+                    *version,
+                    crate::commands::default_runtime_agent_id(),
+                )?;
             (
                 selection.runtime_agent_id,
                 Some(selection.definition_id),
@@ -2848,59 +4924,36 @@ fn controls_for_agent_ref(
     })
 }
 
-fn ensure_node_run(
-    repo_root: &std::path::Path,
-    run: &WorkflowRunDto,
-    node_id: &str,
-    attempt: u32,
-) -> CommandResult<WorkflowRunNodeDto> {
-    let node = find_node(&run.definition_snapshot, node_id).ok_or_else(|| {
-        CommandError::system_fault(
-            "workflow_target_node_missing",
-            format!("Workflow target node `{node_id}` was missing from its snapshot."),
-        )
-    })?;
-    let idempotency_key = format!("{}:{}:{attempt}", run.id, node_id);
-    project_store::insert_workflow_run_node(
-        repo_root,
-        &run.project_id,
-        &run.id,
-        node_id,
-        node.node_type().as_str(),
-        attempt,
-        WorkflowNodeRunStatusDto::Eligible,
-        &idempotency_key,
-    )
-}
-
-fn ensure_direct_merge_targets_for_skipped_branch(
-    repo_root: &std::path::Path,
-    project_id: &str,
+fn direct_merge_targets_for_skipped_branch(
     run: &WorkflowRunDto,
     skipped_node_id: &str,
-) -> CommandResult<Vec<String>> {
-    let mut targets = Vec::new();
+) -> CommandResult<Vec<(String, String)>> {
+    let mut targets = BTreeMap::new();
     for edge in runtime_edges_from_node(&run.definition_snapshot, skipped_node_id) {
-        let Some(WorkflowNodeDto::Merge { .. }) =
+        let Some(target @ WorkflowNodeDto::Merge { .. }) =
             find_node(&run.definition_snapshot, &edge.to_node_id)
         else {
             continue;
         };
-        let attempt = next_attempt_for_node(run, &edge.to_node_id);
-        ensure_node_run(repo_root, run, &edge.to_node_id, attempt)?;
-        targets.push(edge.to_node_id.clone());
+        targets.insert(
+            edge.to_node_id.clone(),
+            target.node_type().as_str().to_owned(),
+        );
     }
     if targets.is_empty() {
-        project_store::insert_workflow_event(
-            repo_root,
-            project_id,
-            &run.id,
-            None,
-            "workflow_branch_skip_no_merge_target",
-            &json!({ "nodeId": skipped_node_id }),
-        )?;
+        return Err(CommandError::user_fixable(
+            "workflow_branch_skip_requires_merge_target",
+            format!(
+                "Workflow node `{skipped_node_id}` has no direct Merge target, so its branch cannot be skipped safely."
+            ),
+        ));
     }
-    Ok(targets)
+    Ok(targets.into_iter().collect())
+}
+
+struct LoopTargetResolution {
+    target_node_id: String,
+    source_status: WorkflowNodeRunStatusDto,
 }
 
 fn loop_target_for_edge(
@@ -2909,21 +4962,43 @@ fn loop_target_for_edge(
     run: &WorkflowRunDto,
     node_run: &WorkflowRunNodeDto,
     edge: &WorkflowEdgeDto,
-) -> CommandResult<String> {
+) -> CommandResult<LoopTargetResolution> {
     let Some(policy) = edge.loop_policy.as_ref() else {
-        return Ok(edge.to_node_id.clone());
+        return Ok(LoopTargetResolution {
+            target_node_id: edge.to_node_id.clone(),
+            source_status: node_run.status,
+        });
     };
+    if let Some(previous) = run.loop_attempts.iter().find(|attempt| {
+        attempt.loop_key == policy.loop_key
+            && attempt.last_node_run_id.as_deref() == Some(node_run.id.as_str())
+    }) {
+        return Ok(LoopTargetResolution {
+            target_node_id: if previous.exhausted {
+                policy.on_exhausted.clone()
+            } else {
+                edge.to_node_id.clone()
+            },
+            source_status: node_run.status,
+        });
+    }
     if let Some(detector) = policy.stall_detector {
         if let Some(failure_class) = stall_failure_class_for_detector(run, node_run, detector) {
-            project_store::update_workflow_run_node(
+            if !project_store::compare_and_set_workflow_run_node(
                 repo_root,
                 project_id,
                 &node_run.id,
+                &[node_run.status],
                 WorkflowNodeRunStatusDto::Stalled,
                 None,
                 None,
                 Some(failure_class),
-            )?;
+            )? {
+                return Ok(LoopTargetResolution {
+                    target_node_id: edge.to_node_id.clone(),
+                    source_status: node_run.status,
+                });
+            }
             project_store::increment_workflow_loop_attempt(
                 repo_root,
                 project_id,
@@ -2958,7 +5033,10 @@ fn loop_target_for_edge(
                     "onExhausted": policy.on_exhausted.as_str(),
                 }),
             )?;
-            return Ok(policy.on_exhausted.clone());
+            return Ok(LoopTargetResolution {
+                target_node_id: policy.on_exhausted.clone(),
+                source_status: WorkflowNodeRunStatusDto::Stalled,
+            });
         }
     }
     let current_attempts = run
@@ -2989,7 +5067,10 @@ fn loop_target_for_edge(
                 "onExhausted": policy.on_exhausted.as_str(),
             }),
         )?;
-        return Ok(policy.on_exhausted.clone());
+        return Ok(LoopTargetResolution {
+            target_node_id: policy.on_exhausted.clone(),
+            source_status: node_run.status,
+        });
     }
     project_store::increment_workflow_loop_attempt(
         repo_root,
@@ -2999,7 +5080,10 @@ fn loop_target_for_edge(
         &node_run.id,
         false,
     )?;
-    Ok(edge.to_node_id.clone())
+    Ok(LoopTargetResolution {
+        target_node_id: edge.to_node_id.clone(),
+        source_status: node_run.status,
+    })
 }
 
 fn stall_failure_class_for_detector(
@@ -3463,18 +5547,6 @@ fn next_attempt_for_node(run: &WorkflowRunDto, node_id: &str) -> u32 {
         .unwrap_or(0)
 }
 
-fn checkpoint_type_for_node(
-    definition: &WorkflowDefinitionDto,
-    node_id: &str,
-) -> Option<WorkflowHumanCheckpointTypeDto> {
-    match find_node(definition, node_id)? {
-        WorkflowNodeDto::HumanCheckpoint {
-            checkpoint_type, ..
-        } => Some(*checkpoint_type),
-        _ => None,
-    }
-}
-
 fn pause_at_checkpoint(
     repo_root: &std::path::Path,
     project_id: &str,
@@ -3482,72 +5554,52 @@ fn pause_at_checkpoint(
     node_run: &WorkflowRunNodeDto,
     reason: &str,
 ) -> CommandResult<()> {
-    project_store::update_workflow_run_node(
+    project_store::pause_workflow_checkpoint_atomically(
         repo_root,
         project_id,
+        &run.id,
         &node_run.id,
-        WorkflowNodeRunStatusDto::WaitingOnGate,
-        None,
-        None,
-        None,
-    )?;
-    project_store::update_workflow_run_status(
-        repo_root,
-        project_id,
-        &run.id,
-        WorkflowRunStatusDto::Paused,
-        Some(WorkflowTerminalStatusDto::NeedsHuman),
-        None,
-    )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&node_run.id),
-        "workflow_paused",
-        &json!({ "reason": reason, "nodeId": node_run.node_id }),
-    )?;
-    insert_workflow_metric_event(
-        repo_root,
-        project_id,
-        &run.id,
-        Some(&node_run.id),
-        "checkpoint_pause",
-        &json!({
-            "reason": reason,
-            "nodeId": node_run.node_id,
-        }),
+        &node_run.node_id,
+        reason,
     )
+    .map(|_| ())
 }
 
 fn complete_for_terminal(
+    state: &DesktopState,
     repo_root: &std::path::Path,
     project_id: &str,
     run: &WorkflowRunDto,
+    terminal_node_run: &WorkflowRunNodeDto,
     terminal_status: WorkflowTerminalStatusDto,
 ) -> CommandResult<()> {
+    for node_run in run
+        .nodes
+        .iter()
+        .filter(|node| node.id != terminal_node_run.id)
+    {
+        if matches!(
+            find_node(&run.definition_snapshot, &node_run.node_id),
+            Some(WorkflowNodeDto::Agent { .. } | WorkflowNodeDto::Command { .. })
+        ) {
+            terminate_workflow_node_execution(state, repo_root, project_id, run, node_run)?;
+        }
+    }
     let run_status = match terminal_status {
         WorkflowTerminalStatusDto::Success => WorkflowRunStatusDto::Completed,
         WorkflowTerminalStatusDto::Failure => WorkflowRunStatusDto::Failed,
         WorkflowTerminalStatusDto::Cancelled => WorkflowRunStatusDto::Cancelled,
         WorkflowTerminalStatusDto::NeedsHuman => WorkflowRunStatusDto::Paused,
     };
-    project_store::update_workflow_run_status(
+    project_store::complete_workflow_terminal_atomically(
         repo_root,
         project_id,
         &run.id,
+        &terminal_node_run.id,
         run_status,
-        Some(terminal_status),
-        None,
+        terminal_status,
     )?;
-    project_store::insert_workflow_event(
-        repo_root,
-        project_id,
-        &run.id,
-        None,
-        "workflow_completed",
-        &json!({ "terminalStatus": terminal_status.as_str() }),
-    )
+    Ok(())
 }
 
 fn is_terminal_run(status: WorkflowRunStatusDto) -> bool {
@@ -3581,6 +5633,17 @@ fn edge_applies_to_node_status(
     }
 }
 
+fn default_edge_specificity(edge_type: WorkflowEdgeTypeDto) -> u8 {
+    match edge_type {
+        WorkflowEdgeTypeDto::Success
+        | WorkflowEdgeTypeDto::Failure
+        | WorkflowEdgeTypeDto::Recovery => 1,
+        WorkflowEdgeTypeDto::Conditional
+        | WorkflowEdgeTypeDto::Loop
+        | WorkflowEdgeTypeDto::ManualOverride => 0,
+    }
+}
+
 fn routes_single_match(node: &WorkflowNodeDto) -> bool {
     matches!(
         node,
@@ -3594,16 +5657,7 @@ fn has_routed_node_run(run: &WorkflowRunDto, node_run: &WorkflowRunNodeDto) -> b
     if has_control_event_after_completion(run, node_run, "workflow_node_retry_requested") {
         return true;
     }
-    run.edge_decisions.iter().any(|decision| {
-        if decision.from_node_id != node_run.node_id {
-            return false;
-        }
-        node_run
-            .completed_at
-            .as_ref()
-            .map(|completed_at| decision.created_at >= *completed_at)
-            .unwrap_or(true)
-    })
+    has_control_event_after_completion(run, node_run, "workflow_node_routed")
 }
 
 fn has_node_event(run: &WorkflowRunDto, node_run: &WorkflowRunNodeDto, event_type: &str) -> bool {
@@ -3710,6 +5764,7 @@ fn evaluate_merge_node(
 ) -> MergeEvaluation {
     let incoming_sources = runtime_incoming_source_ids(&run.definition_snapshot, &node_run.node_id)
         .into_iter()
+        .filter(|source_node_id| merge_source_is_participant(run, node_run, source_node_id))
         .collect::<std::collections::BTreeSet<_>>();
     if incoming_sources.is_empty() {
         return MergeEvaluation::Succeeded;
@@ -3787,11 +5842,147 @@ fn evaluate_merge_node(
     }
 }
 
-fn latest_status_for_node(run: &WorkflowRunDto, node_id: &str) -> Option<WorkflowNodeRunStatusDto> {
+fn merge_source_is_participant(
+    run: &WorkflowRunDto,
+    merge_node_run: &WorkflowRunNodeDto,
+    source_node_id: &str,
+) -> bool {
+    if let Some(source_run) = latest_node_run(run, source_node_id) {
+        if is_retry_rewound_node_run(source_run) {
+            return node_may_still_activate_from_another_branch(
+                run,
+                &merge_node_run.node_id,
+                source_node_id,
+            );
+        }
+        if source_run.status == WorkflowNodeRunStatusDto::Skipped {
+            // Explicit branch skipping inserts the Merge directly and records
+            // the skipped source as a resolved participant.
+            return true;
+        }
+        if let Some(targets) = routed_target_node_ids(run, source_run) {
+            if targets.contains(&merge_node_run.node_id) {
+                return true;
+            }
+            return false;
+        }
+        // Once a direct incoming source has an actual run, it is a Merge
+        // participant even when it failed on an edge typed `success`. Merge
+        // failure policy must observe that failed branch; edge applicability
+        // only determines whether routing creates the Merge in the first place.
+        // A durable route to another target was handled above, and a
+        // retry-rewound attempt was handled before that.
+        let is_direct_incoming_source =
+            runtime_edges_from_node(&run.definition_snapshot, source_node_id)
+                .into_iter()
+                .any(|edge| edge.to_node_id == merge_node_run.node_id);
+        if is_direct_incoming_source {
+            return true;
+        }
+    }
+
+    // The source may not exist yet on an activated multi-hop branch. Walk
+    // forward from every other activated node, honoring durable route choices
+    // for attempts that already routed. This excludes a router's unselected
+    // branch without dropping a sibling whose next hop has not been inserted.
+    node_may_still_activate_from_another_branch(run, &merge_node_run.node_id, source_node_id)
+}
+
+fn routed_target_node_ids(
+    run: &WorkflowRunDto,
+    node_run: &WorkflowRunNodeDto,
+) -> Option<BTreeSet<String>> {
+    run.events
+        .iter()
+        .rev()
+        .find(|event| {
+            event.node_run_id.as_deref() == Some(node_run.id.as_str())
+                && event.event_type == "workflow_node_routed"
+        })
+        .map(|event| {
+            event
+                .event
+                .get("targetNodeIds")
+                .and_then(JsonValue::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(JsonValue::as_str)
+                .map(ToOwned::to_owned)
+                .collect()
+        })
+}
+
+fn node_may_still_activate_from_another_branch(
+    run: &WorkflowRunDto,
+    merge_node_id: &str,
+    target_node_id: &str,
+) -> bool {
+    let mut queue = run
+        .nodes
+        .iter()
+        .filter(|node| node.node_id != target_node_id && node.node_id != merge_node_id)
+        .map(|node| node.node_id.clone())
+        .collect::<VecDeque<_>>();
+    let mut visited = BTreeSet::new();
+
+    while let Some(node_id) = queue.pop_front() {
+        if !visited.insert(node_id.clone()) {
+            continue;
+        }
+        for possible_target in possible_future_route_targets(run, &node_id) {
+            if possible_target == target_node_id {
+                return true;
+            }
+            if possible_target != merge_node_id && !visited.contains(&possible_target) {
+                queue.push_back(possible_target);
+            }
+        }
+    }
+    false
+}
+
+fn possible_future_route_targets(run: &WorkflowRunDto, node_id: &str) -> BTreeSet<String> {
+    let Some(node_run) = latest_node_run(run, node_id) else {
+        return runtime_edges_from_node(&run.definition_snapshot, node_id)
+            .into_iter()
+            .map(|edge| edge.to_node_id)
+            .collect();
+    };
+    if is_retry_rewound_node_run(node_run) {
+        return BTreeSet::new();
+    }
+
+    if let Some(routed) = routed_target_node_ids(run, node_run) {
+        return routed;
+    }
+    if node_run.status == WorkflowNodeRunStatusDto::Skipped {
+        return BTreeSet::new();
+    }
+    runtime_edges_from_node(&run.definition_snapshot, node_id)
+        .into_iter()
+        .filter(|edge| {
+            !is_finished_status(node_run.status)
+                || edge_applies_to_node_status(edge.r#type, node_run.status)
+        })
+        .map(|edge| edge.to_node_id)
+        .collect()
+}
+
+fn latest_node_run<'a>(run: &'a WorkflowRunDto, node_id: &str) -> Option<&'a WorkflowRunNodeDto> {
     run.nodes
         .iter()
         .filter(|node| node.node_id == node_id)
         .max_by_key(|node| node.attempt_number)
+}
+
+fn is_retry_rewound_node_run(node_run: &WorkflowRunNodeDto) -> bool {
+    node_run.status == WorkflowNodeRunStatusDto::Cancelled
+        && node_run.failure_class.as_deref() == Some("workflow_retry_rewind")
+}
+
+fn latest_status_for_node(run: &WorkflowRunDto, node_id: &str) -> Option<WorkflowNodeRunStatusDto> {
+    latest_node_run(run, node_id)
+        .filter(|node| !is_retry_rewound_node_run(node))
         .map(|node| node.status)
 }
 
@@ -3968,6 +6159,20 @@ mod tests {
             node_run_id: None,
             event_type: event_type.into(),
             event,
+            created_at: NOW.into(),
+        }
+    }
+
+    fn routed_event(node_run: &WorkflowRunNodeDto, targets: &[&str]) -> WorkflowEventDto {
+        WorkflowEventDto {
+            id: format!("{}:routed", node_run.id),
+            workflow_run_id: "run-1".into(),
+            node_run_id: Some(node_run.id.clone()),
+            event_type: "workflow_node_routed".into(),
+            event: json!({
+                "sourceNodeRunId": node_run.id,
+                "targetNodeIds": targets,
+            }),
             created_at: NOW.into(),
         }
     }
@@ -4151,6 +6356,156 @@ mod tests {
     }
 
     #[test]
+    fn merge_excludes_a_router_branch_that_was_durably_not_selected() {
+        let router = node_run("source-a", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let selected = node_run("source-b", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let merge_run = node_run("merge", WorkflowNodeRunStatusDto::Eligible, 0);
+        let mut run = run_with_nodes(
+            vec![
+                edge(
+                    "router-a",
+                    "source-a",
+                    "source-b",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+                edge(
+                    "router-b",
+                    "source-a",
+                    "source-c",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+                edge("a-merge", "source-b", "merge", WorkflowEdgeTypeDto::Success),
+                edge("b-merge", "source-c", "merge", WorkflowEdgeTypeDto::Success),
+            ],
+            vec![router.clone(), selected.clone(), merge_run.clone()],
+        );
+        run.events = vec![
+            routed_event(&router, &["source-b"]),
+            routed_event(&selected, &["merge"]),
+        ];
+
+        assert_eq!(
+            evaluate_merge_node(
+                &run,
+                &merge_run,
+                WorkflowMergeWaitPolicyDto::All,
+                None,
+                false,
+            ),
+            MergeEvaluation::Succeeded,
+        );
+    }
+
+    #[test]
+    fn merge_uses_only_the_latest_router_attempt_after_retry_changes_branches() {
+        let old_router = node_run("source-a", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let new_router = node_run("source-a", WorkflowNodeRunStatusDto::Succeeded, 1);
+        let selected = node_run("source-b", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let mut abandoned = node_run("source-c", WorkflowNodeRunStatusDto::Cancelled, 0);
+        abandoned.failure_class = Some("workflow_retry_rewind".into());
+        let merge_run = node_run("merge", WorkflowNodeRunStatusDto::Eligible, 0);
+        let mut run = run_with_nodes(
+            vec![
+                edge(
+                    "router-a",
+                    "source-a",
+                    "source-b",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+                edge(
+                    "router-b",
+                    "source-a",
+                    "source-c",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+                edge("a-merge", "source-b", "merge", WorkflowEdgeTypeDto::Success),
+                edge("b-merge", "source-c", "merge", WorkflowEdgeTypeDto::Success),
+            ],
+            vec![
+                old_router.clone(),
+                new_router.clone(),
+                selected.clone(),
+                abandoned,
+                merge_run.clone(),
+            ],
+        );
+        run.events = vec![
+            routed_event(&old_router, &["source-c"]),
+            routed_event(&new_router, &["source-b"]),
+            routed_event(&selected, &["merge"]),
+        ];
+
+        assert_eq!(
+            evaluate_merge_node(
+                &run,
+                &merge_run,
+                WorkflowMergeWaitPolicyDto::All,
+                None,
+                false,
+            ),
+            MergeEvaluation::Succeeded,
+        );
+    }
+
+    #[test]
+    fn merge_waits_for_a_not_yet_inserted_source_on_an_activated_multihop_branch() {
+        let split = node_run("source-a", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let fast = node_run("source-b", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let intermediate = node_run("done", WorkflowNodeRunStatusDto::Running, 0);
+        let merge_run = node_run("merge", WorkflowNodeRunStatusDto::Eligible, 0);
+        let mut run = run_with_nodes(
+            vec![
+                edge(
+                    "split-fast",
+                    "source-a",
+                    "source-b",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+                edge(
+                    "split-slow",
+                    "source-a",
+                    "done",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+                edge(
+                    "fast-merge",
+                    "source-b",
+                    "merge",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+                edge(
+                    "slow-next",
+                    "done",
+                    "source-c",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+                edge(
+                    "slow-merge",
+                    "source-c",
+                    "merge",
+                    WorkflowEdgeTypeDto::Success,
+                ),
+            ],
+            vec![split.clone(), fast.clone(), intermediate, merge_run.clone()],
+        );
+        run.events = vec![
+            routed_event(&split, &["source-b", "done"]),
+            routed_event(&fast, &["merge"]),
+        ];
+
+        assert_eq!(
+            evaluate_merge_node(
+                &run,
+                &merge_run,
+                WorkflowMergeWaitPolicyDto::All,
+                None,
+                false,
+            ),
+            MergeEvaluation::Waiting,
+        );
+    }
+
+    #[test]
     fn resource_conflict_policy_serializes_declared_scopes() {
         let mut definition = definition_with_edges(Vec::new());
         definition.nodes = vec![
@@ -4310,6 +6665,15 @@ mod tests {
                 WorkflowNodeRunStatusDto::Pending
             ));
         }
+
+        assert!(
+            default_edge_specificity(WorkflowEdgeTypeDto::Success)
+                > default_edge_specificity(WorkflowEdgeTypeDto::Conditional)
+        );
+        assert!(
+            default_edge_specificity(WorkflowEdgeTypeDto::Failure)
+                > default_edge_specificity(WorkflowEdgeTypeDto::ManualOverride)
+        );
     }
 
     #[test]
@@ -4608,6 +6972,15 @@ mod tests {
             Some(json!({ "goal": "ship subgraphs" })),
         )
         .expect("create run");
+        project_store::update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &run.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start run before scheduling subgraph");
         let parent_run = project_store::insert_workflow_run_node(
             temp.path(),
             "project-1",
@@ -4847,7 +7220,897 @@ mod tests {
     }
 
     #[test]
-    fn exhausted_loop_routes_to_fallback_and_records_exhaustion() {
+    fn runtime_command_allowlist_rejects_empty_and_mismatched_lists() {
+        assert!(!workflow_command_is_allowlisted("git", &[]));
+        assert!(!workflow_command_is_allowlisted(
+            "git",
+            &["cargo".into(), "pnpm".into()]
+        ));
+        assert!(workflow_command_is_allowlisted(
+            "git",
+            &["cargo".into(), "git".into()]
+        ));
+    }
+
+    #[test]
+    fn command_working_directory_must_resolve_inside_project_root() {
+        let temp = TempDir::new().expect("create temp parent");
+        let project_root = temp.path().join("project");
+        let nested = project_root.join("nested");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&nested).expect("create nested project directory");
+        std::fs::create_dir_all(&outside).expect("create outside directory");
+
+        assert_eq!(
+            resolve_workflow_command_working_directory(&project_root, Some("nested"))
+                .expect("relative directory inside project"),
+            nested.canonicalize().expect("canonical nested directory")
+        );
+        assert_eq!(
+            resolve_workflow_command_working_directory(
+                &project_root,
+                Some(nested.to_str().expect("nested path is utf-8")),
+            )
+            .expect("absolute directory inside project"),
+            nested.canonicalize().expect("canonical nested directory")
+        );
+
+        let traversal_error =
+            resolve_workflow_command_working_directory(&project_root, Some("../outside"))
+                .expect_err("parent traversal must be rejected");
+        assert_eq!(
+            traversal_error.code,
+            "workflow_command_working_directory_outside_project"
+        );
+        let absolute_error = resolve_workflow_command_working_directory(
+            &project_root,
+            Some(outside.to_str().expect("outside path is utf-8")),
+        )
+        .expect_err("absolute outside directory must be rejected");
+        assert_eq!(
+            absolute_error.code,
+            "workflow_command_working_directory_outside_project"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_working_directory_rejects_symlink_escape() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().expect("create temp parent");
+        let project_root = temp.path().join("project");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&project_root).expect("create project directory");
+        std::fs::create_dir_all(&outside).expect("create outside directory");
+        symlink(&outside, project_root.join("escape")).expect("create escape symlink");
+
+        let error = resolve_workflow_command_working_directory(&project_root, Some("escape"))
+            .expect_err("symlink escape must be rejected");
+        assert_eq!(
+            error.code,
+            "workflow_command_working_directory_outside_project"
+        );
+        assert!(open_workflow_command_working_directory(&project_root, Some("escape")).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn opened_command_directory_cannot_be_redirected_by_a_late_symlink_swap() {
+        use std::os::unix::fs::symlink;
+
+        let temp = TempDir::new().expect("create temp parent");
+        let project_root = temp.path().join("project");
+        let nested = project_root.join("nested");
+        let pinned = project_root.join("pinned");
+        let outside = temp.path().join("outside");
+        std::fs::create_dir_all(&nested).expect("create nested project directory");
+        std::fs::create_dir_all(&outside).expect("create outside directory");
+        std::fs::write(nested.join("inside-marker"), "inside").expect("write inside marker");
+        std::fs::write(outside.join("outside-marker"), "outside").expect("write outside marker");
+
+        let opened = open_workflow_command_working_directory(&project_root, Some("nested"))
+            .expect("pin command directory");
+        std::fs::rename(&nested, &pinned).expect("move original directory");
+        symlink(&outside, &nested).expect("replace path with outside symlink");
+
+        let mut process = Command::new("/bin/sh");
+        process
+            .arg("-c")
+            .arg("test -f inside-marker && test ! -f outside-marker");
+        opened
+            .configure_process(&mut process)
+            .expect("configure descriptor-relative cwd");
+        assert!(process
+            .status()
+            .expect("run command in pinned directory")
+            .success());
+    }
+
+    #[test]
+    fn in_process_git_status_does_not_execute_repository_clean_filters() {
+        let temp = TempDir::new().expect("create repository");
+        let repository = git2::Repository::init(temp.path()).expect("initialize repository");
+        std::fs::write(temp.path().join(".gitattributes"), "*.txt filter=hostile\n")
+            .expect("write attributes");
+        std::fs::write(temp.path().join("tracked.txt"), "before\n").expect("write tracked file");
+        let mut index = repository.index().expect("open index");
+        index
+            .add_path(Path::new(".gitattributes"))
+            .expect("stage attributes");
+        index
+            .add_path(Path::new("tracked.txt"))
+            .expect("stage tracked file");
+        let tree_id = index.write_tree().expect("write tree");
+        let tree = repository.find_tree(tree_id).expect("find tree");
+        let signature =
+            git2::Signature::now("Xero Test", "xero@example.com").expect("create signature");
+        repository
+            .commit(Some("HEAD"), &signature, &signature, "initial", &tree, &[])
+            .expect("commit fixture");
+        drop(tree);
+
+        let marker = temp.path().join("external-filter-executed");
+        let mut config = repository.config().expect("open repository config");
+        config
+            .set_str(
+                "filter.hostile.clean",
+                &format!("touch {}", marker.display()),
+            )
+            .expect("configure hostile clean filter");
+        config
+            .set_bool("filter.hostile.required", false)
+            .expect("make filter optional");
+        drop(config);
+        std::fs::write(temp.path().join("tracked.txt"), "after\n").expect("modify tracked file");
+
+        let opened = open_workflow_command_working_directory(temp.path(), None)
+            .expect("pin repository directory");
+        let (_directory_guard, descriptor_path) = opened
+            .repository_access()
+            .expect("open descriptor-backed repository path");
+        let capture = read_internal_git_status(
+            &descriptor_path,
+            &_directory_guard,
+            &["status".into(), "--short".into()],
+        )
+        .expect("read status in process");
+
+        assert!(String::from_utf8_lossy(&capture.bytes).contains("tracked.txt"));
+        assert!(
+            !marker.exists(),
+            "libgit2 status must not launch clean filters"
+        );
+    }
+
+    #[test]
+    fn command_stream_capture_is_bounded_while_draining_remaining_bytes() {
+        let input = vec![b'x'; MAX_COMMAND_STREAM_CAPTURE_BYTES + 32_768];
+        let capture = read_bounded_command_stream(
+            std::io::Cursor::new(input),
+            MAX_COMMAND_STREAM_CAPTURE_BYTES,
+        )
+        .expect("drain command stream");
+
+        assert_eq!(capture.bytes.len(), MAX_COMMAND_STREAM_CAPTURE_BYTES);
+        assert!(capture.truncated);
+    }
+
+    #[test]
+    fn stdout_and_stderr_readers_capture_independently() {
+        let stdout_reader = spawn_bounded_command_reader(std::io::Cursor::new(vec![
+            b'o';
+            MAX_COMMAND_STREAM_CAPTURE_BYTES
+                + 1
+        ]));
+        let stderr_reader = spawn_bounded_command_reader(std::io::Cursor::new(vec![
+            b'e';
+            MAX_COMMAND_STREAM_CAPTURE_BYTES
+                + 1
+        ]));
+
+        let deadline = Instant::now() + COMMAND_STREAM_DRAIN_TIMEOUT;
+        let stdout = finish_bounded_command_reader(stdout_reader, deadline);
+        let stderr = finish_bounded_command_reader(stderr_reader, deadline);
+        assert_eq!(stdout.bytes.len(), MAX_COMMAND_STREAM_CAPTURE_BYTES);
+        assert_eq!(stderr.bytes.len(), MAX_COMMAND_STREAM_CAPTURE_BYTES);
+        assert!(stdout.truncated);
+        assert!(stderr.truncated);
+        assert!(!stdout.drain_incomplete);
+        assert!(!stderr.drain_incomplete);
+    }
+
+    #[test]
+    fn inherited_stream_handle_cannot_block_collection_past_deadline() {
+        struct StalledAfterPrefixReader {
+            prefix: Option<Vec<u8>>,
+            release: Arc<(Mutex<bool>, Condvar)>,
+            terminated: Arc<AtomicBool>,
+        }
+
+        impl Drop for StalledAfterPrefixReader {
+            fn drop(&mut self) {
+                self.terminated.store(true, Ordering::Release);
+            }
+        }
+
+        impl Read for StalledAfterPrefixReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if let Some(prefix) = self.prefix.take() {
+                    buffer[..prefix.len()].copy_from_slice(&prefix);
+                    return Ok(prefix.len());
+                }
+
+                let (released, wake) = &*self.release;
+                let mut released = released
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                while !*released {
+                    released = wake
+                        .wait(released)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                Ok(0)
+            }
+        }
+
+        impl PollableCommandStream for StalledAfterPrefixReader {
+            fn wait_until_readable(&self, _timeout: StdDuration) -> io::Result<bool> {
+                if self.prefix.is_some() {
+                    return Ok(true);
+                }
+                Ok(*self
+                    .release
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()))
+            }
+        }
+
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let reader = spawn_bounded_command_reader(StalledAfterPrefixReader {
+            prefix: Some(b"partial".to_vec()),
+            release: release.clone(),
+            terminated: terminated.clone(),
+        });
+        let prefix_deadline = Instant::now() + StdDuration::from_secs(1);
+        loop {
+            let state = reader
+                .state
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.capture.bytes == b"partial" {
+                break;
+            }
+            assert!(
+                Instant::now() < prefix_deadline,
+                "reader did not publish its partial capture"
+            );
+            drop(state);
+            thread::sleep(StdDuration::from_millis(5));
+        }
+
+        let started = Instant::now();
+        let capture =
+            finish_bounded_command_reader(reader, Instant::now() + StdDuration::from_millis(40));
+        assert!(started.elapsed() < StdDuration::from_secs(1));
+        assert_eq!(capture.bytes, b"partial");
+        assert!(capture.truncated);
+        assert!(capture.drain_incomplete);
+        assert!(capture.read_error.is_none());
+        assert!(
+            terminated.load(Ordering::Acquire),
+            "bounded drain must join the retained-pipe reader"
+        );
+
+        let (released, wake) = &*release;
+        *released
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        wake.notify_all();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_pipes_are_drained_concurrently_without_unbounded_capture() {
+        let mut process = Command::new("/bin/sh");
+        process
+            .arg("-c")
+            .arg(
+                "i=0; while [ \"$i\" -lt 20000 ]; do printf 'oooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooooo'; printf 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee' >&2; i=$((i + 1)); done",
+            )
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_process_tree_root(&mut process);
+        let mut child = process.spawn().expect("spawn dual-stream command");
+        let stdout_reader = spawn_bounded_command_reader(child.stdout.take().expect("stdout pipe"));
+        let stderr_reader = spawn_bounded_command_reader(child.stderr.take().expect("stderr pipe"));
+
+        let status = child.wait().expect("wait for dual-stream command");
+        cleanup_process_group_after_root_exit(child.id());
+        let deadline = Instant::now() + COMMAND_STREAM_DRAIN_TIMEOUT;
+        let stdout = finish_bounded_command_reader(stdout_reader, deadline);
+        let stderr = finish_bounded_command_reader(stderr_reader, deadline);
+
+        assert!(status.success());
+        assert_eq!(stdout.bytes.len(), MAX_COMMAND_STREAM_CAPTURE_BYTES);
+        assert_eq!(stderr.bytes.len(), MAX_COMMAND_STREAM_CAPTURE_BYTES);
+        assert!(stdout.truncated);
+        assert!(stderr.truncated);
+        assert!(!stdout.drain_incomplete);
+        assert!(!stderr.drain_incomplete);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_registry_requests_and_executes_process_tree_termination() {
+        let registration =
+            register_running_workflow_command("termination-project", "termination-run", "node-1")
+                .expect("register running command");
+        let mut process = Command::new("/bin/sh");
+        process.arg("-c").arg("sleep 30");
+        configure_process_tree_root(&mut process);
+        let child = process.spawn().expect("spawn sleeping child");
+        registration.control.attach_child(child);
+
+        assert_eq!(
+            terminate_running_workflow_commands(
+                "termination-project",
+                "termination-run",
+                Some("node-1")
+            ),
+            1
+        );
+        assert!(registration.control.termination_requested());
+        let status = registration
+            .control
+            .terminate()
+            .expect("terminate sleeping process tree");
+        assert!(!status.success());
+        assert!(!registration.control.has_child());
+        drop(registration);
+        assert_eq!(
+            terminate_running_workflow_commands(
+                "termination-project",
+                "termination-run",
+                Some("node-1")
+            ),
+            0
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn normally_reaped_command_is_removed_before_registration_drop() {
+        let registration =
+            register_running_workflow_command("reap-project", "reap-run", "reap-node")
+                .expect("register command");
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("exit 0");
+        configure_process_tree_root(&mut command);
+        let child = command.spawn().expect("spawn command");
+        register_process_tree_root(&child).expect("register process tree");
+        registration.control.attach_child(child);
+        let deadline = Instant::now() + StdDuration::from_secs(2);
+        let status = loop {
+            match registration.control.try_wait().expect("poll command") {
+                Some(status) => break status,
+                None => {
+                    assert!(Instant::now() < deadline, "command did not exit");
+                    thread::sleep(StdDuration::from_millis(10));
+                }
+            }
+        };
+
+        assert!(status.success());
+        assert!(!registration.control.has_child());
+        drop(registration);
+    }
+
+    #[cfg(unix)]
+    fn assert_workflow_control_terminates_active_command(target_status: WorkflowNodeRunStatusDto) {
+        let temp = repo_with_database();
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(Vec::new()),
+        )
+        .expect("create workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create run");
+        project_store::update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &run.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start workflow run");
+        let node_run = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "command",
+            0,
+            WorkflowNodeRunStatusDto::Eligible,
+            &format!("{}:control-command:0", run.id),
+        )
+        .expect("insert command node run");
+        let mut registration =
+            register_running_workflow_command("project-1", &run.id, &node_run.id)
+                .expect("register command");
+        assert!(project_store::claim_workflow_command_node_starting(
+            temp.path(),
+            "project-1",
+            &run.id,
+            &node_run.id,
+            &registration.owner_instance_id,
+            registration.owner_process_id,
+            &registration.owner_process_birth_identity,
+            &registration.lease_token,
+            &crate::auth::now_timestamp(),
+        )
+        .expect("claim command lease"));
+        registration
+            .activate_persisted_lease(temp.path())
+            .expect("start command heartbeat");
+        let loaded_run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load run")
+            .expect("run exists");
+        let control = registration.control.clone();
+        let repo_root = temp.path().to_path_buf();
+        let run_id = run.id.clone();
+        let node_run_id = node_run.id.clone();
+        let command_thread = thread::spawn(move || {
+            run_command_node(
+                &repo_root,
+                "project-1",
+                &loaded_run,
+                &node_run,
+                "/bin/sh",
+                &["-c".into(), "sleep 30".into()],
+                &["/bin/sh".into()],
+                None,
+                60,
+                &[0],
+                &WorkflowOutputContractDto::default(),
+                WorkflowOutputExtractionDto::GenericText,
+                None,
+                registration,
+            )
+        });
+
+        let attach_deadline = Instant::now() + StdDuration::from_secs(2);
+        while control
+            .child
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .is_none()
+        {
+            assert!(
+                Instant::now() < attach_deadline,
+                "command child was not attached"
+            );
+            thread::sleep(StdDuration::from_millis(10));
+        }
+        assert_eq!(
+            terminate_running_workflow_commands("project-1", &run_id, Some(&node_run_id)),
+            1
+        );
+        if target_status == WorkflowNodeRunStatusDto::Cancelled {
+            project_store::request_workflow_run_cancellation(
+                temp.path(),
+                "project-1",
+                &run_id,
+                Some("test control"),
+            )
+            .expect("request workflow cancellation");
+        } else {
+            assert!(project_store::compare_and_set_workflow_run_node(
+                temp.path(),
+                "project-1",
+                &node_run_id,
+                &[
+                    WorkflowNodeRunStatusDto::Starting,
+                    WorkflowNodeRunStatusDto::Running,
+                ],
+                target_status,
+                None,
+                None,
+                Some("test_control"),
+            )
+            .expect("apply workflow node control"));
+        }
+        command_thread
+            .join()
+            .expect("join command thread")
+            .expect("command exits cleanly after control");
+        if target_status == WorkflowNodeRunStatusDto::Cancelled {
+            project_store::cancel_workflow_run_execution(
+                temp.path(),
+                "project-1",
+                &run_id,
+                Some("test control"),
+            )
+            .expect("finalize workflow cancellation");
+        }
+
+        let finished = project_store::get_workflow_run(temp.path(), "project-1", &run_id)
+            .expect("reload controlled run")
+            .expect("run exists");
+        let finished_node = finished
+            .nodes
+            .iter()
+            .find(|node| node.id == node_run_id)
+            .expect("controlled node exists");
+        assert_eq!(finished_node.status, target_status);
+        assert!(!finished
+            .events
+            .iter()
+            .any(|event| event.event_type == "workflow_command_completed"));
+        assert!(!finished
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.producer_node_run_id == node_run_id));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cancel_skip_and_stall_terminate_active_command_without_late_completion() {
+        for target_status in [
+            WorkflowNodeRunStatusDto::Cancelled,
+            WorkflowNodeRunStatusDto::Skipped,
+            WorkflowNodeRunStatusDto::Stalled,
+        ] {
+            assert_workflow_control_terminates_active_command(target_status);
+        }
+    }
+
+    #[test]
+    fn live_registered_command_is_not_misclassified_as_interrupted() {
+        let temp = repo_with_database();
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(Vec::new()),
+        )
+        .expect("create workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create run");
+        let command_node_run = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "command",
+            0,
+            WorkflowNodeRunStatusDto::Running,
+            "run-1:live-command:0",
+        )
+        .expect("insert running command node run");
+        let registration =
+            register_running_workflow_command("project-1", &run.id, &command_node_run.id)
+                .expect("register live command");
+        let loaded_run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load run")
+            .expect("run exists");
+
+        assert!(
+            !reconcile_interrupted_command_nodes(temp.path(), "project-1", &loaded_run)
+                .expect("reconcile live command")
+        );
+        drop(registration);
+        let reloaded_run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("reload run")
+            .expect("run exists");
+        let reloaded_node = reloaded_run
+            .nodes
+            .iter()
+            .find(|node| node.id == command_node_run.id)
+            .expect("command node exists");
+        assert_eq!(reloaded_node.status, WorkflowNodeRunStatusDto::Running);
+    }
+
+    #[test]
+    fn foreign_live_command_lease_is_not_misclassified_as_interrupted() {
+        let temp = repo_with_database();
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(Vec::new()),
+        )
+        .expect("create workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create run");
+        project_store::update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &run.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start run");
+        let node = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "command",
+            0,
+            WorkflowNodeRunStatusDto::Eligible,
+            "run-1:foreign-command:0",
+        )
+        .expect("insert command node");
+        assert!(project_store::claim_workflow_command_node_starting(
+            temp.path(),
+            "project-1",
+            &run.id,
+            &node.id,
+            "foreign-app-instance",
+            process::id(),
+            &process_birth_identity(process::id()).expect("current process identity"),
+            "foreign-lease",
+            &crate::auth::now_timestamp(),
+        )
+        .expect("claim foreign lease"));
+        let loaded = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load run")
+            .expect("run exists");
+
+        assert!(
+            !reconcile_interrupted_command_nodes(temp.path(), "project-1", &loaded)
+                .expect("preserve foreign live command")
+        );
+        let lease = project_store::load_workflow_command_lease(temp.path(), "project-1", &node.id)
+            .expect("load lease")
+            .expect("lease remains");
+        assert_eq!(lease.owner_instance_id, "foreign-app-instance");
+    }
+
+    #[test]
+    fn stale_heartbeat_does_not_steal_from_a_live_command_owner() {
+        let temp = repo_with_database();
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(Vec::new()),
+        )
+        .expect("create workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create run");
+        project_store::update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &run.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start run");
+        let node = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "command",
+            0,
+            WorkflowNodeRunStatusDto::Eligible,
+            "run-1:expired-command:0",
+        )
+        .expect("insert command node");
+        assert!(project_store::claim_workflow_command_node_starting(
+            temp.path(),
+            "project-1",
+            &run.id,
+            &node.id,
+            "dead-app-instance",
+            process::id(),
+            &process_birth_identity(process::id()).expect("current process identity"),
+            "expired-lease",
+            "2020-01-01T00:00:00Z",
+        )
+        .expect("claim expired lease"));
+        let loaded = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load run")
+            .expect("run exists");
+
+        assert!(
+            !reconcile_interrupted_command_nodes(temp.path(), "project-1", &loaded)
+                .expect("preserve the live owner")
+        );
+        let recovered = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("reload run")
+            .expect("run exists");
+        assert_eq!(
+            recovered
+                .nodes
+                .iter()
+                .find(|candidate| candidate.id == node.id)
+                .expect("node exists")
+                .status,
+            WorkflowNodeRunStatusDto::Starting,
+        );
+        assert!(
+            project_store::load_workflow_command_lease(temp.path(), "project-1", &node.id,)
+                .expect("load lease")
+                .is_some()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn orphan_cleanup_refuses_to_signal_a_reused_process_identity() {
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("sleep 30");
+        configure_process_tree_root(&mut command);
+        let mut child = command.spawn().expect("spawn command");
+        register_process_tree_root(&child).expect("register process tree");
+        let child_id = child.id();
+        let birth = workflow_command_process_birth_identity(child_id)
+            .expect("capture command birth identity");
+
+        assert!(!terminate_orphaned_workflow_command(
+            child_id,
+            "different-process-birth",
+        ));
+        assert!(child.try_wait().expect("poll command").is_none());
+        assert!(terminate_orphaned_workflow_command(child_id, &birth));
+        let _ = child.wait();
+        cleanup_process_group_after_root_exit(child_id);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn durable_control_transition_is_observed_by_owner_heartbeat() {
+        let temp = repo_with_database();
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(Vec::new()),
+        )
+        .expect("create workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create run");
+        project_store::update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &run.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start run");
+        let node = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "command",
+            0,
+            WorkflowNodeRunStatusDto::Eligible,
+            "run-1:heartbeat-command:0",
+        )
+        .expect("insert command node");
+        let mut registration = register_running_workflow_command("project-1", &run.id, &node.id)
+            .expect("register command");
+        assert!(project_store::claim_workflow_command_node_starting(
+            temp.path(),
+            "project-1",
+            &run.id,
+            &node.id,
+            &registration.owner_instance_id,
+            registration.owner_process_id,
+            &registration.owner_process_birth_identity,
+            &registration.lease_token,
+            &crate::auth::now_timestamp(),
+        )
+        .expect("claim lease"));
+        registration
+            .activate_persisted_lease(temp.path())
+            .expect("start heartbeat");
+        let mut command = Command::new("/bin/sh");
+        command.arg("-c").arg("sleep 30");
+        configure_process_tree_root(&mut command);
+        let child = command.spawn().expect("spawn command");
+        let child_id = child.id();
+        let child_birth = workflow_command_process_birth_identity(child_id);
+        assert!(project_store::attach_workflow_command_process(
+            temp.path(),
+            "project-1",
+            &node.id,
+            &registration.owner_instance_id,
+            &registration.lease_token,
+            child_id,
+            child_birth.as_deref(),
+            &crate::auth::now_timestamp(),
+        )
+        .expect("attach process"));
+        registration.control.attach_child(child);
+
+        assert!(project_store::compare_and_set_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &node.id,
+            &[WorkflowNodeRunStatusDto::Starting],
+            WorkflowNodeRunStatusDto::Stalled,
+            None,
+            None,
+            Some("test_cross_process_control"),
+        )
+        .expect("persist remote control"));
+        let deadline = Instant::now() + StdDuration::from_secs(5);
+        while !registration.control.termination_requested() {
+            assert!(
+                Instant::now() < deadline,
+                "heartbeat did not observe lease loss"
+            );
+            thread::sleep(StdDuration::from_millis(25));
+        }
+        drop(registration);
+        let process_id = libc::pid_t::try_from(child_id).expect("child pid fits pid_t");
+        let process_gone = unsafe { libc::kill(process_id, 0) } == -1
+            && io::Error::last_os_error().raw_os_error() == Some(libc::ESRCH);
+        assert!(
+            process_gone,
+            "lease loss must terminate and reap the command"
+        );
+    }
+
+    #[test]
+    fn interrupted_command_is_stalled_instead_of_restarted() {
+        let temp = repo_with_database();
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(Vec::new()),
+        )
+        .expect("create workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create run");
+        let command_node_run = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "command",
+            0,
+            WorkflowNodeRunStatusDto::Starting,
+            "run-1:command:0",
+        )
+        .expect("insert starting command node run");
+        let loaded_run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load run")
+            .expect("run exists");
+
+        assert!(
+            reconcile_interrupted_command_nodes(temp.path(), "project-1", &loaded_run)
+                .expect("reconcile interrupted command")
+        );
+
+        let reloaded_run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("reload run")
+            .expect("run exists");
+        let reloaded_node = reloaded_run
+            .nodes
+            .iter()
+            .find(|node| node.id == command_node_run.id)
+            .expect("command node exists");
+        assert_eq!(reloaded_node.status, WorkflowNodeRunStatusDto::Stalled);
+        assert_eq!(
+            reloaded_node.failure_class.as_deref(),
+            Some(COMMAND_INTERRUPTED_FAILURE_CLASS)
+        );
+        assert_eq!(
+            reloaded_run
+                .events
+                .iter()
+                .filter(|event| event.event_type == "workflow_command_interrupted")
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn replaying_the_same_loop_source_does_not_consume_an_attempt() {
         let temp = repo_with_database();
         let mut retry_edge = edge(
             "edge-retry",
@@ -4857,7 +8120,7 @@ mod tests {
         );
         retry_edge.loop_policy = Some(WorkflowLoopPolicyDto {
             loop_key: "retry".into(),
-            max_attempts: 1,
+            max_attempts: 2,
             attempt_scope: Default::default(),
             carryover_policy: Default::default(),
             selected_artifact_refs: Vec::new(),
@@ -4884,20 +8147,107 @@ mod tests {
             "run-1:source-a:0",
         )
         .expect("insert source node run");
+        let loaded_run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load run")
+            .expect("run exists");
+
+        let first_target = loop_target_for_edge(
+            temp.path(),
+            "project-1",
+            &loaded_run,
+            &source_node_run,
+            &retry_edge,
+        )
+        .expect("resolve first loop target");
+        let after_first = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("reload after first route")
+            .expect("run exists");
+        let replay_target = loop_target_for_edge(
+            temp.path(),
+            "project-1",
+            &after_first,
+            &source_node_run,
+            &retry_edge,
+        )
+        .expect("replay loop target");
+
+        assert_eq!(first_target.target_node_id, "source-b");
+        assert_eq!(replay_target.target_node_id, first_target.target_node_id);
+        let after_replay = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("reload after replay")
+            .expect("run exists");
+        let retry_attempt = after_replay
+            .loop_attempts
+            .iter()
+            .find(|attempt| attempt.loop_key == "retry")
+            .expect("retry attempt exists");
+        assert_eq!(retry_attempt.attempt_count, 1);
+        assert!(!retry_attempt.exhausted);
+    }
+
+    #[test]
+    fn exhausted_loop_routes_to_fallback_and_records_exhaustion() {
+        let temp = repo_with_database();
+        let mut retry_edge = edge(
+            "edge-retry",
+            "source-a",
+            "source-b",
+            WorkflowEdgeTypeDto::Loop,
+        );
+        retry_edge.loop_policy = Some(WorkflowLoopPolicyDto {
+            loop_key: "retry".into(),
+            max_attempts: 1,
+            attempt_scope: Default::default(),
+            carryover_policy: Default::default(),
+            selected_artifact_refs: Vec::new(),
+            reset_policy: Default::default(),
+            stall_detector: None,
+            on_exhausted: "done".into(),
+        });
+
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(vec![retry_edge.clone()]),
+        )
+        .expect("create workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create run");
+        let prior_source_node_run = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "terminal",
+            0,
+            WorkflowNodeRunStatusDto::Succeeded,
+            "run-1:source-a:0",
+        )
+        .expect("insert prior source node run");
         project_store::increment_workflow_loop_attempt(
             temp.path(),
             "project-1",
             &run.id,
             "retry",
-            &source_node_run.id,
+            &prior_source_node_run.id,
             false,
         )
         .expect("seed first loop attempt");
+        let source_node_run = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "terminal",
+            1,
+            WorkflowNodeRunStatusDto::Succeeded,
+            "run-1:source-a:1",
+        )
+        .expect("insert current source node run");
         let loaded_run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
             .expect("load run")
             .expect("run exists");
 
-        let target_node_id = loop_target_for_edge(
+        let target = loop_target_for_edge(
             temp.path(),
             "project-1",
             &loaded_run,
@@ -4906,7 +8256,7 @@ mod tests {
         )
         .expect("resolve exhausted loop target");
 
-        assert_eq!(target_node_id, "done");
+        assert_eq!(target.target_node_id, "done");
         let reloaded_run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
             .expect("reload run")
             .expect("run exists");

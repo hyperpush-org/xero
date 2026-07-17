@@ -132,6 +132,10 @@ export interface BuildSnapshotOptions {
   workflowContract?: string
   finalResponseContract?: string
   attachedSkills?: readonly CustomAgentAttachedSkillDto[]
+  // Exact canonical definition that seeded an edit session. Fields emitted
+  // from the visual graph override this base; fields the graph cannot express
+  // survive untouched, including fields added to the canonical schema later.
+  sourceSnapshot?: Readonly<Record<string, unknown>> | null
 }
 
 /**
@@ -309,6 +313,7 @@ export function buildSnapshotFromGraph(
   }))
 
   const snapshot: Record<string, unknown> = {
+    ...(options.sourceSnapshot ?? {}),
     schema: AGENT_DEFINITION_SCHEMA,
     schemaVersion: AGENT_DEFINITION_SCHEMA_VERSION,
     id: definitionId,
@@ -360,6 +365,10 @@ export function buildSnapshotFromGraph(
 
   if (workflowStructure) {
     snapshot.workflowStructure = workflowStructure
+  } else {
+    // workflowStructure is graph-authored, so deleting every Stage must also
+    // remove it from the canonical base instead of resurrecting stale Stages.
+    delete snapshot.workflowStructure
   }
 
   return { snapshot, definitionId }
@@ -427,8 +436,8 @@ function buildWorkflowStructure(
 
   const phases: CustomAgentWorkflowPhaseDto[] = phaseNodes.map((node, index) => {
     const dto = node.data.phase
-    const id = dto.id.trim() || `phase-${index + 1}`
-    const title = dto.title.trim() || `Phase ${index + 1}`
+    const id = dto.id.trim() || `stage-${index + 1}`
+    const title = dto.title.trim() || `Stage ${index + 1}`
     const allowedTools = dto.allowedTools && dto.allowedTools.length > 0
       ? Array.from(new Set(dto.allowedTools.map((tool) => tool.trim()).filter(Boolean)))
       : undefined
@@ -487,6 +496,7 @@ function cloneCheck(check: CustomAgentWorkflowGateDto): CustomAgentWorkflowGateD
     kind: 'tool_succeeded',
     toolName: check.toolName,
   }
+  if (check.toolNames !== undefined) result.toolNames = [...check.toolNames]
   if (check.minCount !== undefined) result.minCount = check.minCount
   if (check.description !== undefined) result.description = check.description
   return result
@@ -514,6 +524,7 @@ function cloneCondition(
         kind: 'tool_succeeded',
         toolName: condition.toolName,
       }
+      if (condition.toolNames !== undefined) result.toolNames = [...condition.toolNames]
       if (condition.minCount !== undefined) result.minCount = condition.minCount
       return result
     }

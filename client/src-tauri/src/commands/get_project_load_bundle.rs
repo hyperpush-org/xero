@@ -2,6 +2,7 @@ use tauri::{AppHandle, Runtime, State};
 
 use crate::{
     commands::{
+        agent_task::recover_prepared_agent_runs_for_project,
         get_project_snapshot::project_snapshot_record_for_project,
         get_runtime_session::reconcile_runtime_session, validate_non_empty, AgentSessionDto,
         AgentSessionStatusDto, CommandError, CommandResult, ProjectLoadBundleDiagnosticDto,
@@ -54,7 +55,7 @@ pub async fn get_project_load_bundle<R: Runtime + 'static>(
     })
 }
 
-fn get_project_load_bundle_blocking<R: Runtime>(
+fn get_project_load_bundle_blocking<R: Runtime + 'static>(
     app: AppHandle<R>,
     state: DesktopState,
     request: ProjectLoadBundleRequestDto,
@@ -65,6 +66,12 @@ fn get_project_load_bundle_blocking<R: Runtime>(
     let repo_root = project_record.repo_root;
 
     let mut diagnostics = Vec::new();
+
+    if let Err(error) =
+        recover_prepared_agent_runs_for_project(&app, &state, &repo_root, &project_id)
+    {
+        diagnostics.push(bundle_diagnostic("agentRunRecovery", &error));
+    }
 
     let is_global_computer_use = project_id == GLOBAL_COMPUTER_USE_PROJECT_ID;
     let repository_status = if is_global_computer_use {

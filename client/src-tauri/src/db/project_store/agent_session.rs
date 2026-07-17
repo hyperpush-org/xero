@@ -98,9 +98,26 @@ pub fn create_agent_session(
     repo_root: &Path,
     payload: &AgentSessionCreateRecord,
 ) -> Result<AgentSessionRecord, CommandError> {
+    create_agent_session_with_id(repo_root, &generate_agent_session_id(), payload)
+}
+
+/// Creates a session under a caller-owned stable identity, or replays the
+/// existing identical session. Workflow node startup uses this so a crash
+/// between session creation and agent-run creation cannot accumulate orphaned
+/// random sessions on every recovery attempt.
+pub fn create_agent_session_with_id(
+    repo_root: &Path,
+    agent_session_id: &str,
+    payload: &AgentSessionCreateRecord,
+) -> Result<AgentSessionRecord, CommandError> {
     validate_non_empty_text(
         &payload.project_id,
         "projectId",
+        "agent_session_request_invalid",
+    )?;
+    validate_non_empty_text(
+        agent_session_id,
+        "agentSessionId",
         "agent_session_request_invalid",
     )?;
     validate_non_empty_text(&payload.title, "title", "agent_session_request_invalid")?;
@@ -109,7 +126,6 @@ pub fn create_agent_session(
     let connection = open_runtime_database(repo_root, &database_path)?;
     read_project_row(&connection, &database_path, repo_root, &payload.project_id)?;
 
-    let agent_session_id = generate_agent_session_id();
     let now = now_timestamp();
     let transaction = connection.unchecked_transaction().map_err(|error| {
         CommandError::system_fault(
@@ -141,10 +157,11 @@ pub fn create_agent_session(
                 updated_at
             )
             VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, 0, ?7, ?8)
+            ON CONFLICT(project_id, agent_session_id) DO NOTHING
             "#,
             params![
                 payload.project_id.as_str(),
-                agent_session_id.as_str(),
+                agent_session_id,
                 agent_session_kind_sql_value(payload.session_kind),
                 payload.title.trim(),
                 payload.summary.as_str(),
@@ -177,7 +194,7 @@ pub fn create_agent_session(
         &connection,
         &database_path,
         &payload.project_id,
-        agent_session_id.as_str(),
+        agent_session_id,
     )?
     .ok_or_else(|| {
         CommandError::system_fault(
@@ -187,6 +204,20 @@ pub fn create_agent_session(
                 database_path.display()
             ),
         )
+    })
+    .and_then(|session| {
+        if session.session_kind != payload.session_kind
+            || session.title != payload.title.trim()
+            || session.summary.as_str() != payload.summary.as_str()
+        {
+            return Err(CommandError::user_fixable(
+                "agent_session_idempotency_conflict",
+                format!(
+                    "Agent session id `{agent_session_id}` is already bound to a different request."
+                ),
+            ));
+        }
+        Ok(session)
     })
 }
 

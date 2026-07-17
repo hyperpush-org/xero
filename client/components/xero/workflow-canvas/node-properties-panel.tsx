@@ -734,11 +734,11 @@ function AgentHeaderEditor({ nodeId, data }: { nodeId: string; data: AgentHeader
             className="resize-none text-[10px]"
           />
         </FieldGroup>
-        <FieldGroup label="Workflow contract">
+        <FieldGroup label="Run contract">
           <Textarea
             value={advanced.workflowContract}
             onChange={(event) => updateAdvanced({ workflowContract: event.target.value })}
-            placeholder="What end-to-end workflow does this agent run?"
+            placeholder="What end-to-end process does this agent run?"
             rows={2}
             className="resize-none text-[10px]"
           />

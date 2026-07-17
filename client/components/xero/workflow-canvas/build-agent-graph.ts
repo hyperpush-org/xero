@@ -1318,6 +1318,7 @@ function cloneRequiredCheck(
   return {
     kind: 'tool_succeeded',
     toolName: check.toolName,
+    toolNames: check.toolNames ? [...check.toolNames] : undefined,
     minCount: check.minCount,
     description: check.description,
   }
@@ -1335,6 +1336,7 @@ function cloneCondition(
       return {
         kind: 'tool_succeeded',
         toolName: condition.toolName,
+        toolNames: condition.toolNames ? [...condition.toolNames] : undefined,
         minCount: condition.minCount,
       }
   }
@@ -1741,10 +1743,14 @@ function blankDetail(): WorkflowAgentDetailDto {
 export function buildAgentGraphForEditing(
   mode: EditingMode,
   detail: WorkflowAgentDetailDto | null,
-): { graph: AgentGraph; detail: WorkflowAgentDetailDto } {
+): {
+  graph: AgentGraph
+  detail: WorkflowAgentDetailDto
+  sourceSnapshot: Readonly<Record<string, unknown>> | null
+} {
   if (mode === 'create' || !detail) {
     const blank = blankDetail()
-    return { graph: buildAgentGraph(blank), detail: blank }
+    return { graph: buildAgentGraph(blank), detail: blank, sourceSnapshot: null }
   }
   if (mode === 'duplicate') {
     const next: WorkflowAgentDetailDto = {
@@ -1756,7 +1762,11 @@ export function buildAgentGraphForEditing(
         scope: 'global_custom',
       },
     }
-    return { graph: buildAgentGraph(next), detail: next }
+    return { graph: buildAgentGraph(next), detail: next, sourceSnapshot: null }
   }
-  return { graph: buildAgentGraph(detail), detail }
+  const sourceSnapshot =
+    detail.ref.kind === 'custom' && detail.authoringGraph?.canonicalGraph
+      ? (detail.authoringGraph.canonicalGraph as Readonly<Record<string, unknown>>)
+      : null
+  return { graph: buildAgentGraph(detail), detail, sourceSnapshot }
 }

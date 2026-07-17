@@ -527,6 +527,88 @@ describe('buildSnapshotFromGraph', () => {
     expect(toolPolicy.allowedEffectClasses).toEqual(['observe', 'runtime_state'])
   })
 
+  it('preserves canonical fields outside the visual graph when editing a visible field', () => {
+    const graph = buildAgentGraph(detail())
+    const originalCanonical = canonicalCustomAgentDefinitionSchema.parse({
+      ...buildSnapshotFromGraph(graph.nodes, graph.edges, {
+        initialDefinitionId: 'release_notes_helper',
+      }).snapshot,
+      extends: 'release_notes_base',
+      version: 7,
+      promptFragments: {
+        preamble: ['Keep citations attached to every release-note claim.'],
+      },
+      projectDataPolicy: {
+        recordKinds: ['project_fact'],
+        structuredSchemas: ['xero.release_note.v1'],
+        unstructuredScopes: ['release_notes'],
+        memoryCandidateKinds: ['release_decision'],
+      },
+      memoryCandidatePolicy: {
+        memoryKinds: ['release_decision'],
+        reviewRequired: true,
+      },
+      retrievalDefaults: {
+        enabled: true,
+        recordKinds: ['project_fact'],
+        memoryKinds: ['release_decision'],
+        limit: 12,
+      },
+      defaultModel: {
+        providerId: 'openai',
+        providerProfileId: 'profile-release',
+        modelId: 'gpt-5.4',
+        selectionKey: 'release-model',
+        thinkingEffort: 'high',
+      },
+      capabilities: {
+        citations: { required: true },
+        releaseChannels: ['stable', 'beta'],
+      },
+      safetyLimits: [
+        'Never publish release notes without operator approval.',
+        'Do not expose unreleased security details.',
+      ],
+    })
+    const futureCanonicalField = {
+      nested: { value: 'must survive a schema expansion' },
+    }
+    const sourceSnapshot: Record<string, unknown> = {
+      ...originalCanonical,
+      futureCanonicalField,
+    }
+
+    const header = graph.nodes.find((node) => node.id === AGENT_GRAPH_HEADER_NODE_ID)
+    if (!header || header.type !== 'agent-header') {
+      throw new Error('missing agent header node')
+    }
+    header.data.header = {
+      ...header.data.header,
+      displayName: 'Release Notes Helper Edited',
+    }
+
+    const { snapshot } = buildSnapshotFromGraph(graph.nodes, graph.edges, {
+      initialDefinitionId: 'release_notes_helper',
+      sourceSnapshot,
+    })
+
+    expect(snapshot.displayName).toBe('Release Notes Helper Edited')
+    for (const field of [
+      'extends',
+      'version',
+      'promptFragments',
+      'projectDataPolicy',
+      'memoryCandidatePolicy',
+      'retrievalDefaults',
+      'defaultModel',
+      'capabilities',
+      'safetyLimits',
+      'futureCanonicalField',
+    ] as const) {
+      expect(snapshot[field]).toEqual(sourceSnapshot[field])
+    }
+  })
+
   it('duplicates an existing graph as an ordinary custom agent with a fresh slug id', () => {
     const source = detail()
     source.header = {
@@ -565,6 +647,21 @@ describe('buildSnapshotFromGraph', () => {
       initialDefinitionId: 'release_notes_helper',
     })
     expect((snapshot as Record<string, unknown>).workflowStructure).toBeUndefined()
+  })
+
+  it('removes a source workflowStructure when all stages are deleted', () => {
+    const graph = buildAgentGraph(detail())
+    const { snapshot } = buildSnapshotFromGraph(graph.nodes, graph.edges, {
+      initialDefinitionId: 'release_notes_helper',
+      sourceSnapshot: {
+        workflowStructure: {
+          startPhaseId: 'draft',
+          phases: [{ id: 'draft', title: 'Draft release notes' }],
+        },
+      },
+    })
+
+    expect(snapshot.workflowStructure).toBeUndefined()
   })
 
   it('round-trips an authored workflow state machine through the canvas snapshot', () => {

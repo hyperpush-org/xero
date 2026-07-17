@@ -1393,6 +1393,7 @@ impl AutonomousAgentToolPolicy {
 pub struct AutonomousAgentWorkflowPolicy {
     start_phase_id: String,
     phases: Vec<AutonomousAgentWorkflowPhase>,
+    invalid_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1426,48 +1427,106 @@ enum AutonomousAgentWorkflowCondition {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub(super) struct AutonomousAgentWorkflowRuntimeState {
     current_phase_id: String,
+    current_phase_attempt: u64,
     tool_successes: BTreeMap<String, usize>,
-    phase_failures: BTreeMap<String, usize>,
+    completed_todos: BTreeSet<String>,
+    phase_failures: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AutonomousAgentWorkflowEvidenceScope {
+    phase_id: String,
+    phase_attempt: u64,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct AutonomousAgentWorkflowReplay {
     pub todo_items: BTreeMap<String, AutonomousTodoItem>,
-    pub tool_successes: BTreeMap<String, usize>,
+    pub events: Vec<AutonomousAgentWorkflowReplayEvent>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AutonomousAgentWorkflowReplayEvent {
+    ToolStarted {
+        tool_call_id: String,
+        tool_name: String,
+    },
+    ToolCompleted {
+        tool_call_id: String,
+        succeeded: bool,
+        completed_todo_id: Option<String>,
+    },
 }
 
 impl AutonomousAgentWorkflowPolicy {
     pub fn from_definition_snapshot(snapshot: &JsonValue) -> Option<Self> {
-        let object = snapshot.get("workflowStructure")?.as_object()?;
-        let phases_json = object.get("phases")?.as_array()?;
-        let phases = phases_json
-            .iter()
-            .filter_map(AutonomousAgentWorkflowPhase::from_json)
-            .collect::<Vec<_>>();
-        if phases.is_empty() {
-            return None;
+        let workflow_structure = snapshot.get("workflowStructure")?;
+        let mut diagnostics = Vec::new();
+        agent_definition::validate_workflow_structure(Some(workflow_structure), &mut diagnostics);
+        if let Some(diagnostic) = diagnostics.first() {
+            return Some(Self::invalid(format!(
+                "{}: {}",
+                diagnostic.path, diagnostic.message
+            )));
         }
-        let start_phase_id = object
-            .get("startPhaseId")
-            .and_then(JsonValue::as_str)
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .map(ToOwned::to_owned)
-            .unwrap_or_else(|| phases[0].id.clone());
-        phases
-            .iter()
-            .any(|phase| phase.id == start_phase_id)
-            .then_some(Self {
-                start_phase_id,
-                phases,
-            })
+
+        let parsed = (|| {
+            let object = workflow_structure.as_object()?;
+            let phases_json = object.get("phases")?.as_array()?;
+            let phases = phases_json
+                .iter()
+                .map(AutonomousAgentWorkflowPhase::from_json)
+                .collect::<Option<Vec<_>>>()?;
+            let start_phase_id = match object.get("startPhaseId") {
+                Some(value) => json_non_empty_string(Some(value))?,
+                None => phases.first()?.id.clone(),
+            };
+            phases
+                .iter()
+                .any(|phase| phase.id == start_phase_id)
+                .then_some(Self {
+                    start_phase_id,
+                    phases,
+                    invalid_reason: None,
+                })
+        })();
+
+        Some(parsed.unwrap_or_else(|| {
+            Self::invalid("the canonical Stage structure could not be compiled".into())
+        }))
+    }
+
+    fn invalid(reason: String) -> Self {
+        Self {
+            start_phase_id: "__invalid_stage_policy__".into(),
+            phases: Vec::new(),
+            invalid_reason: Some(reason),
+        }
+    }
+
+    fn ensure_valid(&self) -> CommandResult<()> {
+        let Some(reason) = self.invalid_reason.as_deref() else {
+            return Ok(());
+        };
+        Err(CommandError::system_fault(
+            "agent_stage_policy_invalid",
+            format!(
+                "Xero blocked this custom agent because its persisted Stage policy is invalid: {reason}."
+            ),
+        ))
+    }
+
+    fn is_valid(&self) -> bool {
+        self.invalid_reason.is_none()
     }
 
     fn initial_state(&self) -> AutonomousAgentWorkflowRuntimeState {
         AutonomousAgentWorkflowRuntimeState {
             current_phase_id: self.start_phase_id.clone(),
+            current_phase_attempt: 1,
             tool_successes: BTreeMap::new(),
-            phase_failures: BTreeMap::new(),
+            completed_todos: BTreeSet::new(),
+            phase_failures: 0,
         }
     }
 
@@ -1476,6 +1535,9 @@ impl AutonomousAgentWorkflowPolicy {
     }
 
     pub(crate) fn initial_allowed_tools(&self) -> Option<BTreeSet<String>> {
+        if !self.is_valid() {
+            return Some(BTreeSet::new());
+        }
         self.phase(&self.start_phase_id)
             .and_then(AutonomousAgentWorkflowPhase::registry_allowed_tools)
     }
@@ -1485,40 +1547,87 @@ impl AutonomousAgentWorkflowPolicy {
         self.phases.get(index.saturating_add(1))
     }
 
-    fn advance_state(
-        &self,
-        state: &mut AutonomousAgentWorkflowRuntimeState,
-        todos: &BTreeMap<String, AutonomousTodoItem>,
-    ) {
+    fn advance_state(&self, state: &mut AutonomousAgentWorkflowRuntimeState) {
         let mut visited = BTreeSet::new();
         loop {
             if !visited.insert(state.current_phase_id.clone()) {
                 break;
             }
             let Some(phase) = self.phase(&state.current_phase_id) else {
-                state.current_phase_id = self.start_phase_id.clone();
                 break;
             };
-            if !phase.required_checks_satisfied(state, todos) {
+            if !phase.required_checks_satisfied(state) {
                 break;
             }
             if let Some(branch) = phase
                 .branches
                 .iter()
-                .find(|branch| branch.condition.satisfied(state, todos))
+                .find(|branch| branch.condition.satisfied(state))
             {
                 if branch.target_phase_id == phase.id {
                     break;
                 }
-                state.current_phase_id = branch.target_phase_id.clone();
+                state.enter_phase(&branch.target_phase_id);
                 continue;
             }
             let Some(next_phase) = self.next_sequential_phase(&phase.id) else {
                 break;
             };
-            state.current_phase_id = next_phase.id.clone();
+            state.enter_phase(&next_phase.id);
         }
     }
+}
+
+impl AutonomousAgentWorkflowRuntimeState {
+    fn active_evidence_scope(&self) -> AutonomousAgentWorkflowEvidenceScope {
+        AutonomousAgentWorkflowEvidenceScope {
+            phase_id: self.current_phase_id.clone(),
+            phase_attempt: self.current_phase_attempt,
+        }
+    }
+
+    fn evidence_scope_is_active(&self, scope: &AutonomousAgentWorkflowEvidenceScope) -> bool {
+        self.current_phase_id == scope.phase_id && self.current_phase_attempt == scope.phase_attempt
+    }
+
+    fn enter_phase(&mut self, phase_id: &str) {
+        self.current_phase_id = phase_id.to_owned();
+        self.current_phase_attempt = self.current_phase_attempt.saturating_add(1);
+        self.tool_successes.clear();
+        self.completed_todos.clear();
+        self.phase_failures = 0;
+    }
+
+    fn record_tool_completion(
+        &mut self,
+        scope: &AutonomousAgentWorkflowEvidenceScope,
+        tool_name: &str,
+        succeeded: bool,
+        completed_todo_id: Option<&str>,
+    ) {
+        if !self.evidence_scope_is_active(scope) {
+            return;
+        }
+        if succeeded {
+            *self.tool_successes.entry(tool_name.to_owned()).or_default() += 1;
+            if let Some(todo_id) = completed_todo_id {
+                self.completed_todos.insert(todo_id.to_owned());
+            }
+        } else {
+            self.phase_failures = self.phase_failures.saturating_add(1);
+        }
+    }
+}
+
+fn completed_todo_id_from_tool_result(result: &AutonomousToolResult) -> Option<String> {
+    let AutonomousToolOutput::Todo(output) = &result.output else {
+        return None;
+    };
+    output
+        .changed_item
+        .as_ref()
+        .filter(|item| item.status == AutonomousTodoStatus::Completed)
+        .map(|item| item.id.clone())
 }
 
 fn validate_subagent_workflow_structure(
@@ -1540,7 +1649,11 @@ fn validate_subagent_workflow_structure(
         ));
     }
     let snapshot = json!({ "workflowStructure": workflow_structure.clone() });
-    if AutonomousAgentWorkflowPolicy::from_definition_snapshot(&snapshot).is_none() {
+    let compiled_policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&snapshot);
+    if !compiled_policy
+        .as_ref()
+        .is_some_and(AutonomousAgentWorkflowPolicy::is_valid)
+    {
         return Err(CommandError::user_fixable(
             "autonomous_tool_subagent_stage_invalid",
             "Xero could not compile the child Stage configuration into an executable policy.",
@@ -1619,41 +1732,35 @@ impl AutonomousAgentWorkflowPhase {
     fn from_json(value: &JsonValue) -> Option<Self> {
         let object = value.as_object()?;
         let id = json_non_empty_string(object.get("id"))?;
-        let title = json_non_empty_string(object.get("title")).unwrap_or_else(|| id.clone());
-        let allowed_tools = object
-            .get("allowedTools")
-            .and_then(JsonValue::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(|item| json_non_empty_string(Some(item)))
-                    .collect::<BTreeSet<_>>()
-            })
-            .unwrap_or_default();
-        let required_checks = object
-            .get("requiredChecks")
-            .and_then(JsonValue::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(AutonomousAgentWorkflowCondition::from_json)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
-        let retry_limit = object
-            .get("retryLimit")
-            .and_then(JsonValue::as_u64)
-            .map(|value| value as usize);
-        let branches = object
-            .get("branches")
-            .and_then(JsonValue::as_array)
-            .map(|items| {
-                items
-                    .iter()
-                    .filter_map(AutonomousAgentWorkflowBranch::from_json)
-                    .collect::<Vec<_>>()
-            })
-            .unwrap_or_default();
+        let title = json_non_empty_string(object.get("title"))?;
+        let allowed_tools = match object.get("allowedTools") {
+            Some(value) => value
+                .as_array()?
+                .iter()
+                .map(|item| json_non_empty_string(Some(item)))
+                .collect::<Option<BTreeSet<_>>>()?,
+            None => BTreeSet::new(),
+        };
+        let required_checks = match object.get("requiredChecks") {
+            Some(value) => value
+                .as_array()?
+                .iter()
+                .map(AutonomousAgentWorkflowCondition::from_json)
+                .collect::<Option<Vec<_>>>()?,
+            None => Vec::new(),
+        };
+        let retry_limit = match object.get("retryLimit") {
+            Some(value) => Some(usize::try_from(value.as_u64()?).ok()?),
+            None => None,
+        };
+        let branches = match object.get("branches") {
+            Some(value) => value
+                .as_array()?
+                .iter()
+                .map(AutonomousAgentWorkflowBranch::from_json)
+                .collect::<Option<Vec<_>>>()?,
+            None => Vec::new(),
+        };
         Some(Self {
             id,
             title,
@@ -1664,14 +1771,10 @@ impl AutonomousAgentWorkflowPhase {
         })
     }
 
-    fn required_checks_satisfied(
-        &self,
-        state: &AutonomousAgentWorkflowRuntimeState,
-        todos: &BTreeMap<String, AutonomousTodoItem>,
-    ) -> bool {
+    fn required_checks_satisfied(&self, state: &AutonomousAgentWorkflowRuntimeState) -> bool {
         self.required_checks
             .iter()
-            .all(|condition| condition.satisfied(state, todos))
+            .all(|condition| condition.satisfied(state))
     }
 
     fn allows_tool(&self, tool_name: &str) -> bool {
@@ -1747,16 +1850,10 @@ impl AutonomousAgentWorkflowCondition {
         }
     }
 
-    fn satisfied(
-        &self,
-        state: &AutonomousAgentWorkflowRuntimeState,
-        todos: &BTreeMap<String, AutonomousTodoItem>,
-    ) -> bool {
+    fn satisfied(&self, state: &AutonomousAgentWorkflowRuntimeState) -> bool {
         match self {
             Self::Always => true,
-            Self::TodoCompleted { todo_id } => todos
-                .get(todo_id)
-                .is_some_and(|item| item.status == AutonomousTodoStatus::Completed),
+            Self::TodoCompleted { todo_id } => state.completed_todos.contains(todo_id),
             Self::ToolSucceeded {
                 tool_names,
                 min_count,
@@ -2556,6 +2653,8 @@ pub fn deferred_tool_catalog(skill_tool_enabled: bool) -> Vec<AutonomousToolCata
                 "action",
                 "definitionId",
                 "sourceDefinitionId",
+                "sourceVersion",
+                "expectedCurrentVersion",
                 "includeArchived",
                 "definition",
             ],
@@ -4927,9 +5026,35 @@ impl AutonomousToolRuntime {
             .as_ref()
             .map(AutonomousAgentWorkflowPolicy::initial_state)
             .unwrap_or_default();
-        state.tool_successes = replay.tool_successes;
         if let Some(policy) = self.agent_workflow_policy.as_ref() {
-            policy.advance_state(&mut state, &replay.todo_items);
+            let mut in_flight = BTreeMap::new();
+            for event in replay.events {
+                match event {
+                    AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                        tool_call_id,
+                        tool_name,
+                    } => {
+                        policy.advance_state(&mut state);
+                        in_flight.insert(tool_call_id, (tool_name, state.active_evidence_scope()));
+                    }
+                    AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                        tool_call_id,
+                        succeeded,
+                        completed_todo_id,
+                    } => {
+                        let Some((tool_name, scope)) = in_flight.remove(&tool_call_id) else {
+                            continue;
+                        };
+                        state.record_tool_completion(
+                            &scope,
+                            &tool_name,
+                            succeeded,
+                            completed_todo_id.as_deref(),
+                        );
+                        policy.advance_state(&mut state);
+                    }
+                }
+            }
         }
         self.agent_workflow_state = Arc::new(Mutex::new(state));
         self
@@ -5144,80 +5269,75 @@ impl AutonomousToolRuntime {
         self.skill_tool.is_some()
     }
 
-    fn enforce_agent_workflow_before_tool(&self, tool_name: &str) -> CommandResult<()> {
+    fn enforce_agent_workflow_before_tool(
+        &self,
+        tool_name: &str,
+    ) -> CommandResult<Option<AutonomousAgentWorkflowEvidenceScope>> {
         let Some(policy) = self.agent_workflow_policy.as_ref() else {
-            return Ok(());
+            return Ok(None);
         };
-        let todos = self.todo_items.lock().map_err(|_| {
-            CommandError::system_fault(
-                "autonomous_tool_todo_lock_failed",
-                "Xero could not lock the owned-agent todo store.",
-            )
-        })?;
+        policy.ensure_valid()?;
         let mut state = self.agent_workflow_state.lock().map_err(|_| {
             CommandError::system_fault(
                 "agent_workflow_state_lock_failed",
                 "Xero could not lock the custom-agent workflow state.",
             )
         })?;
-        policy.advance_state(&mut state, &todos);
+        policy.advance_state(&mut state);
         let Some(phase) = policy.phase(&state.current_phase_id) else {
             return Err(CommandError::policy_denied(
-                "Xero stopped this custom workflow because its current phase is not declared.",
+                "Xero stopped this custom agent because its current Stage is not declared.",
             ));
         };
         if let Some(retry_limit) = phase.retry_limit {
-            let failures = state
-                .phase_failures
-                .get(&phase.id)
-                .copied()
-                .unwrap_or_default();
-            if failures > retry_limit {
+            if state.phase_failures > retry_limit {
                 return Err(CommandError::policy_denied(format!(
-                    "Xero stopped custom workflow phase `{}` because its retryLimit of {} was exceeded.",
+                    "Xero stopped custom agent Stage `{}` because its retryLimit of {} was exceeded.",
                     phase.title, retry_limit
                 )));
             }
         }
         if !phase.allows_tool(tool_name) {
             return Err(CommandError::policy_denied(format!(
-                "Xero refused tool `{tool_name}` because custom workflow phase `{}` has not satisfied its required gates.",
+                "Xero refused tool `{tool_name}` because custom agent Stage `{}` has not satisfied its required gates.",
                 phase.title
             )));
         }
-        Ok(())
+        Ok(Some(state.active_evidence_scope()))
     }
 
     fn record_agent_workflow_after_tool(
         &self,
+        scope: Option<&AutonomousAgentWorkflowEvidenceScope>,
         tool_name: &str,
-        succeeded: bool,
+        result: Option<&AutonomousToolResult>,
     ) -> CommandResult<()> {
         let Some(policy) = self.agent_workflow_policy.as_ref() else {
             return Ok(());
         };
-        let todos = self.todo_items.lock().map_err(|_| {
-            CommandError::system_fault(
-                "autonomous_tool_todo_lock_failed",
-                "Xero could not lock the owned-agent todo store.",
-            )
-        })?;
+        policy.ensure_valid()?;
+        let Some(scope) = scope else {
+            return Err(CommandError::system_fault(
+                "agent_workflow_evidence_scope_missing",
+                "Xero could not bind the tool result to the Stage attempt that authorized it.",
+            ));
+        };
         let mut state = self.agent_workflow_state.lock().map_err(|_| {
             CommandError::system_fault(
                 "agent_workflow_state_lock_failed",
                 "Xero could not lock the custom-agent workflow state.",
             )
         })?;
-        if succeeded {
-            *state
-                .tool_successes
-                .entry(tool_name.to_owned())
-                .or_default() += 1;
-        } else {
-            let current_phase_id = state.current_phase_id.clone();
-            *state.phase_failures.entry(current_phase_id).or_default() += 1;
-        }
-        policy.advance_state(&mut state, &todos);
+        let completed_todo_id = result.and_then(completed_todo_id_from_tool_result);
+        state.record_tool_completion(
+            scope,
+            tool_name,
+            result.is_some_and(|result| {
+                result.tool_name == tool_name && autonomous_tool_result_succeeded(result)
+            }),
+            completed_todo_id.as_deref(),
+        );
+        policy.advance_state(&mut state);
         Ok(())
     }
 
@@ -5255,10 +5375,14 @@ impl AutonomousToolRuntime {
         self.check_cancelled()?;
         self.consume_delegated_tool_call_budget()?;
         let tool_name = request.tool_name();
-        self.enforce_agent_workflow_before_tool(tool_name)?;
+        let workflow_scope = self.enforce_agent_workflow_before_tool(tool_name)?;
         self.enforce_mailbox_check_before_mutation(tool_name, &request)?;
         let result = self.execute_without_workflow(request);
-        self.record_agent_workflow_after_tool(tool_name, result.is_ok())?;
+        self.record_agent_workflow_after_tool(
+            workflow_scope.as_ref(),
+            tool_name,
+            result.as_ref().ok(),
+        )?;
         result
     }
 
@@ -5644,7 +5768,7 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<AutonomousToolResult> {
         self.check_cancelled()?;
         let tool_name = request.tool_name();
-        self.enforce_agent_workflow_before_tool(tool_name)?;
+        let workflow_scope = self.enforce_agent_workflow_before_tool(tool_name)?;
         self.enforce_mailbox_check_before_mutation(tool_name, &request)?;
         let result = match request {
             AutonomousToolRequest::Read(request) => self.read_with_operator_approval(request),
@@ -5684,7 +5808,11 @@ impl AutonomousToolRuntime {
             }
             request => self.execute_without_workflow(request),
         };
-        self.record_agent_workflow_after_tool(tool_name, result.is_ok())?;
+        self.record_agent_workflow_after_tool(
+            workflow_scope.as_ref(),
+            tool_name,
+            result.as_ref().ok(),
+        )?;
         result
     }
 
@@ -6110,13 +6238,10 @@ impl AutonomousToolRuntime {
         let Some(policy) = self.agent_workflow_policy.as_ref() else {
             return true;
         };
-        let Ok(todos) = self.todo_items.lock() else {
-            return false;
-        };
         let Ok(mut state) = self.agent_workflow_state.lock() else {
             return false;
         };
-        policy.advance_state(&mut state, &todos);
+        policy.advance_state(&mut state);
         policy
             .phase(&state.current_phase_id)
             .is_some_and(|phase| phase.allows_tool(tool))
@@ -6126,22 +6251,55 @@ impl AutonomousToolRuntime {
         let Some(policy) = self.agent_workflow_policy.as_ref() else {
             return Ok(None);
         };
-        let todos = self.todo_items.lock().map_err(|_| {
-            CommandError::system_fault(
-                "autonomous_tool_todo_lock_failed",
-                "Xero could not lock the owned-agent todo store.",
-            )
-        })?;
+        policy.ensure_valid()?;
         let mut state = self.agent_workflow_state.lock().map_err(|_| {
             CommandError::system_fault(
                 "agent_workflow_state_lock_failed",
                 "Xero could not lock the custom-agent workflow state.",
             )
         })?;
-        policy.advance_state(&mut state, &todos);
+        policy.advance_state(&mut state);
         Ok(policy
             .phase(&state.current_phase_id)
             .and_then(AutonomousAgentWorkflowPhase::registry_allowed_tools))
+    }
+
+    pub(crate) fn agent_stage_completion_gate_prompt(&self) -> CommandResult<Option<String>> {
+        let Some(policy) = self.agent_workflow_policy.as_ref() else {
+            return Ok(None);
+        };
+        policy.ensure_valid()?;
+        let mut state = self.agent_workflow_state.lock().map_err(|_| {
+            CommandError::system_fault(
+                "agent_workflow_state_lock_failed",
+                "Xero could not lock the custom-agent Stage state.",
+            )
+        })?;
+        policy.advance_state(&mut state);
+        let Some(phase) = policy.phase(&state.current_phase_id) else {
+            return Err(CommandError::system_fault(
+                "agent_stage_state_invalid",
+                "Xero cannot complete this custom agent because its active Stage is not declared.",
+            ));
+        };
+        if !phase.required_checks_satisfied(&state) {
+            return Ok(Some(format!(
+                "Do not return a final response yet. Complete every required check for the active Stage `{}` first, using the Stage's allowed tools. Only return a final response after the runtime advances to a terminal Stage and all of that Stage's required checks are satisfied.",
+                phase.title
+            )));
+        }
+        if phase
+            .branches
+            .iter()
+            .any(|branch| branch.condition.satisfied(&state))
+            || policy.next_sequential_phase(&phase.id).is_some()
+        {
+            return Ok(Some(format!(
+                "Do not return a final response yet. The active Stage `{}` is not terminal. Continue through the remaining Stages before summarizing.",
+                phase.title
+            )));
+        }
+        Ok(None)
     }
 
     pub(crate) fn reconcile_isolated_tool_result(
@@ -9006,6 +9164,82 @@ pub enum AutonomousToolOutput {
     Skill(AutonomousSkillToolOutput),
     Browser(AutonomousBrowserOutput),
     Emulator(AutonomousEmulatorOutput),
+}
+
+pub(crate) fn autonomous_tool_result_succeeded(result: &AutonomousToolResult) -> bool {
+    match &result.output {
+        AutonomousToolOutput::Edit(output) => output.applied && !output.preview,
+        AutonomousToolOutput::Write(output) => output.applied && !output.preview,
+        AutonomousToolOutput::Patch(output) => output.applied && !output.preview,
+        AutonomousToolOutput::Copy(output) => output.applied && !output.preview,
+        AutonomousToolOutput::FsTransaction(output) => output.applied && !output.preview,
+        AutonomousToolOutput::JsonEdit(output)
+        | AutonomousToolOutput::TomlEdit(output)
+        | AutonomousToolOutput::YamlEdit(output) => output.applied && !output.preview,
+        AutonomousToolOutput::Delete(output) => output.applied && !output.preview,
+        AutonomousToolOutput::Rename(output) => output.applied && !output.preview,
+        AutonomousToolOutput::Mkdir(output) => output.applied && !output.preview,
+        AutonomousToolOutput::Command(output) => {
+            output.spawned && !output.timed_out && output.exit_code == Some(0)
+        }
+        AutonomousToolOutput::CommandSession(output) => {
+            output.spawned
+                && match output.operation {
+                    AutonomousCommandSessionOperation::Start => {
+                        output.running || output.exit_code == Some(0)
+                    }
+                    AutonomousCommandSessionOperation::Read
+                    | AutonomousCommandSessionOperation::Stop => true,
+                }
+        }
+        AutonomousToolOutput::ProcessManager(output) => {
+            !output.policy.approval_required
+                && (!matches!(
+                    output.action,
+                    AutonomousProcessManagerAction::Start
+                        | AutonomousProcessManagerAction::Run
+                        | AutonomousProcessManagerAction::Restart
+                        | AutonomousProcessManagerAction::AsyncStart
+                ) || output.spawned)
+        }
+        AutonomousToolOutput::ActionRequired(_) => false,
+        AutonomousToolOutput::SystemDiagnostics(output) => output.performed,
+        AutonomousToolOutput::MacosAutomation(output) => output.performed,
+        AutonomousToolOutput::DesktopObserve(output)
+        | AutonomousToolOutput::DesktopControl(output)
+        | AutonomousToolOutput::DesktopStream(output) => matches!(
+            output.status,
+            AutonomousDesktopToolStatus::Executed
+                | AutonomousDesktopToolStatus::Starting
+                | AutonomousDesktopToolStatus::Stopped
+        ),
+        AutonomousToolOutput::SensitiveInput(output) => output.status == "approved",
+        AutonomousToolOutput::AgentDefinition(output) => {
+            !output.approval_required
+                && (!matches!(
+                    output.action,
+                    AutonomousAgentDefinitionAction::Save
+                        | AutonomousAgentDefinitionAction::Update
+                        | AutonomousAgentDefinitionAction::Archive
+                        | AutonomousAgentDefinitionAction::Clone
+                ) || output.applied)
+        }
+        AutonomousToolOutput::WorkflowDefinition(output) => {
+            !output.approval_required
+                && (!matches!(
+                    output.action,
+                    AutonomousWorkflowDefinitionAction::Save
+                        | AutonomousWorkflowDefinitionAction::Update
+                ) || output.applied)
+        }
+        AutonomousToolOutput::Skill(output) => {
+            output.status == AutonomousSkillToolStatus::Succeeded
+        }
+        _ => match result.command_result.as_ref() {
+            Some(command) => !command.timed_out && command.exit_code == Some(0),
+            None => true,
+        },
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -12167,6 +12401,297 @@ mod tests {
     }
 
     #[test]
+    fn stage_regression_malformed_policy_remains_fail_closed_at_runtime() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [{
+                    "id": "inspect",
+                    "title": "Inspect",
+                    "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                    "requiredChecks": {
+                        "kind": "todo_completed",
+                        "todoId": "inspect_done"
+                    }
+                }]
+            }
+        }))
+        .expect("the malformed Stage policy must remain attached so it can fail closed");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_agent_workflow_policy(Some(policy));
+
+        let error = runtime
+            .agent_stage_completion_gate_prompt()
+            .expect_err("malformed Stage policy must block completion");
+
+        assert_eq!(error.code, "agent_stage_policy_invalid");
+    }
+
+    #[test]
+    fn stage_regression_tool_evidence_is_scoped_to_each_stage_attempt() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [
+                    {
+                        "id": "inspect",
+                        "title": "Inspect",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [{
+                            "kind": "tool_succeeded",
+                            "toolName": AUTONOMOUS_TOOL_TODO
+                        }]
+                    },
+                    {
+                        "id": "verify",
+                        "title": "Verify",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [{
+                            "kind": "tool_succeeded",
+                            "toolName": AUTONOMOUS_TOOL_TODO
+                        }]
+                    },
+                    {
+                        "id": "publish",
+                        "title": "Publish",
+                        "allowedTools": [AUTONOMOUS_TOOL_WRITE]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_agent_workflow_policy(Some(policy));
+        let list_todos = || {
+            AutonomousToolRequest::Todo(AutonomousTodoRequest {
+                action: AutonomousTodoAction::List,
+                id: None,
+                title: None,
+                notes: None,
+                status: None,
+                mode: None,
+                debug_stage: None,
+                evidence: None,
+                phase_id: None,
+                phase_title: None,
+                slice_id: None,
+                handoff_note: None,
+            })
+        };
+
+        runtime.execute(list_todos()).expect("inspect tool success");
+
+        assert!(runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_WRITE)
+            .is_err());
+        assert!(runtime
+            .agent_stage_completion_gate_prompt()
+            .expect("completion gate")
+            .is_some());
+
+        runtime.execute(list_todos()).expect("verify tool success");
+
+        assert!(runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_WRITE)
+            .is_ok());
+        assert!(runtime
+            .agent_stage_completion_gate_prompt()
+            .expect("completion gate")
+            .is_none());
+    }
+
+    #[test]
+    fn stage_regression_late_tool_result_cannot_satisfy_the_next_stage() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [
+                    {
+                        "id": "inspect",
+                        "title": "Inspect",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [{
+                            "kind": "tool_succeeded",
+                            "toolName": AUTONOMOUS_TOOL_TODO
+                        }]
+                    },
+                    {
+                        "id": "verify",
+                        "title": "Verify",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [{
+                            "kind": "tool_succeeded",
+                            "toolName": AUTONOMOUS_TOOL_TODO
+                        }]
+                    },
+                    {
+                        "id": "publish",
+                        "title": "Publish",
+                        "allowedTools": [AUTONOMOUS_TOOL_WRITE]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_agent_workflow_policy(Some(policy));
+        let first_scope = runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_TODO)
+            .expect("first tool allowed")
+            .expect("first Stage scope");
+        let late_scope = runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_TODO)
+            .expect("parallel tool allowed")
+            .expect("parallel Stage scope");
+        let result = runtime
+            .todo(AutonomousTodoRequest {
+                action: AutonomousTodoAction::List,
+                id: None,
+                title: None,
+                notes: None,
+                status: None,
+                mode: None,
+                debug_stage: None,
+                evidence: None,
+                phase_id: None,
+                phase_title: None,
+                slice_id: None,
+                handoff_note: None,
+            })
+            .expect("todo result");
+
+        runtime
+            .record_agent_workflow_after_tool(
+                Some(&first_scope),
+                AUTONOMOUS_TOOL_TODO,
+                Some(&result),
+            )
+            .expect("first result advances Stage");
+        runtime
+            .record_agent_workflow_after_tool(
+                Some(&late_scope),
+                AUTONOMOUS_TOOL_TODO,
+                Some(&result),
+            )
+            .expect("late result is ignored");
+
+        assert!(runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_WRITE)
+            .is_err());
+        assert!(runtime
+            .agent_stage_completion_gate_prompt()
+            .expect("completion gate")
+            .is_some());
+    }
+
+    #[test]
+    fn stage_regression_approval_preview_is_not_a_successful_tool_execution() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "verify",
+                "phases": [
+                    {
+                        "id": "verify",
+                        "title": "Verify",
+                        "allowedTools": [AUTONOMOUS_TOOL_COMMAND_VERIFY],
+                        "requiredChecks": [{
+                            "kind": "tool_succeeded",
+                            "toolName": AUTONOMOUS_TOOL_COMMAND_VERIFY
+                        }]
+                    },
+                    {
+                        "id": "publish",
+                        "title": "Publish",
+                        "allowedTools": [AUTONOMOUS_TOOL_WRITE]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_agent_workflow_policy(Some(policy));
+        let approval_scope = runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_COMMAND_VERIFY)
+            .expect("verification tool allowed")
+            .expect("Stage scope");
+        let policy_trace = AutonomousCommandPolicyTrace {
+            outcome: AutonomousCommandPolicyOutcome::Escalated,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            profile: AutonomousCommandPolicyProfile::ReadOnlyVerification,
+            code: "policy_escalated_approval_mode".into(),
+            reason: "Operator approval is required.".into(),
+        };
+        let approval_preview = AutonomousToolResult {
+            tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+            summary: "Verification requires approval.".into(),
+            command_result: None,
+            output: AutonomousToolOutput::Command(AutonomousCommandOutput {
+                argv: vec!["cargo".into(), "test".into()],
+                cwd: ".".into(),
+                intent: "read_only_verification".into(),
+                stdout: None,
+                stderr: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_redacted: false,
+                stderr_redacted: false,
+                exit_code: None,
+                timed_out: false,
+                spawned: false,
+                preview_token: None,
+                policy: policy_trace.clone(),
+                changed_files: Vec::new(),
+                changed_files_truncated: false,
+                output_artifact: None,
+                suggested_next_actions: Vec::new(),
+                host_command_impact: None,
+                sandbox: None,
+            }),
+        };
+
+        runtime
+            .record_agent_workflow_after_tool(
+                Some(&approval_scope),
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                Some(&approval_preview),
+            )
+            .expect("record approval preview");
+        assert!(runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_WRITE)
+            .is_err());
+
+        let execution_scope = runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_COMMAND_VERIFY)
+            .expect("verification retry allowed")
+            .expect("Stage scope");
+        let mut executed = approval_preview;
+        let AutonomousToolOutput::Command(output) = &mut executed.output else {
+            unreachable!("command output")
+        };
+        output.spawned = true;
+        output.exit_code = Some(0);
+        output.policy.outcome = AutonomousCommandPolicyOutcome::Allowed;
+        runtime
+            .record_agent_workflow_after_tool(
+                Some(&execution_scope),
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                Some(&executed),
+            )
+            .expect("record actual verification");
+        assert!(runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_WRITE)
+            .is_ok());
+    }
+
+    #[test]
     fn s22_tool_access_respects_current_workflow_stage() {
         let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
             "workflowStructure": {
@@ -12353,16 +12878,41 @@ mod tests {
                 updated_at: "2026-06-28T02:05:35Z".into(),
             },
         );
-        let mut tool_successes = BTreeMap::new();
-        tool_successes.insert(AUTONOMOUS_TOOL_READ.into(), 2);
-
         let runtime = AutonomousToolRuntime::new(tempdir.path())
             .expect("runtime")
             .with_runtime_run_controls(engineer_runtime_controls())
             .with_agent_workflow_policy(Some(policy))
             .with_agent_workflow_replay(AutonomousAgentWorkflowReplay {
                 todo_items,
-                tool_successes,
+                events: vec![
+                    AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                        tool_call_id: "read-1".into(),
+                        tool_name: AUTONOMOUS_TOOL_READ.into(),
+                    },
+                    AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                        tool_call_id: "read-1".into(),
+                        succeeded: true,
+                        completed_todo_id: None,
+                    },
+                    AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                        tool_call_id: "read-2".into(),
+                        tool_name: AUTONOMOUS_TOOL_READ.into(),
+                    },
+                    AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                        tool_call_id: "read-2".into(),
+                        succeeded: true,
+                        completed_todo_id: None,
+                    },
+                    AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                        tool_call_id: "plan-complete".into(),
+                        tool_name: AUTONOMOUS_TOOL_TODO.into(),
+                    },
+                    AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                        tool_call_id: "plan-complete".into(),
+                        succeeded: true,
+                        completed_todo_id: Some("implementation_plan".into()),
+                    },
+                ],
             });
 
         let granted = tool_access_output(runtime.tool_access(AutonomousToolAccessRequest {

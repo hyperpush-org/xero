@@ -154,6 +154,7 @@ pub enum WorkflowRunStatusDto {
     Queued,
     Running,
     Paused,
+    Cancelling,
     Completed,
     Failed,
     Cancelled,
@@ -165,6 +166,7 @@ impl WorkflowRunStatusDto {
             Self::Queued => "queued",
             Self::Running => "running",
             Self::Paused => "paused",
+            Self::Cancelling => "cancelling",
             Self::Completed => "completed",
             Self::Failed => "failed",
             Self::Cancelled => "cancelled",
@@ -1289,6 +1291,7 @@ pub struct CreateWorkflowDefinitionRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct UpdateWorkflowDefinitionRequestDto {
     pub workflow_id: String,
+    pub expected_version: u32,
     pub definition: WorkflowDefinitionDto,
 }
 
@@ -1322,6 +1325,7 @@ pub struct WorkflowDefinitionResponseDto {
 pub struct StartWorkflowRunRequestDto {
     pub project_id: String,
     pub workflow_id: String,
+    pub idempotency_key: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub initial_input: Option<JsonValue>,
 }
@@ -1352,6 +1356,7 @@ pub struct ExportWorkflowRunBundleRequestDto {
 pub struct ResumeWorkflowNextIncompletePhaseRequestDto {
     pub project_id: String,
     pub run_id: String,
+    pub idempotency_key: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

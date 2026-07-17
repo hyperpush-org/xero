@@ -272,6 +272,7 @@ pub struct StartAgentTaskRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SendAgentMessageRequestDto {
     pub run_id: String,
+    pub continuation_request_id: String,
     pub prompt: String,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub attachments: Vec<StagedAgentAttachmentDto>,
@@ -298,6 +299,7 @@ pub struct RejectAgentActionRequestDto {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ResumeAgentRunRequestDto {
     pub run_id: String,
+    pub continuation_request_id: String,
     pub response: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub action_id: Option<String>,
@@ -696,6 +698,7 @@ pub struct ListAgentDefinitionsResponseDto {
 pub struct ArchiveAgentDefinitionRequestDto {
     pub project_id: String,
     pub definition_id: String,
+    pub expected_current_version: u32,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

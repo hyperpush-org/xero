@@ -2,11 +2,11 @@ use std::{
     collections::BTreeMap,
     env,
     fs::{self, OpenOptions},
-    io::{Read, Write},
+    io::{self, Read, Write},
     path::{Path, PathBuf},
-    process::{Child, Command},
+    process::{Child, ChildStderr, ChildStdout, Command},
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
@@ -39,7 +39,10 @@ use crate::{
     git::status,
     runtime::{
         cancelled_error,
-        process_tree::{cleanup_process_group_after_root_exit, terminate_process_tree},
+        process_tree::{
+            cleanup_process_group_after_root_exit, register_process_tree_root,
+            terminate_process_tree,
+        },
         redaction::{
             find_prohibited_persistence_content, redact_command_argv_for_persistence,
             render_command_for_persistence,
@@ -56,6 +59,7 @@ use xero_agent_core::{
 
 const REDACTED_COMMAND_OUTPUT_SUMMARY: &str =
     "Command output was redacted before durable persistence.";
+const COMMAND_OUTPUT_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 const COMMAND_SESSION_INITIAL_DRAIN: Duration = Duration::from_millis(150);
 const DEFAULT_COMMAND_SESSION_READ_BYTES: usize = 16 * 1024;
 const MAX_COMMAND_SESSION_READ_BYTES: usize = 64 * 1024;
@@ -788,6 +792,13 @@ impl AutonomousToolRuntime {
                     "autonomous_tool_command",
                 )
             })?;
+        if let Err(error) = register_process_tree_root(&sandboxed_process.child) {
+            let _ = terminate_process_tree(&mut sandboxed_process.child);
+            return Err(CommandError::system_fault(
+                "autonomous_tool_command_tree_registration_failed",
+                format!("Xero could not establish process-tree ownership: {error}"),
+            ));
+        }
         let stdout = sandboxed_process.child.stdout.take().ok_or_else(|| {
             CommandError::retryable(
                 "autonomous_tool_command_stdout_missing",
@@ -834,9 +845,9 @@ impl AutonomousToolRuntime {
                 }
                 Ok(None) if self.is_cancelled() => {
                     let _ = terminate_process_tree(&mut sandboxed_process.child);
-                    let _ = stdout_handle.join();
-                    let _ = stderr_handle.join();
-                    drain_command_output_events(
+                    let _ = finish_command_output_readers(
+                        stdout_handle,
+                        stderr_handle,
                         &output_receiver,
                         &mut stdout_capture,
                         &mut stderr_capture,
@@ -848,9 +859,9 @@ impl AutonomousToolRuntime {
                 }
                 Ok(None) if started_at.elapsed() >= timeout => {
                     let _ = terminate_process_tree(&mut sandboxed_process.child);
-                    let _ = stdout_handle.join();
-                    let _ = stderr_handle.join();
-                    drain_command_output_events(
+                    let _ = finish_command_output_readers(
+                        stdout_handle,
+                        stderr_handle,
                         &output_receiver,
                         &mut stdout_capture,
                         &mut stderr_capture,
@@ -870,9 +881,9 @@ impl AutonomousToolRuntime {
                 Ok(None) => thread::sleep(Duration::from_millis(10)),
                 Err(error) => {
                     let _ = terminate_process_tree(&mut sandboxed_process.child);
-                    let _ = stdout_handle.join();
-                    let _ = stderr_handle.join();
-                    drain_command_output_events(
+                    let _ = finish_command_output_readers(
+                        stdout_handle,
+                        stderr_handle,
                         &output_receiver,
                         &mut stdout_capture,
                         &mut stderr_capture,
@@ -891,9 +902,9 @@ impl AutonomousToolRuntime {
             }
         };
 
-        let _ = stdout_handle.join();
-        let _ = stderr_handle.join();
-        drain_command_output_events(
+        let drain_status = finish_command_output_readers(
+            stdout_handle,
+            stderr_handle,
             &output_receiver,
             &mut stdout_capture,
             &mut stderr_capture,
@@ -901,6 +912,26 @@ impl AutonomousToolRuntime {
             self.limits.max_command_excerpt_chars,
             on_chunk,
         );
+        if drain_status.incomplete {
+            return Err(CommandError::retryable(
+                "autonomous_tool_command_output_incomplete",
+                format!(
+                    "Xero stopped draining command `{}` after the bounded output deadline (stdout bytes: {}, stderr bytes: {}).",
+                    render_command_for_summary(&prepared.argv),
+                    stdout_capture.bytes.len(),
+                    stderr_capture.bytes.len()
+                ),
+            ));
+        }
+        if drain_status.read_failed {
+            return Err(CommandError::retryable(
+                "autonomous_tool_command_output_failed",
+                format!(
+                    "Xero could not completely read output from command `{}`.",
+                    render_command_for_summary(&prepared.argv)
+                ),
+            ));
+        }
 
         let exit_code = status.code();
         sandboxed_process.metadata.exit_classification = exit_classification_from_code(exit_code);
@@ -2668,6 +2699,7 @@ enum CommandOutputReadEvent {
 struct StreamingCommandCapture {
     bytes: Vec<u8>,
     truncated: bool,
+    read_failed: bool,
 }
 
 impl StreamingCommandCapture {
@@ -2685,14 +2717,162 @@ impl StreamingCommandCapture {
     }
 }
 
+trait PollableCommandOutputStream: Read + Send + 'static {
+    fn wait_until_readable(&self, timeout: Duration) -> io::Result<bool>;
+}
+
+#[cfg(unix)]
+fn unix_command_output_readable(
+    stream: &impl std::os::fd::AsRawFd,
+    timeout: Duration,
+) -> io::Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe {
+            libc::poll(
+                &mut descriptor,
+                1,
+                timeout.as_millis().min(i32::MAX as u128) as i32,
+            )
+        };
+        if result >= 0 {
+            return Ok(result > 0);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_command_output_readable(
+    stream: &impl std::os::windows::io::AsRawHandle,
+    timeout: Duration,
+) -> io::Result<bool> {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        #[link_name = "PeekNamedPipe"]
+        fn peek_named_pipe(
+            pipe: *mut c_void,
+            buffer: *mut c_void,
+            buffer_size: u32,
+            bytes_read: *mut u32,
+            total_bytes_available: *mut u32,
+            bytes_left_this_message: *mut u32,
+        ) -> i32;
+    }
+
+    const ERROR_BROKEN_PIPE: i32 = 109;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut available = 0_u32;
+        let result = unsafe {
+            peek_named_pipe(
+                stream.as_raw_handle().cast(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if result != 0 {
+            if available > 0 {
+                return Ok(true);
+            }
+        } else {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) {
+                return Ok(true);
+            }
+            return Err(error);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+impl PollableCommandOutputStream for ChildStdout {
+    fn wait_until_readable(&self, timeout: Duration) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            unix_command_output_readable(self, timeout)
+        }
+        #[cfg(windows)]
+        {
+            windows_command_output_readable(self, timeout)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = timeout;
+            Ok(true)
+        }
+    }
+}
+
+impl PollableCommandOutputStream for ChildStderr {
+    fn wait_until_readable(&self, timeout: Duration) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            unix_command_output_readable(self, timeout)
+        }
+        #[cfg(windows)]
+        {
+            windows_command_output_readable(self, timeout)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = timeout;
+            Ok(true)
+        }
+    }
+}
+
+#[cfg(test)]
+impl PollableCommandOutputStream for std::io::Cursor<Vec<u8>> {
+    fn wait_until_readable(&self, _timeout: Duration) -> io::Result<bool> {
+        Ok(true)
+    }
+}
+
+struct CommandOutputReader {
+    stop: Arc<AtomicBool>,
+    thread: thread::JoinHandle<()>,
+}
+
 fn spawn_command_output_reader(
-    mut reader: impl Read + Send + 'static,
+    mut reader: impl PollableCommandOutputStream,
     stream: AutonomousCommandSessionStream,
     sender: mpsc::Sender<CommandOutputReadEvent>,
-) -> thread::JoinHandle<()> {
-    thread::spawn(move || {
+) -> CommandOutputReader {
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_stop = stop.clone();
+    let thread = thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
         loop {
+            if reader_stop.load(Ordering::Acquire) {
+                break;
+            }
+            match reader.wait_until_readable(Duration::from_millis(25)) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    let _ = sender.send(CommandOutputReadEvent::ReadFailed {
+                        stream: stream.clone(),
+                        message: format!("Command output readiness check failed: {error}"),
+                    });
+                    break;
+                }
+            }
             match reader.read(&mut buffer) {
                 Ok(0) => break,
                 Ok(read) => {
@@ -2716,7 +2896,8 @@ fn spawn_command_output_reader(
                 }
             }
         }
-    })
+    });
+    CommandOutputReader { stop, thread }
 }
 
 fn drain_command_output_events(
@@ -2728,18 +2909,20 @@ fn drain_command_output_events(
     on_chunk: &mut impl FnMut(&AutonomousCommandOutputChunk),
 ) {
     while let Ok(event) = receiver.try_recv() {
-        let (stream, bytes) = match event {
-            CommandOutputReadEvent::Chunk { stream, bytes } => (stream, bytes),
+        let (stream, bytes, read_failed) = match event {
+            CommandOutputReadEvent::Chunk { stream, bytes } => (stream, bytes, false),
             CommandOutputReadEvent::ReadFailed { stream, message } => {
-                (stream, message.into_bytes())
+                (stream, message.into_bytes(), true)
             }
         };
         match &stream {
             AutonomousCommandSessionStream::Stdout => {
-                stdout_capture.append(&bytes, max_capture_bytes)
+                stdout_capture.append(&bytes, max_capture_bytes);
+                stdout_capture.read_failed |= read_failed;
             }
             AutonomousCommandSessionStream::Stderr => {
-                stderr_capture.append(&bytes, max_capture_bytes)
+                stderr_capture.append(&bytes, max_capture_bytes);
+                stderr_capture.read_failed |= read_failed;
             }
         }
 
@@ -2753,6 +2936,70 @@ fn drain_command_output_events(
         if chunk.text.is_some() || chunk.truncated || chunk.redacted {
             on_chunk(&chunk);
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct CommandOutputDrainStatus {
+    incomplete: bool,
+    read_failed: bool,
+}
+
+#[allow(clippy::too_many_arguments)]
+fn finish_command_output_readers(
+    stdout_reader: CommandOutputReader,
+    stderr_reader: CommandOutputReader,
+    receiver: &mpsc::Receiver<CommandOutputReadEvent>,
+    stdout_capture: &mut StreamingCommandCapture,
+    stderr_capture: &mut StreamingCommandCapture,
+    max_capture_bytes: usize,
+    max_excerpt_chars: usize,
+    on_chunk: &mut impl FnMut(&AutonomousCommandOutputChunk),
+) -> CommandOutputDrainStatus {
+    let deadline = Instant::now() + COMMAND_OUTPUT_DRAIN_TIMEOUT;
+    while (!stdout_reader.thread.is_finished() || !stderr_reader.thread.is_finished())
+        && Instant::now() < deadline
+    {
+        drain_command_output_events(
+            receiver,
+            stdout_capture,
+            stderr_capture,
+            max_capture_bytes,
+            max_excerpt_chars,
+            on_chunk,
+        );
+        thread::sleep(Duration::from_millis(5));
+    }
+
+    let stdout_finished = stdout_reader.thread.is_finished();
+    let stderr_finished = stderr_reader.thread.is_finished();
+    if !stdout_finished {
+        stdout_capture.truncated = true;
+        stdout_reader.stop.store(true, Ordering::Release);
+    }
+    if !stderr_finished {
+        stderr_capture.truncated = true;
+        stderr_reader.stop.store(true, Ordering::Release);
+    }
+    if stdout_reader.thread.join().is_err() {
+        stdout_capture.truncated = true;
+        stdout_capture.read_failed = true;
+    }
+    if stderr_reader.thread.join().is_err() {
+        stderr_capture.truncated = true;
+        stderr_capture.read_failed = true;
+    }
+    drain_command_output_events(
+        receiver,
+        stdout_capture,
+        stderr_capture,
+        max_capture_bytes,
+        max_excerpt_chars,
+        on_chunk,
+    );
+    CommandOutputDrainStatus {
+        incomplete: !stdout_finished || !stderr_finished,
+        read_failed: stdout_capture.read_failed || stderr_capture.read_failed,
     }
 }
 
@@ -3236,5 +3483,100 @@ mod tests {
         assert!(!actions
             .iter()
             .any(|action| action.contains("web_search/web_fetch")));
+    }
+
+    #[test]
+    fn command_output_drain_deadline_preserves_partial_stream_without_blocking() {
+        struct StalledAfterPrefixReader {
+            prefix: Option<Vec<u8>>,
+            release: Arc<(Mutex<bool>, std::sync::Condvar)>,
+            terminated: Arc<AtomicBool>,
+        }
+
+        impl Drop for StalledAfterPrefixReader {
+            fn drop(&mut self) {
+                self.terminated.store(true, Ordering::Release);
+            }
+        }
+
+        impl Read for StalledAfterPrefixReader {
+            fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+                if let Some(prefix) = self.prefix.take() {
+                    buffer[..prefix.len()].copy_from_slice(&prefix);
+                    return Ok(prefix.len());
+                }
+                let (released, wake) = &*self.release;
+                let mut released = released
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                while !*released {
+                    released = wake
+                        .wait(released)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                Ok(0)
+            }
+        }
+
+        impl PollableCommandOutputStream for StalledAfterPrefixReader {
+            fn wait_until_readable(&self, _timeout: Duration) -> io::Result<bool> {
+                if self.prefix.is_some() {
+                    return Ok(true);
+                }
+                Ok(*self
+                    .release
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()))
+            }
+        }
+
+        let release = Arc::new((Mutex::new(false), std::sync::Condvar::new()));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let (sender, receiver) = mpsc::channel();
+        let stdout = spawn_command_output_reader(
+            StalledAfterPrefixReader {
+                prefix: Some(b"partial".to_vec()),
+                release: release.clone(),
+                terminated: terminated.clone(),
+            },
+            AutonomousCommandSessionStream::Stdout,
+            sender.clone(),
+        );
+        let stderr = spawn_command_output_reader(
+            std::io::Cursor::new(Vec::<u8>::new()),
+            AutonomousCommandSessionStream::Stderr,
+            sender,
+        );
+        let mut stdout_capture = StreamingCommandCapture::default();
+        let mut stderr_capture = StreamingCommandCapture::default();
+        let started = Instant::now();
+        let status = finish_command_output_readers(
+            stdout,
+            stderr,
+            &receiver,
+            &mut stdout_capture,
+            &mut stderr_capture,
+            1024,
+            1024,
+            &mut |_| {},
+        );
+
+        assert!(started.elapsed() < Duration::from_secs(2));
+        assert!(status.incomplete);
+        assert!(!status.read_failed);
+        assert_eq!(stdout_capture.bytes, b"partial");
+        assert!(stdout_capture.truncated);
+        assert!(!stderr_capture.truncated);
+        assert!(
+            terminated.load(Ordering::Acquire),
+            "bounded drain must join the retained-pipe reader"
+        );
+
+        let (released, wake) = &*release;
+        *released
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        wake.notify_all();
     }
 }

@@ -44,7 +44,7 @@ use crate::{
         is_supported_xai_reasoning_effort_model_id, is_supported_xai_text_model_id,
         process_tree::{
             cleanup_process_group_after_root_exit, configure_process_tree_root,
-            terminate_process_tree,
+            register_process_tree_root, terminate_process_tree,
         },
         redaction::find_prohibited_persistence_content,
         ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID, BEDROCK_PROVIDER_ID, DEEPSEEK_PROVIDER_ID,
@@ -1260,6 +1260,13 @@ impl ProviderAdapter for BedrockCliAdapter {
                 format!("Xero could not start the AWS CLI Bedrock invocation: {error}"),
             ),
         })?;
+        if let Err(error) = register_process_tree_root(&child) {
+            let _ = terminate_process_tree(&mut child);
+            return Err(CommandError::retryable(
+                "bedrock_invoke_process_tree_registration_failed",
+                format!("Xero could not establish ownership of the AWS CLI process tree: {error}"),
+            ));
+        }
         let status = wait_provider_cli(
             &mut child,
             Duration::from_millis(normalize_timeout(self.config.timeout_ms)),

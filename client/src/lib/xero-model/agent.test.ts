@@ -372,6 +372,7 @@ describe('owned agent run schemas', () => {
     const request = startAgentTaskRequestSchema.parse({
       projectId: 'project-1',
       agentSessionId: 'agent-session-main',
+      runId: 'agent-run-1',
       prompt: 'Fix the failing test.',
       controls: {
         runtimeAgentId: 'engineer',
@@ -590,6 +591,7 @@ describe('owned agent run schemas', () => {
     expect(
       sendAgentMessageRequestSchema.parse({
         runId: 'run-agent-1',
+        continuationRequestId: 'message-request-1',
         prompt: 'Continue after trimming old context.',
         autoCompact: {
           enabled: true,
@@ -601,6 +603,7 @@ describe('owned agent run schemas', () => {
     expect(
       resumeAgentRunRequestSchema.parse({
         runId: 'run-agent-1',
+        continuationRequestId: 'resume-request-1',
         response: 'Approved; continue.',
         actionId: 'tool-call-command',
         autoCompact: {
@@ -616,6 +619,7 @@ describe('owned agent run schemas', () => {
     expect(
       resumeAgentRunRequestSchema.parse({
         runId: 'run-agent-1',
+        continuationRequestId: 'resume-request-2',
         response: 'Approved; continue.',
         actionId: null,
       }).actionId,
@@ -623,6 +627,7 @@ describe('owned agent run schemas', () => {
     expect(() =>
       resumeAgentRunRequestSchema.parse({
         runId: 'run-agent-1',
+        continuationRequestId: 'resume-request-3',
         response: 'Approved; continue.',
         actionId: '',
       }),
@@ -630,6 +635,7 @@ describe('owned agent run schemas', () => {
     expect(
       resumeAgentRunRequestSchema.parse({
         runId: 'run-agent-1',
+        continuationRequestId: 'resume-request-4',
         response: 'Approved; continue.',
         autoCompact: {
           enabled: false,
@@ -639,6 +645,7 @@ describe('owned agent run schemas', () => {
     expect(() =>
       sendAgentMessageRequestSchema.parse({
         runId: 'run-agent-1',
+        continuationRequestId: 'message-request-2',
         prompt: 'Continue.',
         autoCompact: {
           enabled: true,

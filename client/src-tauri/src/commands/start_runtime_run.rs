@@ -43,5 +43,14 @@ pub(crate) fn start_runtime_run_blocking<R: Runtime + 'static>(
         request.initial_linked_paths,
     )?;
 
+    if outcome.reconnected {
+        super::update_runtime_run_controls::recover_pending_runtime_prompt_snapshot(
+            app,
+            state,
+            outcome.repo_root.clone(),
+            outcome.snapshot.clone(),
+        );
+    }
+
     Ok(runtime_run_dto_from_snapshot(&outcome.snapshot))
 }

@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, Connection, OptionalExtension, Row};
+use rusqlite::{params, Connection, OptionalExtension, Row, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 
@@ -108,6 +108,145 @@ pub struct AgentRunRecord {
     pub cancelled_at: Option<String>,
     pub last_error: Option<AgentRunDiagnosticRecord>,
     pub updated_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunDriveLeaseRecord {
+    pub project_id: String,
+    pub run_id: String,
+    pub owner_instance_id: String,
+    pub owner_process_id: u32,
+    pub owner_process_birth_identity: String,
+    pub drive_token: String,
+    pub acquired_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRunDriveLeaseClaimResult {
+    Acquired,
+    Held(AgentRunDriveLeaseRecord),
+    RunNotDrivable(AgentRunStatus),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentRunStartRequestState {
+    Preparing,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentRunStartRequestRecord {
+    pub project_id: String,
+    pub run_id: String,
+    pub payload_hash: String,
+    pub recovery_payload_json: String,
+    pub state: AgentRunStartRequestState,
+    pub owner_process_id: u32,
+    pub owner_process_birth_identity: String,
+    pub created_at: String,
+    pub ready_at: Option<String>,
+    pub failed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRunStartRegistrationResult {
+    Registered(AgentRunSnapshotRecord),
+    Replayed {
+        snapshot: AgentRunSnapshotRecord,
+        request: AgentRunStartRequestRecord,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentRunCancellationCasResult {
+    Applied {
+        snapshot: AgentRunSnapshotRecord,
+        transitioned: bool,
+        event: Option<AgentEventRecord>,
+    },
+    LeaseChanged(Option<AgentRunDriveLeaseRecord>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentActionRejectionCommitResult {
+    pub snapshot: AgentRunSnapshotRecord,
+    pub action: AgentActionRequestRecord,
+    pub inserted_events: Vec<AgentEventRecord>,
+    pub replayed: bool,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AgentContinuationRequestState {
+    Prepared,
+    Driving,
+    Consumed,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AgentContinuationDriveStartResult {
+    Started(AgentContinuationRequestRecord),
+    AlreadyDriving(AgentContinuationRequestRecord),
+    Consumed(AgentContinuationRequestRecord),
+    Missing,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentContinuationRequestRecord {
+    pub project_id: String,
+    pub request_id: String,
+    pub run_id: String,
+    pub payload_hash: String,
+    pub recovery_payload_json: String,
+    pub state: AgentContinuationRequestState,
+    pub message_id: i64,
+    pub linked_path_grant_event_id: Option<i64>,
+    pub message_event_id: i64,
+    pub prepared_at: String,
+    pub drive_started_at: Option<String>,
+    pub consumed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NewAgentContinuationPreparationRecord {
+    pub project_id: String,
+    pub request_id: String,
+    pub run_id: String,
+    pub payload_hash: String,
+    pub recovery_payload_json: String,
+    pub role: AgentMessageRole,
+    pub content: String,
+    pub attachments: Vec<NewMessageAttachmentInput>,
+    pub linked_path_grant_payload_json: Option<String>,
+    pub message_payload_json: String,
+    pub action_answer: Option<AgentContinuationActionAnswerRecord>,
+    pub prepared_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentContinuationActionAnswerRecord {
+    pub action_id: Option<String>,
+    pub response: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExistingAgentContinuationPreparationRecord {
+    pub project_id: String,
+    pub request_id: String,
+    pub run_id: String,
+    pub payload_hash: String,
+    pub recovery_payload_json: String,
+    pub message_id: i64,
+    pub message_event_id: i64,
+    pub prepared_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AgentContinuationPreparationResult {
+    pub snapshot: AgentRunSnapshotRecord,
+    pub request: AgentContinuationRequestRecord,
+    pub inserted_events: Vec<AgentEventRecord>,
+    pub inserted: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -522,6 +661,524 @@ pub fn insert_agent_run(
         })?;
 
     read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)
+}
+
+/// Atomically reserves a caller-supplied run id and its immutable start payload.
+///
+/// The reservation and the initial `starting` row commit together. Exact retries replay the
+/// existing row; reusing the run id for different caller input is rejected before any transcript
+/// writes can be duplicated.
+pub fn register_agent_run_start(
+    repo_root: &Path,
+    record: &NewAgentRunRecord,
+    payload_hash: &str,
+    recovery_payload_json: &str,
+    owner_process_id: u32,
+    owner_process_birth_identity: &str,
+) -> Result<AgentRunStartRegistrationResult, CommandError> {
+    validate_agent_run(record)?;
+    validate_payload_hash(payload_hash, "payloadHash")?;
+    validate_json_payload(recovery_payload_json, "recoveryPayloadJson")?;
+    validate_non_empty_text(owner_process_birth_identity, "ownerProcessBirthIdentity")?;
+    if owner_process_id == 0 {
+        return Err(CommandError::invalid_request("ownerProcessId"));
+    }
+    let selection = match (
+        record.agent_definition_id.as_deref(),
+        record.agent_definition_version,
+    ) {
+        (Some(definition_id), Some(version)) => {
+            let mut selection = resolve_agent_definition_for_run(
+                repo_root,
+                Some(definition_id),
+                record.runtime_agent_id,
+            )?;
+            selection.version = version;
+            selection
+        }
+        (Some(definition_id), None) => resolve_agent_definition_for_run(
+            repo_root,
+            Some(definition_id),
+            record.runtime_agent_id,
+        )?,
+        (None, Some(version)) => {
+            let mut selection =
+                resolve_agent_definition_for_run(repo_root, None, record.runtime_agent_id)?;
+            selection.version = version;
+            selection
+        }
+        (None, None) => resolve_agent_definition_for_run(repo_root, None, record.runtime_agent_id)?,
+    };
+    let trace_id = xero_agent_core::runtime_trace_id_for_run(&record.project_id, &record.run_id);
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_transaction_failed", error)
+        })?;
+
+    if let Some(existing) =
+        read_agent_run_start_request(&transaction, &record.project_id, &record.run_id, repo_root)?
+    {
+        if existing.payload_hash != payload_hash {
+            return Err(CommandError::user_fixable(
+                "agent_run_start_conflict",
+                format!(
+                    "Owned-agent run id `{}` was already used for a different start request.",
+                    record.run_id
+                ),
+            ));
+        }
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_commit_failed", error)
+        })?;
+        let snapshot =
+            read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)?;
+        return Ok(AgentRunStartRegistrationResult::Replayed {
+            snapshot,
+            request: existing,
+        });
+    }
+
+    let run_exists = transaction
+        .query_row(
+            "SELECT 1 FROM agent_runs WHERE project_id = ?1 AND run_id = ?2",
+            params![record.project_id, record.run_id],
+            |_| Ok(()),
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_start_existing_read_failed", error)
+        })?
+        .is_some();
+    if run_exists {
+        return Err(CommandError::user_fixable(
+            "agent_run_start_conflict",
+            format!(
+                "Owned-agent run id `{}` already exists without the requested start identity.",
+                record.run_id
+            ),
+        ));
+    }
+
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_runs (
+                runtime_agent_id,
+                agent_definition_id,
+                agent_definition_version,
+                project_id,
+                agent_session_id,
+                run_id,
+                trace_id,
+                provider_id,
+                model_id,
+                status,
+                prompt,
+                system_prompt,
+                started_at,
+                last_heartbeat_at,
+                updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'starting', ?10, ?11, ?12, ?12, ?12)
+            "#,
+            params![
+                selection.runtime_agent_id.as_str(),
+                selection.definition_id,
+                selection.version,
+                record.project_id,
+                record.agent_session_id,
+                record.run_id,
+                trace_id,
+                record.provider_id,
+                record.model_id,
+                record.prompt,
+                record.system_prompt,
+                record.now,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_insert_failed", error)
+        })?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_run_start_requests (
+                project_id,
+                run_id,
+                payload_hash,
+                recovery_payload_json,
+                state,
+                owner_process_id,
+                owner_process_birth_identity,
+                created_at
+            ) VALUES (?1, ?2, ?3, ?4, 'preparing', ?5, ?6, ?7)
+            "#,
+            params![
+                record.project_id,
+                record.run_id,
+                payload_hash,
+                recovery_payload_json,
+                i64::from(owner_process_id),
+                owner_process_birth_identity,
+                record.now,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_identity_insert_failed", error)
+        })?;
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_run_start_commit_failed", error)
+    })?;
+    read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)
+        .map(AgentRunStartRegistrationResult::Registered)
+}
+
+/// Atomically replaces an interrupted, never-dispatched run start with the same immutable
+/// identity. The deterministic run id is never externally absent between the old and new rows.
+pub fn replace_replayable_agent_run_start(
+    repo_root: &Path,
+    expected: &AgentRunStartRequestRecord,
+    record: &NewAgentRunRecord,
+    payload_hash: &str,
+    recovery_payload_json: &str,
+    owner_process_id: u32,
+    owner_process_birth_identity: &str,
+) -> Result<AgentRunStartRegistrationResult, CommandError> {
+    validate_agent_run(record)?;
+    validate_payload_hash(payload_hash, "payloadHash")?;
+    validate_json_payload(recovery_payload_json, "recoveryPayloadJson")?;
+    validate_non_empty_text(owner_process_birth_identity, "ownerProcessBirthIdentity")?;
+    if owner_process_id == 0 {
+        return Err(CommandError::invalid_request("ownerProcessId"));
+    }
+    if expected.project_id != record.project_id
+        || expected.run_id != record.run_id
+        || expected.payload_hash != payload_hash
+    {
+        return Err(CommandError::invalid_request("expectedStartRequest"));
+    }
+    let selection = match (
+        record.agent_definition_id.as_deref(),
+        record.agent_definition_version,
+    ) {
+        (Some(definition_id), Some(version)) => {
+            let mut selection = resolve_agent_definition_for_run(
+                repo_root,
+                Some(definition_id),
+                record.runtime_agent_id,
+            )?;
+            selection.version = version;
+            selection
+        }
+        (Some(definition_id), None) => resolve_agent_definition_for_run(
+            repo_root,
+            Some(definition_id),
+            record.runtime_agent_id,
+        )?,
+        (None, Some(version)) => {
+            let mut selection =
+                resolve_agent_definition_for_run(repo_root, None, record.runtime_agent_id)?;
+            selection.version = version;
+            selection
+        }
+        (None, None) => resolve_agent_definition_for_run(repo_root, None, record.runtime_agent_id)?,
+    };
+    let trace_id = xero_agent_core::runtime_trace_id_for_run(&record.project_id, &record.run_id);
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(
+                repo_root,
+                "agent_run_start_replace_transaction_failed",
+                error,
+            )
+        })?;
+    let existing =
+        read_agent_run_start_request(&transaction, &record.project_id, &record.run_id, repo_root)?
+            .ok_or_else(|| {
+                CommandError::retryable(
+                    "agent_run_start_replace_raced",
+                    format!(
+                        "Agent run `{}` changed before its start could be rebuilt.",
+                        record.run_id
+                    ),
+                )
+            })?;
+    if existing.payload_hash != payload_hash {
+        return Err(CommandError::user_fixable(
+            "agent_run_start_conflict",
+            format!(
+                "Owned-agent run id `{}` was already used for a different start request.",
+                record.run_id
+            ),
+        ));
+    }
+    if existing != *expected {
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_replace_commit_failed", error)
+        })?;
+        let snapshot =
+            read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)?;
+        return Ok(AgentRunStartRegistrationResult::Replayed {
+            snapshot,
+            request: existing,
+        });
+    }
+    let unsafe_continuation_exists = transaction
+        .query_row(
+            r#"
+            SELECT EXISTS (
+                SELECT 1 FROM agent_continuation_requests
+                WHERE project_id = ?1 AND run_id = ?2 AND state IN ('driving', 'consumed')
+            ) OR EXISTS (
+                SELECT 1 FROM agent_handoff_lineage
+                WHERE project_id = ?1 AND target_run_id = ?2 AND status = 'completed'
+            )
+            "#,
+            params![record.project_id, record.run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_start_replace_guard_failed", error)
+        })?
+        == 1;
+    if !matches!(
+        existing.state,
+        AgentRunStartRequestState::Preparing | AgentRunStartRequestState::Failed
+    ) || unsafe_continuation_exists
+    {
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_replace_commit_failed", error)
+        })?;
+        let snapshot =
+            read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)?;
+        return Ok(AgentRunStartRegistrationResult::Replayed {
+            snapshot,
+            request: existing,
+        });
+    }
+    transaction
+        .execute(
+            "DELETE FROM agent_runs WHERE project_id = ?1 AND run_id = ?2",
+            params![record.project_id, record.run_id],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_replace_delete_failed", error)
+        })?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_runs (
+                runtime_agent_id, agent_definition_id, agent_definition_version,
+                project_id, agent_session_id, run_id, trace_id, provider_id, model_id,
+                status, prompt, system_prompt, started_at, last_heartbeat_at, updated_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 'starting', ?10, ?11, ?12, ?12, ?12)
+            "#,
+            params![
+                selection.runtime_agent_id.as_str(),
+                selection.definition_id,
+                selection.version,
+                record.project_id,
+                record.agent_session_id,
+                record.run_id,
+                trace_id,
+                record.provider_id,
+                record.model_id,
+                record.prompt,
+                record.system_prompt,
+                record.now,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_replace_insert_failed", error)
+        })?;
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_run_start_requests (
+                project_id, run_id, payload_hash, recovery_payload_json, state, owner_process_id,
+                owner_process_birth_identity, created_at
+            ) VALUES (?1, ?2, ?3, ?4, 'preparing', ?5, ?6, ?7)
+            "#,
+            params![
+                record.project_id,
+                record.run_id,
+                payload_hash,
+                recovery_payload_json,
+                i64::from(owner_process_id),
+                owner_process_birth_identity,
+                record.now,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_replace_identity_failed", error)
+        })?;
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_run_start_replace_commit_failed", error)
+    })?;
+    read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)
+        .map(AgentRunStartRegistrationResult::Registered)
+}
+
+pub fn load_agent_run_start_request(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Option<AgentRunStartRequestRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    read_agent_run_start_request(&connection, project_id, run_id, repo_root)
+}
+
+pub fn list_ready_agent_run_starts(
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<Vec<AgentRunStartRequestRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT starts.project_id, starts.run_id, starts.payload_hash,
+                   starts.recovery_payload_json, starts.state,
+                   starts.owner_process_id, starts.owner_process_birth_identity,
+                   starts.created_at, starts.ready_at, starts.failed_at
+            FROM agent_run_start_requests starts
+            JOIN agent_runs runs
+              ON runs.project_id = starts.project_id AND runs.run_id = starts.run_id
+            WHERE starts.project_id = ?1 AND starts.state = 'ready' AND runs.status = 'running'
+            ORDER BY starts.created_at ASC, starts.run_id ASC
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_start_list_failed", error)
+        })?;
+    let rows = statement
+        .query_map(params![project_id], |row| {
+            Ok(AgentRunStartRequestRecord {
+                project_id: row.get(0)?,
+                run_id: row.get(1)?,
+                payload_hash: row.get(2)?,
+                recovery_payload_json: row.get(3)?,
+                state: AgentRunStartRequestState::Ready,
+                owner_process_id: read_positive_u32(row, 5)?,
+                owner_process_birth_identity: row.get(6)?,
+                created_at: row.get(7)?,
+                ready_at: row.get(8)?,
+                failed_at: row.get(9)?,
+            })
+        })
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_start_list_failed", error)
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_agent_store_query_error(repo_root, "agent_run_start_list_failed", error)
+    })
+}
+
+pub fn mark_agent_run_start_ready(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    timestamp: &str,
+) -> Result<AgentRunStartRequestRecord, CommandError> {
+    validate_non_empty_text(timestamp, "timestamp")?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .execute(
+            r#"
+            UPDATE agent_run_start_requests
+            SET state = 'ready', ready_at = ?3, failed_at = NULL
+            WHERE project_id = ?1 AND run_id = ?2 AND state = 'preparing'
+            "#,
+            params![project_id, run_id, timestamp],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_ready_failed", error)
+        })?;
+    read_agent_run_start_request(&connection, project_id, run_id, repo_root)?.ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_run_start_identity_missing",
+            format!("Owned-agent run `{run_id}` has no durable start identity."),
+        )
+    })
+}
+
+pub fn fail_preparing_agent_run_start(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    diagnostic: AgentRunDiagnosticRecord,
+    timestamp: &str,
+) -> Result<AgentRunSnapshotRecord, CommandError> {
+    validate_non_empty_text(timestamp, "timestamp")?;
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_fail_transaction_failed", error)
+        })?;
+    let changed = transaction
+        .execute(
+            r#"
+            UPDATE agent_run_start_requests
+            SET state = 'failed', ready_at = NULL, failed_at = ?3
+            WHERE project_id = ?1 AND run_id = ?2 AND state = 'preparing'
+            "#,
+            params![project_id, run_id, timestamp],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_start_fail_marker_failed", error)
+        })?;
+    if changed == 1 {
+        transaction
+            .execute(
+                r#"
+                UPDATE agent_runs
+                SET status = 'failed', last_heartbeat_at = ?3,
+                    completed_at = NULL, cancelled_at = NULL,
+                    last_error_code = ?4, last_error_message = ?5, updated_at = ?3
+                WHERE project_id = ?1 AND run_id = ?2
+                  AND status NOT IN ('completed', 'handed_off', 'failed', 'cancelled')
+                "#,
+                params![
+                    project_id,
+                    run_id,
+                    timestamp,
+                    diagnostic.code,
+                    diagnostic.message
+                ],
+            )
+            .map_err(|error| {
+                map_agent_store_write_error(repo_root, "agent_run_start_fail_status_failed", error)
+            })?;
+        let payload = serde_json::json!({
+            "code": diagnostic.code,
+            "message": diagnostic.message,
+            "retryable": false,
+            "state": "blocked",
+            "stopReason": "blocked",
+        })
+        .to_string();
+        insert_agent_event_in_transaction(
+            &transaction,
+            project_id,
+            run_id,
+            AgentRunEventKind::RunFailed,
+            &payload,
+            timestamp,
+            repo_root,
+        )?;
+    }
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_run_start_fail_commit_failed", error)
+    })?;
+    read_agent_run_snapshot(&connection, repo_root, project_id, run_id)
 }
 
 pub fn append_agent_message(
@@ -1307,6 +1964,55 @@ pub fn append_agent_file_change(
     repo_root: &Path,
     record: &NewAgentFileChangeRecord,
 ) -> Result<AgentFileChangeRecord, CommandError> {
+    validate_new_agent_file_change(record)?;
+    let connection = open_agent_database(repo_root)?;
+    insert_agent_file_change_with_connection(&connection, repo_root, record)
+}
+
+/// Persist a file-change row and its durable event in one transaction.
+///
+/// `prepare_event_payload` runs after the row is inserted but before the event
+/// is written or the transaction commits, so required freshness work can fail
+/// the operation without leaving either relational record behind.
+pub fn append_agent_file_change_with_event<F>(
+    repo_root: &Path,
+    record: &NewAgentFileChangeRecord,
+    prepare_event_payload: F,
+) -> Result<(AgentFileChangeRecord, AgentEventRecord), CommandError>
+where
+    F: FnOnce(&AgentFileChangeRecord) -> Result<JsonValue, CommandError>,
+{
+    validate_new_agent_file_change(record)?;
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_file_change_transaction_failed", error)
+        })?;
+    let change = insert_agent_file_change_with_connection(&transaction, repo_root, record)?;
+    let payload_json =
+        serde_json::to_string(&prepare_event_payload(&change)?).map_err(|error| {
+            CommandError::system_fault(
+                "agent_file_change_event_serialize_failed",
+                format!("Xero could not serialize a file-change event payload: {error}"),
+            )
+        })?;
+    let event = insert_agent_event_in_transaction(
+        &transaction,
+        &record.project_id,
+        &record.run_id,
+        AgentRunEventKind::FileChanged,
+        &payload_json,
+        &record.created_at,
+        repo_root,
+    )?;
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_file_change_commit_failed", error)
+    })?;
+    Ok((change, event))
+}
+
+fn validate_new_agent_file_change(record: &NewAgentFileChangeRecord) -> Result<(), CommandError> {
     validate_non_empty_text(&record.project_id, "projectId")?;
     validate_non_empty_text(&record.run_id, "runId")?;
     if let Some(change_group_id) = record.change_group_id.as_deref() {
@@ -1316,8 +2022,14 @@ pub fn append_agent_file_change(
     validate_non_empty_text(&record.operation, "operation")?;
     validate_optional_sha256(record.old_hash.as_deref(), "oldHash")?;
     validate_optional_sha256(record.new_hash.as_deref(), "newHash")?;
+    validate_non_empty_text(&record.created_at, "createdAt")
+}
 
-    let connection = open_agent_database(repo_root)?;
+fn insert_agent_file_change_with_connection(
+    connection: &Connection,
+    repo_root: &Path,
+    record: &NewAgentFileChangeRecord,
+) -> Result<AgentFileChangeRecord, CommandError> {
     let inserted = connection
         .execute(
             r#"
@@ -1377,65 +2089,48 @@ pub fn append_agent_file_change(
     }
 
     let id = connection.last_insert_rowid();
-    Ok(AgentFileChangeRecord {
-        id,
-        project_id: record.project_id.clone(),
-        run_id: record.run_id.clone(),
-        trace_id: connection
-            .query_row(
-                "SELECT trace_id FROM agent_file_changes WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .map_err(|error| {
-                map_agent_store_query_error(
-                    repo_root,
-                    "agent_file_change_trace_query_failed",
-                    error,
-                )
-            })?,
-        top_level_run_id: connection
-            .query_row(
-                "SELECT top_level_run_id FROM agent_file_changes WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .map_err(|error| {
-                map_agent_store_query_error(
-                    repo_root,
-                    "agent_file_change_top_level_query_failed",
-                    error,
-                )
-            })?,
-        subagent_id: connection
-            .query_row(
-                "SELECT subagent_id FROM agent_file_changes WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .map_err(|error| {
-                map_agent_store_query_error(
-                    repo_root,
-                    "agent_file_change_subagent_query_failed",
-                    error,
-                )
-            })?,
-        subagent_role: connection
-            .query_row(
-                "SELECT subagent_role FROM agent_file_changes WHERE id = ?1",
-                params![id],
-                |row| row.get(0),
-            )
-            .map_err(|error| {
-                map_agent_store_query_error(repo_root, "agent_file_change_role_query_failed", error)
-            })?,
-        change_group_id: record.change_group_id.clone(),
-        path: record.path.clone(),
-        operation: record.operation.clone(),
-        old_hash: record.old_hash.clone(),
-        new_hash: record.new_hash.clone(),
-        created_at: record.created_at.clone(),
-    })
+    connection
+        .query_row(
+            r#"
+            SELECT
+                id,
+                project_id,
+                run_id,
+                trace_id,
+                top_level_run_id,
+                subagent_id,
+                subagent_role,
+                change_group_id,
+                path,
+                operation,
+                old_hash,
+                new_hash,
+                created_at
+            FROM agent_file_changes
+            WHERE id = ?1
+            "#,
+            params![id],
+            |row| {
+                Ok(AgentFileChangeRecord {
+                    id: row.get(0)?,
+                    project_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    trace_id: row.get(3)?,
+                    top_level_run_id: row.get(4)?,
+                    subagent_id: row.get(5)?,
+                    subagent_role: row.get(6)?,
+                    change_group_id: row.get(7)?,
+                    path: row.get(8)?,
+                    operation: row.get(9)?,
+                    old_hash: row.get(10)?,
+                    new_hash: row.get(11)?,
+                    created_at: row.get(12)?,
+                })
+            },
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_file_change_query_failed", error)
+        })
 }
 
 pub fn append_agent_checkpoint(
@@ -1706,6 +2401,210 @@ pub fn reject_pending_agent_action_request(
     })
 }
 
+/// Atomically rejects one pending action, records its deterministic terminal events, and fails
+/// the run. Exact retries replay the committed snapshot; a different response for the same
+/// action id is a conflict.
+#[allow(clippy::too_many_arguments)]
+pub fn reject_agent_action_and_fail_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    action_id: &str,
+    response: Option<&str>,
+    resolved_at: &str,
+) -> Result<AgentActionRejectionCommitResult, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(action_id, "actionId")?;
+    validate_non_empty_text(resolved_at, "resolvedAt")?;
+    if let Some(response) = response {
+        validate_non_empty_text(response, "response")?;
+    }
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_action_reject_transaction_failed", error)
+        })?;
+    let existing = read_agent_action_requests(&transaction, project_id, run_id, repo_root)?
+        .into_iter()
+        .find(|action| action.action_id == action_id)
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_action_request_not_found",
+                format!(
+                    "Xero could not find pending owned-agent action `{action_id}` for run `{run_id}`."
+                ),
+            )
+        })?;
+
+    if existing.status == "rejected" {
+        if existing.response.as_deref() != response {
+            return Err(CommandError::user_fixable(
+                "agent_action_rejection_conflict",
+                format!(
+                    "Owned-agent action `{action_id}` was already rejected with a different response."
+                ),
+            ));
+        }
+        let snapshot = read_agent_run_snapshot(&transaction, repo_root, project_id, run_id)?;
+        if snapshot.run.status != AgentRunStatus::Failed
+            || snapshot
+                .run
+                .last_error
+                .as_ref()
+                .map(|error| error.code.as_str())
+                != Some("agent_action_rejected")
+        {
+            return Err(CommandError::system_fault(
+                "agent_action_rejection_incomplete",
+                format!(
+                    "Owned-agent action `{action_id}` is rejected but run `{run_id}` is missing its atomic terminal state."
+                ),
+            ));
+        }
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_action_reject_commit_failed", error)
+        })?;
+        return Ok(AgentActionRejectionCommitResult {
+            snapshot,
+            action: existing,
+            inserted_events: Vec::new(),
+            replayed: true,
+        });
+    }
+    if existing.status != "pending" {
+        return Err(CommandError::user_fixable(
+            "agent_action_request_already_resolved",
+            format!(
+                "Xero cannot reject owned-agent action `{action_id}` because it is already {}.",
+                existing.status
+            ),
+        ));
+    }
+
+    let action_changed = transaction
+        .execute(
+            r#"
+            UPDATE agent_action_requests
+            SET status = 'rejected', resolved_at = ?4, response = ?5
+            WHERE project_id = ?1 AND run_id = ?2 AND action_id = ?3 AND status = 'pending'
+            "#,
+            params![project_id, run_id, action_id, resolved_at, response],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_action_request_reject_failed", error)
+        })?;
+    if action_changed != 1 {
+        return Err(CommandError::retryable(
+            "agent_action_rejection_raced",
+            format!("Owned-agent action `{action_id}` changed while it was being rejected."),
+        ));
+    }
+
+    let event_payloads = [
+        (
+            AgentRunEventKind::PolicyDecision,
+            serde_json::json!({
+                "kind": "approval_decision",
+                "actionId": existing.action_id,
+                "actionType": existing.action_type,
+                "decision": "rejected",
+                "response": response,
+                "status": "rejected",
+            }),
+        ),
+        (
+            AgentRunEventKind::StateTransition,
+            serde_json::json!({
+                "kind": "agent_state_transition",
+                "from": "approval_wait",
+                "to": "blocked",
+                "reason": "Operator rejected a pending owned-agent action.",
+                "stopReason": "blocked",
+                "actionId": action_id,
+                "decision": "rejected",
+            }),
+        ),
+        (
+            AgentRunEventKind::RunFailed,
+            serde_json::json!({
+                "code": "agent_action_rejected",
+                "message": format!("Operator rejected action `{action_id}`."),
+                "retryable": false,
+                "state": "blocked",
+                "stopReason": "blocked",
+            }),
+        ),
+    ];
+    let mut inserted_events = Vec::with_capacity(event_payloads.len());
+    for (kind, payload) in event_payloads {
+        let payload = serde_json::to_string(&payload).map_err(|error| {
+            CommandError::system_fault(
+                "agent_action_reject_event_serialize_failed",
+                format!("Xero could not encode an action-rejection event: {error}"),
+            )
+        })?;
+        inserted_events.push(insert_agent_event_in_transaction(
+            &transaction,
+            project_id,
+            run_id,
+            kind,
+            &payload,
+            resolved_at,
+            repo_root,
+        )?);
+    }
+
+    let run_changed = transaction
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET status = 'failed', last_heartbeat_at = ?3,
+                completed_at = NULL, cancelled_at = NULL,
+                last_error_code = 'agent_action_rejected',
+                last_error_message = ?4, updated_at = ?3
+            WHERE project_id = ?1 AND run_id = ?2
+              AND status IN ('starting', 'running', 'paused')
+            "#,
+            params![
+                project_id,
+                run_id,
+                resolved_at,
+                format!("Operator rejected action `{action_id}`."),
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_action_reject_run_failed", error)
+        })?;
+    if run_changed != 1 {
+        let snapshot = read_agent_run_snapshot(&transaction, repo_root, project_id, run_id)?;
+        return Err(CommandError::user_fixable(
+            "agent_run_terminal",
+            format!(
+                "Xero cannot reject action `{action_id}` because owned-agent run `{run_id}` is {:?}.",
+                snapshot.run.status
+            ),
+        ));
+    }
+
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_action_reject_commit_failed", error)
+    })?;
+    let snapshot = read_agent_run_snapshot(&connection, repo_root, project_id, run_id)?;
+    Ok(AgentActionRejectionCommitResult {
+        snapshot,
+        action: AgentActionRequestRecord {
+            status: "rejected".into(),
+            resolved_at: Some(resolved_at.to_owned()),
+            response: response.map(ToOwned::to_owned),
+            ..existing
+        },
+        inserted_events,
+        replayed: false,
+    })
+}
+
 pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result<(), CommandError> {
     validate_non_empty_text(&record.project_id, "projectId")?;
     validate_non_empty_text(&record.run_id, "runId")?;
@@ -1770,6 +2669,471 @@ pub fn upsert_agent_usage(repo_root: &Path, record: &AgentUsageRecord) -> Result
     Ok(())
 }
 
+pub fn claim_agent_run_drive_lease(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    owner_instance_id: &str,
+    owner_process_id: u32,
+    owner_process_birth_identity: &str,
+    drive_token: &str,
+    acquired_at: &str,
+) -> Result<AgentRunDriveLeaseClaimResult, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(owner_instance_id, "ownerInstanceId")?;
+    validate_non_empty_text(owner_process_birth_identity, "ownerProcessBirthIdentity")?;
+    validate_non_empty_text(drive_token, "driveToken")?;
+    validate_non_empty_text(acquired_at, "acquiredAt")?;
+    if owner_process_id == 0 {
+        return Err(CommandError::invalid_request("ownerProcessId"));
+    }
+
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_drive_lease_claim_failed", error)
+        })?;
+    let run_status = transaction
+        .query_row(
+            "SELECT status FROM agent_runs WHERE project_id = ?1 AND run_id = ?2",
+            params![project_id, run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_drive_lease_status_failed", error)
+        })?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_run_not_found",
+                format!("Owned-agent run `{run_id}` was not found."),
+            )
+        })?;
+    let run_status = parse_agent_run_status(&run_status);
+    if matches!(
+        run_status,
+        AgentRunStatus::Cancelling | AgentRunStatus::Cancelled | AgentRunStatus::HandedOff
+    ) {
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_drive_lease_claim_failed", error)
+        })?;
+        return Ok(AgentRunDriveLeaseClaimResult::RunNotDrivable(run_status));
+    }
+    let inserted = transaction
+        .execute(
+            r#"
+            INSERT OR IGNORE INTO agent_run_drive_leases (
+                project_id,
+                run_id,
+                owner_instance_id,
+                owner_process_id,
+                owner_process_birth_identity,
+                drive_token,
+                acquired_at
+            ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+            "#,
+            params![
+                project_id,
+                run_id,
+                owner_instance_id,
+                i64::from(owner_process_id),
+                owner_process_birth_identity,
+                drive_token,
+                acquired_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_drive_lease_claim_failed", error)
+        })?;
+
+    let outcome = if inserted == 1 {
+        AgentRunDriveLeaseClaimResult::Acquired
+    } else {
+        let held = transaction
+            .query_row(
+                r#"
+                SELECT
+                    project_id,
+                    run_id,
+                    owner_instance_id,
+                    owner_process_id,
+                    owner_process_birth_identity,
+                    drive_token,
+                    acquired_at
+                FROM agent_run_drive_leases
+                WHERE project_id = ?1
+                  AND run_id = ?2
+                "#,
+                params![project_id, run_id],
+                read_agent_run_drive_lease,
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(repo_root, "agent_run_drive_lease_read_failed", error)
+            })?;
+        AgentRunDriveLeaseClaimResult::Held(held)
+    };
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_run_drive_lease_claim_failed", error)
+    })?;
+    Ok(outcome)
+}
+
+pub fn replace_agent_run_drive_lease(
+    repo_root: &Path,
+    replacement: &AgentRunDriveLeaseRecord,
+    expected: &AgentRunDriveLeaseRecord,
+) -> Result<bool, CommandError> {
+    validate_non_empty_text(&replacement.project_id, "projectId")?;
+    validate_non_empty_text(&replacement.run_id, "runId")?;
+    validate_non_empty_text(&replacement.owner_instance_id, "ownerInstanceId")?;
+    validate_non_empty_text(
+        &replacement.owner_process_birth_identity,
+        "ownerProcessBirthIdentity",
+    )?;
+    validate_non_empty_text(&replacement.drive_token, "driveToken")?;
+    validate_non_empty_text(&replacement.acquired_at, "acquiredAt")?;
+    if replacement.owner_process_id == 0 {
+        return Err(CommandError::invalid_request("ownerProcessId"));
+    }
+    if replacement.project_id != expected.project_id || replacement.run_id != expected.run_id {
+        return Err(CommandError::invalid_request("expectedLease"));
+    }
+
+    let connection = open_agent_database(repo_root)?;
+    let rows = connection
+        .execute(
+            r#"
+            UPDATE agent_run_drive_leases
+            SET owner_instance_id = ?3,
+                owner_process_id = ?4,
+                owner_process_birth_identity = ?5,
+                drive_token = ?6,
+                acquired_at = ?7
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND owner_instance_id = ?8
+              AND owner_process_id = ?9
+              AND owner_process_birth_identity = ?10
+              AND drive_token = ?11
+            "#,
+            params![
+                replacement.project_id,
+                replacement.run_id,
+                replacement.owner_instance_id,
+                i64::from(replacement.owner_process_id),
+                replacement.owner_process_birth_identity,
+                replacement.drive_token,
+                replacement.acquired_at,
+                expected.owner_instance_id,
+                i64::from(expected.owner_process_id),
+                expected.owner_process_birth_identity,
+                expected.drive_token,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_drive_lease_replace_failed", error)
+        })?;
+    Ok(rows == 1)
+}
+
+pub fn load_agent_run_drive_lease(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Option<AgentRunDriveLeaseRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    connection
+        .query_row(
+            r#"
+            SELECT
+                project_id,
+                run_id,
+                owner_instance_id,
+                owner_process_id,
+                owner_process_birth_identity,
+                drive_token,
+                acquired_at
+            FROM agent_run_drive_leases
+            WHERE project_id = ?1 AND run_id = ?2
+            "#,
+            params![project_id, run_id],
+            read_agent_run_drive_lease,
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_drive_lease_read_failed", error)
+        })
+}
+
+pub fn renew_agent_run_drive_lease(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    owner_instance_id: &str,
+    drive_token: &str,
+    heartbeat_at: &str,
+) -> Result<bool, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(owner_instance_id, "ownerInstanceId")?;
+    validate_non_empty_text(drive_token, "driveToken")?;
+    validate_non_empty_text(heartbeat_at, "heartbeatAt")?;
+    let connection = open_agent_database(repo_root)?;
+    let rows = connection
+        .execute(
+            r#"
+            UPDATE agent_run_drive_leases
+            SET acquired_at = ?5
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND owner_instance_id = ?3
+              AND drive_token = ?4
+              AND acquired_at <= ?5
+              AND EXISTS (
+                  SELECT 1
+                  FROM agent_runs
+                  WHERE agent_runs.project_id = agent_run_drive_leases.project_id
+                    AND agent_runs.run_id = agent_run_drive_leases.run_id
+                    AND agent_runs.status NOT IN ('cancelling', 'cancelled')
+              )
+            "#,
+            params![
+                project_id,
+                run_id,
+                owner_instance_id,
+                drive_token,
+                heartbeat_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_drive_lease_renew_failed", error)
+        })?;
+    Ok(rows == 1)
+}
+
+pub fn release_agent_run_drive_lease(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    owner_instance_id: &str,
+    drive_token: &str,
+) -> Result<bool, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(owner_instance_id, "ownerInstanceId")?;
+    validate_non_empty_text(drive_token, "driveToken")?;
+
+    let connection = open_agent_database(repo_root)?;
+    let rows = connection
+        .execute(
+            r#"
+            DELETE FROM agent_run_drive_leases
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND owner_instance_id = ?3
+              AND drive_token = ?4
+            "#,
+            params![project_id, run_id, owner_instance_id, drive_token],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_drive_lease_release_failed", error)
+        })?;
+    Ok(rows == 1)
+}
+
+pub fn cancel_agent_run_with_expected_drive_lease(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    expected_lease: Option<&AgentRunDriveLeaseRecord>,
+    defer_to_drive_owner: bool,
+    cancellation_event_payload_json: &str,
+    timestamp: &str,
+) -> Result<AgentRunCancellationCasResult, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(timestamp, "timestamp")?;
+    validate_json_payload(
+        cancellation_event_payload_json,
+        "cancellationEventPayloadJson",
+    )?;
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_cancel_transaction_failed", error)
+        })?;
+    let current_lease = transaction
+        .query_row(
+            r#"
+            SELECT project_id, run_id, owner_instance_id, owner_process_id,
+                   owner_process_birth_identity, drive_token, acquired_at
+            FROM agent_run_drive_leases
+            WHERE project_id = ?1 AND run_id = ?2
+            "#,
+            params![project_id, run_id],
+            read_agent_run_drive_lease,
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_cancel_lease_read_failed", error)
+        })?;
+    if current_lease.as_ref() != expected_lease {
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_cancel_commit_failed", error)
+        })?;
+        return Ok(AgentRunCancellationCasResult::LeaseChanged(current_lease));
+    }
+
+    let current_status = transaction
+        .query_row(
+            "SELECT status FROM agent_runs WHERE project_id = ?1 AND run_id = ?2",
+            params![project_id, run_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_cancel_status_read_failed", error)
+        })?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_run_not_found",
+                format!("Owned-agent run `{run_id}` was not found."),
+            )
+        })?;
+    let status = parse_agent_run_status(&current_status);
+    let terminal = matches!(
+        status,
+        AgentRunStatus::Cancelled
+            | AgentRunStatus::Completed
+            | AgentRunStatus::HandedOff
+            | AgentRunStatus::Failed
+    );
+    let defer_terminal = defer_to_drive_owner && expected_lease.is_some() && !terminal;
+    let intent_transitioned = !terminal && status != AgentRunStatus::Cancelling;
+    let transitioned = if defer_terminal {
+        intent_transitioned
+    } else {
+        !terminal
+    };
+    let event = if intent_transitioned {
+        transaction
+            .execute(
+                r#"
+                INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                VALUES (?1, ?2, 'run_failed', ?3, ?4)
+                "#,
+                params![
+                    project_id,
+                    run_id,
+                    cancellation_event_payload_json,
+                    timestamp
+                ],
+            )
+            .map_err(|error| {
+                map_agent_store_write_error(repo_root, "agent_run_cancel_event_failed", error)
+            })?;
+        let event = AgentEventRecord {
+            id: transaction.last_insert_rowid(),
+            project_id: project_id.to_owned(),
+            run_id: run_id.to_owned(),
+            event_kind: AgentRunEventKind::RunFailed,
+            payload_json: cancellation_event_payload_json.to_owned(),
+            created_at: timestamp.to_owned(),
+        };
+        Some(event)
+    } else {
+        None
+    };
+    if defer_terminal {
+        transaction
+            .execute(
+                r#"
+                UPDATE agent_runs
+                SET status = 'cancelling',
+                    last_heartbeat_at = ?3,
+                    completed_at = NULL,
+                    cancelled_at = NULL,
+                    last_error_code = NULL,
+                    last_error_message = NULL,
+                    updated_at = ?3
+                WHERE project_id = ?1
+                  AND run_id = ?2
+                  AND status NOT IN ('completed', 'handed_off', 'failed', 'cancelled')
+                "#,
+                params![project_id, run_id, timestamp],
+            )
+            .map_err(|error| {
+                map_agent_store_write_error(repo_root, "agent_run_cancel_status_failed", error)
+            })?;
+    } else if !terminal {
+        transaction
+            .execute(
+                r#"
+                UPDATE agent_runs
+                SET status = 'cancelled',
+                    last_heartbeat_at = ?3,
+                    completed_at = NULL,
+                    cancelled_at = ?3,
+                    last_error_code = NULL,
+                    last_error_message = NULL,
+                    updated_at = ?3
+                WHERE project_id = ?1
+                  AND run_id = ?2
+                  AND status NOT IN ('completed', 'handed_off', 'failed', 'cancelled')
+                "#,
+                params![project_id, run_id, timestamp],
+            )
+            .map_err(|error| {
+                map_agent_store_write_error(repo_root, "agent_run_cancel_status_failed", error)
+            })?;
+    }
+    if !defer_terminal {
+        if let Some(lease) = expected_lease {
+            transaction
+                .execute(
+                    r#"
+                DELETE FROM agent_run_drive_leases
+                WHERE project_id = ?1
+                  AND run_id = ?2
+                  AND owner_instance_id = ?3
+                  AND owner_process_id = ?4
+                  AND owner_process_birth_identity = ?5
+                  AND drive_token = ?6
+                "#,
+                    params![
+                        project_id,
+                        run_id,
+                        lease.owner_instance_id,
+                        i64::from(lease.owner_process_id),
+                        lease.owner_process_birth_identity,
+                        lease.drive_token,
+                    ],
+                )
+                .map_err(|error| {
+                    map_agent_store_write_error(
+                        repo_root,
+                        "agent_run_cancel_lease_release_failed",
+                        error,
+                    )
+                })?;
+        }
+    }
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_run_cancel_commit_failed", error)
+    })?;
+    let snapshot = read_agent_run_snapshot(&connection, repo_root, project_id, run_id)?;
+    Ok(AgentRunCancellationCasResult::Applied {
+        snapshot,
+        transitioned,
+        event,
+    })
+}
+
 pub fn update_agent_run_status(
     repo_root: &Path,
     project_id: &str,
@@ -1801,6 +3165,7 @@ pub fn update_agent_run_status(
                 updated_at = ?4
             WHERE project_id = ?1
               AND run_id = ?2
+              AND NOT (status = 'cancelling' AND ?3 <> 'cancelled')
               AND (
                     status NOT IN ('completed', 'handed_off', 'failed', 'cancelled')
                     OR (status = 'completed' AND ?3 = 'handed_off')
@@ -1823,6 +3188,907 @@ pub fn update_agent_run_status(
     // `read_agent_run_snapshot` surfaces a not-found error if the run truly does not exist.
     let _ = rows;
     read_agent_run_snapshot(&connection, repo_root, project_id, run_id)
+}
+
+/// Re-open a previously finished run for an explicit user continuation.
+///
+/// Generic status updates intentionally keep terminal rows immutable so a late
+/// provider/cancellation writer cannot resurrect a run. Continuation is the
+/// one deliberate exception: its caller already owns the persisted drive
+/// lease, so this compare-and-set transition can safely clear the old terminal
+/// metadata before the next provider turn starts.
+pub fn reopen_agent_run_for_continuation(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    timestamp: &str,
+) -> Result<AgentRunSnapshotRecord, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    let rows = connection
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET status = 'running',
+                last_heartbeat_at = ?3,
+                completed_at = NULL,
+                cancelled_at = NULL,
+                last_error_code = NULL,
+                last_error_message = NULL,
+                updated_at = ?3
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND status IN ('running', 'paused', 'completed', 'failed')
+            "#,
+            params![project_id, run_id, timestamp],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_run_continuation_reopen_failed", error)
+        })?;
+    if rows == 0 {
+        let snapshot = read_agent_run_snapshot(&connection, repo_root, project_id, run_id)?;
+        return Err(CommandError::user_fixable(
+            "agent_run_not_resumable",
+            format!(
+                "Xero cannot continue owned agent run `{run_id}` because it is {:?}.",
+                snapshot.run.status
+            ),
+        ));
+    }
+    read_agent_run_snapshot(&connection, repo_root, project_id, run_id)
+}
+
+pub fn load_agent_continuation_preparation(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    request_id: &str,
+    payload_hash: &str,
+) -> Result<Option<AgentContinuationRequestRecord>, CommandError> {
+    validate_agent_continuation_identity(project_id, run_id, request_id, payload_hash)?;
+    let connection = open_agent_database(repo_root)?;
+    let existing = read_agent_continuation_request(&connection, project_id, request_id, repo_root)?;
+    existing
+        .map(|record| {
+            ensure_matching_agent_continuation_request(&record, run_id, payload_hash)?;
+            Ok(record)
+        })
+        .transpose()
+}
+
+pub fn load_agent_continuation_request_by_id(
+    repo_root: &Path,
+    project_id: &str,
+    request_id: &str,
+) -> Result<Option<AgentContinuationRequestRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_continuation_request_id(request_id)?;
+    let connection = open_agent_database(repo_root)?;
+    read_agent_continuation_request(&connection, project_id, request_id, repo_root)
+}
+
+pub fn list_prepared_agent_continuation_requests(
+    repo_root: &Path,
+    project_id: &str,
+) -> Result<Vec<AgentContinuationRequestRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT project_id, request_id, run_id, payload_hash, recovery_payload_json, state, message_id,
+                   linked_path_grant_event_id, message_event_id, prepared_at,
+                   drive_started_at, consumed_at
+            FROM agent_continuation_requests
+            WHERE project_id = ?1 AND state = 'prepared'
+            ORDER BY prepared_at ASC, request_id ASC
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_continuation_list_failed", error)
+        })?;
+    let rows = statement
+        .query_map(params![project_id], |row| {
+            Ok(AgentContinuationRequestRecord {
+                project_id: row.get(0)?,
+                request_id: row.get(1)?,
+                run_id: row.get(2)?,
+                payload_hash: row.get(3)?,
+                recovery_payload_json: row.get(4)?,
+                state: parse_agent_continuation_request_state(row.get::<_, String>(5)?.as_str()),
+                message_id: row.get(6)?,
+                linked_path_grant_event_id: row.get(7)?,
+                message_event_id: row.get(8)?,
+                prepared_at: row.get(9)?,
+                drive_started_at: row.get(10)?,
+                consumed_at: row.get(11)?,
+            })
+        })
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_continuation_list_failed", error)
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_agent_store_query_error(repo_root, "agent_continuation_list_failed", error)
+    })
+}
+
+pub fn list_agent_continuation_requests_for_run(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+) -> Result<Vec<AgentContinuationRequestRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT project_id, request_id, run_id, payload_hash, recovery_payload_json, state, message_id,
+                   linked_path_grant_event_id, message_event_id, prepared_at,
+                   drive_started_at, consumed_at
+            FROM agent_continuation_requests
+            WHERE project_id = ?1 AND run_id = ?2
+            ORDER BY prepared_at ASC, request_id ASC
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_continuation_run_list_failed", error)
+        })?;
+    let rows = statement
+        .query_map(params![project_id, run_id], |row| {
+            Ok(AgentContinuationRequestRecord {
+                project_id: row.get(0)?,
+                request_id: row.get(1)?,
+                run_id: row.get(2)?,
+                payload_hash: row.get(3)?,
+                recovery_payload_json: row.get(4)?,
+                state: parse_agent_continuation_request_state(row.get::<_, String>(5)?.as_str()),
+                message_id: row.get(6)?,
+                linked_path_grant_event_id: row.get(7)?,
+                message_event_id: row.get(8)?,
+                prepared_at: row.get(9)?,
+                drive_started_at: row.get(10)?,
+                consumed_at: row.get(11)?,
+            })
+        })
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_continuation_run_list_failed", error)
+        })?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        map_agent_store_query_error(repo_root, "agent_continuation_run_list_failed", error)
+    })
+}
+
+/// Binds an already-persisted initial user turn to a continuation identity.
+///
+/// Runtime-run startup persists the initial message before provider dispatch. Registering that
+/// existing message prevents crash recovery from appending the same initial prompt as a second
+/// continuation.
+pub fn register_existing_agent_continuation(
+    repo_root: &Path,
+    record: &ExistingAgentContinuationPreparationRecord,
+) -> Result<AgentContinuationPreparationResult, CommandError> {
+    validate_agent_continuation_identity(
+        &record.project_id,
+        &record.run_id,
+        &record.request_id,
+        &record.payload_hash,
+    )?;
+    validate_non_empty_text(&record.prepared_at, "preparedAt")?;
+    validate_json_payload(&record.recovery_payload_json, "recoveryPayloadJson")?;
+    if record.message_id <= 0 || record.message_event_id <= 0 {
+        return Err(CommandError::invalid_request("existingContinuationTurn"));
+    }
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_continuation_transaction_failed", error)
+        })?;
+    if let Some(existing) = read_agent_continuation_request(
+        &transaction,
+        &record.project_id,
+        &record.request_id,
+        repo_root,
+    )? {
+        ensure_matching_agent_continuation_request(
+            &existing,
+            &record.run_id,
+            &record.payload_hash,
+        )?;
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_continuation_commit_failed", error)
+        })?;
+        let snapshot =
+            read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)?;
+        return Ok(AgentContinuationPreparationResult {
+            snapshot,
+            request: existing,
+            inserted_events: Vec::new(),
+            inserted: false,
+        });
+    }
+    let message_exists = transaction
+        .query_row(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM agent_messages
+                WHERE id = ?1 AND project_id = ?2 AND run_id = ?3 AND role = 'user'
+            )
+            "#,
+            params![record.message_id, record.project_id, record.run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_continuation_message_read_failed", error)
+        })?
+        == 1;
+    let event_exists = transaction
+        .query_row(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM agent_events
+                WHERE id = ?1 AND project_id = ?2 AND run_id = ?3 AND event_kind = 'message_delta'
+            )
+            "#,
+            params![record.message_event_id, record.project_id, record.run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_continuation_event_read_failed", error)
+        })?
+        == 1;
+    if !message_exists || !event_exists {
+        return Err(CommandError::system_fault(
+            "agent_continuation_existing_turn_missing",
+            "Xero could not bind the runtime-start continuation because its initial user turn is incomplete.",
+        ));
+    }
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_continuation_requests (
+                project_id, request_id, run_id, payload_hash, recovery_payload_json, state, message_id,
+                linked_path_grant_event_id, message_event_id, prepared_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, 'prepared', ?6, NULL, ?7, ?8)
+            "#,
+            params![
+                record.project_id,
+                record.request_id,
+                record.run_id,
+                record.payload_hash,
+                record.recovery_payload_json,
+                record.message_id,
+                record.message_event_id,
+                record.prepared_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(
+                repo_root,
+                "agent_continuation_request_insert_failed",
+                error,
+            )
+        })?;
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_continuation_commit_failed", error)
+    })?;
+    let snapshot =
+        read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)?;
+    let request =
+        load_agent_continuation_request_by_id(repo_root, &record.project_id, &record.request_id)?
+            .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_continuation_request_missing",
+                "The registered runtime-start continuation could not be read back.",
+            )
+        })?;
+    Ok(AgentContinuationPreparationResult {
+        snapshot,
+        request,
+        inserted_events: Vec::new(),
+        inserted: true,
+    })
+}
+
+/// Atomically records a continuation prompt and re-opens its run.
+///
+/// The request id is project-wide. Reusing it with the same run and payload is a no-op; reusing
+/// it for different content is rejected. The message, attachments, linked-path grant, message
+/// event, request marker, and terminal-to-running transition commit together.
+pub fn prepare_agent_continuation(
+    repo_root: &Path,
+    record: &NewAgentContinuationPreparationRecord,
+) -> Result<AgentContinuationPreparationResult, CommandError> {
+    validate_agent_continuation_identity(
+        &record.project_id,
+        &record.run_id,
+        &record.request_id,
+        &record.payload_hash,
+    )?;
+    validate_non_empty_text(&record.content, "content")?;
+    validate_non_empty_text(&record.prepared_at, "preparedAt")?;
+    validate_json_payload(&record.recovery_payload_json, "recoveryPayloadJson")?;
+    validate_json_payload(&record.message_payload_json, "messagePayloadJson")?;
+    if let Some(payload_json) = record.linked_path_grant_payload_json.as_deref() {
+        validate_json_payload(payload_json, "linkedPathGrantPayloadJson")?;
+    }
+    if let Some(answer) = record.action_answer.as_ref() {
+        validate_non_empty_text(&answer.response, "actionAnswer.response")?;
+        if let Some(action_id) = answer.action_id.as_deref() {
+            validate_non_empty_text(action_id, "actionAnswer.actionId")?;
+        }
+    }
+    if !matches!(
+        record.role,
+        AgentMessageRole::User | AgentMessageRole::Developer
+    ) {
+        return Err(CommandError::invalid_request("role"));
+    }
+
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_continuation_transaction_failed", error)
+        })?;
+
+    if let Some(existing) = read_agent_continuation_request(
+        &transaction,
+        &record.project_id,
+        &record.request_id,
+        repo_root,
+    )? {
+        ensure_matching_agent_continuation_request(
+            &existing,
+            &record.run_id,
+            &record.payload_hash,
+        )?;
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_continuation_commit_failed", error)
+        })?;
+        let snapshot =
+            read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)?;
+        return Ok(AgentContinuationPreparationResult {
+            snapshot,
+            request: existing,
+            inserted_events: Vec::new(),
+            inserted: false,
+        });
+    }
+
+    let mut inserted_events = Vec::new();
+    if let Some(answer) = record.action_answer.as_ref() {
+        let actions = read_agent_action_requests(
+            &transaction,
+            &record.project_id,
+            &record.run_id,
+            repo_root,
+        )?;
+        let pending = actions
+            .into_iter()
+            .filter(|action| {
+                action.status == "pending"
+                    && answer
+                        .action_id
+                        .as_deref()
+                        .map(|action_id| action.action_id == action_id)
+                        .unwrap_or(true)
+            })
+            .collect::<Vec<_>>();
+        if let Some(action_id) = answer.action_id.as_deref() {
+            if pending.is_empty() {
+                return Err(CommandError::user_fixable(
+                    "agent_action_request_not_found",
+                    format!(
+                        "Xero could not find pending owned-agent action `{action_id}` for run `{}`.",
+                        record.run_id
+                    ),
+                ));
+            }
+        }
+        for action in pending {
+            let changed = transaction
+                .execute(
+                    r#"
+                    UPDATE agent_action_requests
+                    SET status = 'answered', resolved_at = ?4, response = ?5
+                    WHERE project_id = ?1 AND run_id = ?2 AND action_id = ?3 AND status = 'pending'
+                    "#,
+                    params![
+                        record.project_id,
+                        record.run_id,
+                        action.action_id,
+                        record.prepared_at,
+                        answer.response,
+                    ],
+                )
+                .map_err(|error| {
+                    map_agent_store_write_error(
+                        repo_root,
+                        "agent_continuation_action_answer_failed",
+                        error,
+                    )
+                })?;
+            if changed != 1 {
+                return Err(CommandError::retryable(
+                    "agent_continuation_action_answer_raced",
+                    format!(
+                        "Owned-agent action `{}` changed while its continuation was being prepared.",
+                        action.action_id
+                    ),
+                ));
+            }
+            let payload = serde_json::to_string(&serde_json::json!({
+                "kind": "approval_decision",
+                "actionId": action.action_id,
+                "actionType": action.action_type,
+                "decision": "approved",
+                "response": answer.response,
+                "status": "answered",
+            }))
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "agent_continuation_action_event_serialize_failed",
+                    format!("Xero could not encode an action approval event: {error}"),
+                )
+            })?;
+            inserted_events.push(insert_agent_event_in_transaction(
+                &transaction,
+                &record.project_id,
+                &record.run_id,
+                AgentRunEventKind::PolicyDecision,
+                &payload,
+                &record.prepared_at,
+                repo_root,
+            )?);
+        }
+    }
+
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_messages (
+                project_id,
+                run_id,
+                role,
+                content,
+                provider_metadata_json,
+                created_at
+            )
+            VALUES (?1, ?2, ?3, ?4, NULL, ?5)
+            "#,
+            params![
+                record.project_id,
+                record.run_id,
+                agent_message_role_sql_value(&record.role),
+                record.content,
+                record.prepared_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(
+                repo_root,
+                "agent_continuation_message_insert_failed",
+                error,
+            )
+        })?;
+    let message_id = transaction.last_insert_rowid();
+
+    for attachment in &record.attachments {
+        validate_non_empty_text(&attachment.storage_path, "attachment.storagePath")?;
+        validate_non_empty_text(&attachment.media_type, "attachment.mediaType")?;
+        validate_non_empty_text(&attachment.original_name, "attachment.originalName")?;
+        if attachment.size_bytes < 0 {
+            return Err(CommandError::user_fixable(
+                "agent_message_attachment_invalid_size",
+                "Xero refused to record an attachment with a negative size.",
+            ));
+        }
+        transaction
+            .execute(
+                r#"
+                INSERT INTO agent_message_attachments (
+                    message_id,
+                    project_id,
+                    run_id,
+                    kind,
+                    storage_path,
+                    media_type,
+                    original_name,
+                    size_bytes,
+                    width,
+                    height,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+                "#,
+                params![
+                    message_id,
+                    record.project_id,
+                    record.run_id,
+                    agent_message_attachment_kind_sql_value(&attachment.kind),
+                    attachment.storage_path,
+                    attachment.media_type,
+                    attachment.original_name,
+                    attachment.size_bytes,
+                    attachment.width,
+                    attachment.height,
+                    record.prepared_at,
+                ],
+            )
+            .map_err(|error| {
+                map_agent_store_write_error(
+                    repo_root,
+                    "agent_continuation_attachment_insert_failed",
+                    error,
+                )
+            })?;
+    }
+
+    let linked_path_grant_event_id =
+        if let Some(payload_json) = record.linked_path_grant_payload_json.as_deref() {
+            let event = insert_agent_event_in_transaction(
+                &transaction,
+                &record.project_id,
+                &record.run_id,
+                AgentRunEventKind::ToolPermissionGrant,
+                payload_json,
+                &record.prepared_at,
+                repo_root,
+            )?;
+            let event_id = event.id;
+            inserted_events.push(event);
+            Some(event_id)
+        } else {
+            None
+        };
+    let message_event = insert_agent_event_in_transaction(
+        &transaction,
+        &record.project_id,
+        &record.run_id,
+        AgentRunEventKind::MessageDelta,
+        &record.message_payload_json,
+        &record.prepared_at,
+        repo_root,
+    )?;
+    let message_event_id = message_event.id;
+    inserted_events.push(message_event);
+
+    let reopened = transaction
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET status = 'running',
+                last_heartbeat_at = ?3,
+                completed_at = NULL,
+                cancelled_at = NULL,
+                last_error_code = NULL,
+                last_error_message = NULL,
+                updated_at = ?3
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND status IN ('running', 'paused', 'completed', 'failed')
+            "#,
+            params![record.project_id, record.run_id, record.prepared_at],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_continuation_reopen_failed", error)
+        })?;
+    if reopened != 1 {
+        let snapshot =
+            read_agent_run_snapshot(&transaction, repo_root, &record.project_id, &record.run_id)?;
+        return Err(CommandError::user_fixable(
+            "agent_run_not_resumable",
+            format!(
+                "Xero cannot continue owned agent run `{}` because it is {:?}.",
+                record.run_id, snapshot.run.status
+            ),
+        ));
+    }
+
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_continuation_requests (
+                project_id,
+                request_id,
+                run_id,
+                payload_hash,
+                recovery_payload_json,
+                state,
+                message_id,
+                linked_path_grant_event_id,
+                message_event_id,
+                prepared_at
+            )
+            VALUES (?1, ?2, ?3, ?4, ?5, 'prepared', ?6, ?7, ?8, ?9)
+            "#,
+            params![
+                record.project_id,
+                record.request_id,
+                record.run_id,
+                record.payload_hash,
+                record.recovery_payload_json,
+                message_id,
+                linked_path_grant_event_id,
+                message_event_id,
+                record.prepared_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(
+                repo_root,
+                "agent_continuation_request_insert_failed",
+                error,
+            )
+        })?;
+
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_continuation_commit_failed", error)
+    })?;
+    let snapshot =
+        read_agent_run_snapshot(&connection, repo_root, &record.project_id, &record.run_id)?;
+    Ok(AgentContinuationPreparationResult {
+        snapshot,
+        request: AgentContinuationRequestRecord {
+            project_id: record.project_id.clone(),
+            request_id: record.request_id.clone(),
+            run_id: record.run_id.clone(),
+            payload_hash: record.payload_hash.clone(),
+            recovery_payload_json: record.recovery_payload_json.clone(),
+            state: AgentContinuationRequestState::Prepared,
+            message_id,
+            linked_path_grant_event_id,
+            message_event_id,
+            prepared_at: record.prepared_at.clone(),
+            drive_started_at: None,
+            consumed_at: None,
+        },
+        inserted_events,
+        inserted: true,
+    })
+}
+
+pub fn mark_agent_continuation_drive_started(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    request_id: &str,
+    timestamp: &str,
+) -> Result<AgentContinuationDriveStartResult, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_continuation_request_id(request_id)?;
+    validate_non_empty_text(timestamp, "timestamp")?;
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_continuation_drive_start_failed", error)
+        })?;
+    let existing =
+        read_agent_continuation_request(&transaction, project_id, request_id, repo_root)?;
+    let outcome = match existing {
+        None => AgentContinuationDriveStartResult::Missing,
+        Some(existing) => {
+            ensure_matching_agent_continuation_request(&existing, run_id, &existing.payload_hash)?;
+            match existing.state {
+                AgentContinuationRequestState::Prepared => {
+                    let updated = transaction
+                        .execute(
+                            r#"
+                            UPDATE agent_continuation_requests
+                            SET state = 'driving',
+                                drive_started_at = ?3,
+                                consumed_at = NULL
+                            WHERE project_id = ?1
+                              AND request_id = ?2
+                              AND state = 'prepared'
+                            "#,
+                            params![project_id, request_id, timestamp],
+                        )
+                        .map_err(|error| {
+                            map_agent_store_write_error(
+                                repo_root,
+                                "agent_continuation_drive_start_failed",
+                                error,
+                            )
+                        })?;
+                    if updated != 1 {
+                        return Err(CommandError::retryable(
+                            "agent_continuation_drive_start_raced",
+                            "The continuation drive state changed while Xero was claiming provider dispatch.",
+                        ));
+                    }
+                    let started = read_agent_continuation_request(
+                        &transaction,
+                        project_id,
+                        request_id,
+                        repo_root,
+                    )?
+                    .ok_or_else(|| {
+                        CommandError::system_fault(
+                            "agent_continuation_drive_start_missing",
+                            "The continuation request disappeared while Xero was claiming provider dispatch.",
+                        )
+                    })?;
+                    AgentContinuationDriveStartResult::Started(started)
+                }
+                AgentContinuationRequestState::Driving => {
+                    AgentContinuationDriveStartResult::AlreadyDriving(existing)
+                }
+                AgentContinuationRequestState::Consumed => {
+                    AgentContinuationDriveStartResult::Consumed(existing)
+                }
+            }
+        }
+    };
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_continuation_drive_start_failed", error)
+    })?;
+    Ok(outcome)
+}
+
+pub fn finish_agent_continuation_drive(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    request_id: &str,
+    consumed: bool,
+    timestamp: &str,
+) -> Result<Option<AgentContinuationRequestRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_continuation_request_id(request_id)?;
+    validate_non_empty_text(timestamp, "timestamp")?;
+    let connection = open_agent_database(repo_root)?;
+    let Some(existing) =
+        read_agent_continuation_request(&connection, project_id, request_id, repo_root)?
+    else {
+        return Ok(None);
+    };
+    ensure_matching_agent_continuation_request(&existing, run_id, &existing.payload_hash)?;
+    if consumed {
+        connection
+            .execute(
+                r#"
+                UPDATE agent_continuation_requests
+                SET state = 'consumed',
+                    consumed_at = COALESCE(consumed_at, ?3)
+                WHERE project_id = ?1
+                  AND request_id = ?2
+                "#,
+                params![project_id, request_id, timestamp],
+            )
+            .map_err(|error| {
+                map_agent_store_write_error(repo_root, "agent_continuation_consume_failed", error)
+            })?;
+    }
+    read_agent_continuation_request(&connection, project_id, request_id, repo_root)
+}
+
+/// Reconciles the narrow crash window after a continuation completed durably but before its
+/// request marker was advanced from `driving` to `consumed`.
+///
+/// Consumption is considered unambiguous when a provider-originated event was committed after
+/// this request's user-message event. This covers terminal completion as well as paused and
+/// action-required turns. Failed and cancelled runs remain `driving` even if an earlier provider
+/// event exists: a terminal failure is not evidence that this continuation reached a successful
+/// turn boundary, and replay must stay fenced for explicit recovery.
+pub fn reconcile_completed_agent_continuation(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    request_id: &str,
+    timestamp: &str,
+) -> Result<Option<AgentContinuationRequestRecord>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_continuation_request_id(request_id)?;
+    validate_non_empty_text(timestamp, "timestamp")?;
+
+    let mut connection = open_agent_database(repo_root)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_agent_store_write_error(
+                repo_root,
+                "agent_continuation_reconcile_transaction_failed",
+                error,
+            )
+        })?;
+    let Some(existing) =
+        read_agent_continuation_request(&transaction, project_id, request_id, repo_root)?
+    else {
+        transaction.commit().map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_continuation_reconcile_failed", error)
+        })?;
+        return Ok(None);
+    };
+    ensure_matching_agent_continuation_request(&existing, run_id, &existing.payload_hash)?;
+
+    if existing.state == AgentContinuationRequestState::Driving {
+        let provider_outcome_after_request = transaction
+            .query_row(
+                r#"
+                SELECT EXISTS (
+                    SELECT 1
+                    FROM agent_events AS event
+                    WHERE event.project_id = ?1
+                      AND event.run_id = ?2
+                      AND event.id > ?3
+                      AND (
+                            event.event_kind IN (
+                                'assistant_candidate',
+                                'reasoning_summary',
+                                'tool_started',
+                                'tool_delta',
+                                'tool_completed',
+                                'action_required',
+                                'approval_required',
+                                'route_requested',
+                                'run_paused',
+                                'run_completed'
+                            )
+                            OR (
+                                event.event_kind = 'message_delta'
+                                AND json_extract(event.payload_json, '$.role') = 'assistant'
+                            )
+                      )
+                ) AND EXISTS (
+                    SELECT 1
+                    FROM agent_runs AS run
+                    WHERE run.project_id = ?1
+                      AND run.run_id = ?2
+                      AND run.status NOT IN ('failed', 'cancelled')
+                )
+                "#,
+                params![project_id, run_id, existing.message_event_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map_err(|error| {
+                map_agent_store_query_error(
+                    repo_root,
+                    "agent_continuation_completion_evidence_read_failed",
+                    error,
+                )
+            })?
+            == 1;
+        if provider_outcome_after_request {
+            transaction
+                .execute(
+                    r#"
+                    UPDATE agent_continuation_requests
+                    SET state = 'consumed',
+                        consumed_at = COALESCE(consumed_at, ?4)
+                    WHERE project_id = ?1
+                      AND run_id = ?2
+                      AND request_id = ?3
+                      AND state = 'driving'
+                    "#,
+                    params![project_id, run_id, request_id, timestamp],
+                )
+                .map_err(|error| {
+                    map_agent_store_write_error(
+                        repo_root,
+                        "agent_continuation_reconcile_failed",
+                        error,
+                    )
+                })?;
+        }
+    }
+
+    let reconciled =
+        read_agent_continuation_request(&transaction, project_id, request_id, repo_root)?;
+    transaction.commit().map_err(|error| {
+        map_agent_store_write_error(repo_root, "agent_continuation_reconcile_failed", error)
+    })?;
+    Ok(reconciled)
 }
 
 pub fn touch_agent_run_heartbeat(
@@ -2051,6 +4317,156 @@ pub(crate) fn read_agent_run_snapshot(
         file_changes,
         checkpoints,
         action_requests,
+    })
+}
+
+fn read_agent_continuation_request(
+    connection: &Connection,
+    project_id: &str,
+    request_id: &str,
+    repo_root: &Path,
+) -> Result<Option<AgentContinuationRequestRecord>, CommandError> {
+    connection
+        .query_row(
+            r#"
+            SELECT
+                project_id,
+                request_id,
+                run_id,
+                payload_hash,
+                recovery_payload_json,
+                state,
+                message_id,
+                linked_path_grant_event_id,
+                message_event_id,
+                prepared_at,
+                drive_started_at,
+                consumed_at
+            FROM agent_continuation_requests
+            WHERE project_id = ?1
+              AND request_id = ?2
+            "#,
+            params![project_id, request_id],
+            |row| {
+                Ok(AgentContinuationRequestRecord {
+                    project_id: row.get(0)?,
+                    request_id: row.get(1)?,
+                    run_id: row.get(2)?,
+                    payload_hash: row.get(3)?,
+                    recovery_payload_json: row.get(4)?,
+                    state: parse_agent_continuation_request_state(
+                        row.get::<_, String>(5)?.as_str(),
+                    ),
+                    message_id: row.get(6)?,
+                    linked_path_grant_event_id: row.get(7)?,
+                    message_event_id: row.get(8)?,
+                    prepared_at: row.get(9)?,
+                    drive_started_at: row.get(10)?,
+                    consumed_at: row.get(11)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_continuation_request_read_failed", error)
+        })
+}
+
+fn read_agent_run_start_request(
+    connection: &Connection,
+    project_id: &str,
+    run_id: &str,
+    repo_root: &Path,
+) -> Result<Option<AgentRunStartRequestRecord>, CommandError> {
+    connection
+        .query_row(
+            r#"
+            SELECT project_id, run_id, payload_hash, recovery_payload_json, state, owner_process_id,
+                   owner_process_birth_identity, created_at, ready_at, failed_at
+            FROM agent_run_start_requests
+            WHERE project_id = ?1 AND run_id = ?2
+            "#,
+            params![project_id, run_id],
+            |row| {
+                let state = match row.get::<_, String>(4)?.as_str() {
+                    "preparing" => AgentRunStartRequestState::Preparing,
+                    "ready" => AgentRunStartRequestState::Ready,
+                    _ => AgentRunStartRequestState::Failed,
+                };
+                Ok(AgentRunStartRequestRecord {
+                    project_id: row.get(0)?,
+                    run_id: row.get(1)?,
+                    payload_hash: row.get(2)?,
+                    recovery_payload_json: row.get(3)?,
+                    state,
+                    owner_process_id: read_positive_u32(row, 5)?,
+                    owner_process_birth_identity: row.get(6)?,
+                    created_at: row.get(7)?,
+                    ready_at: row.get(8)?,
+                    failed_at: row.get(9)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_run_start_identity_read_failed", error)
+        })
+}
+
+fn ensure_matching_agent_continuation_request(
+    existing: &AgentContinuationRequestRecord,
+    run_id: &str,
+    payload_hash: &str,
+) -> Result<(), CommandError> {
+    if existing.run_id == run_id && existing.payload_hash == payload_hash {
+        return Ok(());
+    }
+    Err(CommandError::user_fixable(
+        "agent_continuation_request_conflict",
+        format!(
+            "Continuation request `{}` was already used with different run input. Retry with its original payload or submit a new request id.",
+            existing.request_id
+        ),
+    ))
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "transactional event insertion requires the complete durable event identity"
+)]
+fn insert_agent_event_in_transaction(
+    transaction: &rusqlite::Transaction<'_>,
+    project_id: &str,
+    run_id: &str,
+    event_kind: AgentRunEventKind,
+    payload_json: &str,
+    created_at: &str,
+    repo_root: &Path,
+) -> Result<AgentEventRecord, CommandError> {
+    transaction
+        .execute(
+            r#"
+            INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+            VALUES (?1, ?2, ?3, ?4, ?5)
+            "#,
+            params![
+                project_id,
+                run_id,
+                agent_event_kind_sql_value(&event_kind),
+                payload_json,
+                created_at,
+            ],
+        )
+        .map_err(|error| {
+            map_agent_store_write_error(repo_root, "agent_continuation_event_insert_failed", error)
+        })?;
+    Ok(AgentEventRecord {
+        id: transaction.last_insert_rowid(),
+        project_id: project_id.into(),
+        run_id: run_id.into(),
+        event_kind,
+        payload_json: payload_json.into(),
+        created_at: created_at.into(),
     })
 }
 
@@ -2703,6 +5119,36 @@ fn validate_agent_run(record: &NewAgentRunRecord) -> Result<(), CommandError> {
     validate_non_empty_text(&record.system_prompt, "systemPrompt")
 }
 
+fn validate_payload_hash(payload_hash: &str, field: &'static str) -> Result<(), CommandError> {
+    if !is_lowercase_sha256(payload_hash) {
+        return Err(CommandError::invalid_request(field));
+    }
+    Ok(())
+}
+
+fn validate_agent_continuation_identity(
+    project_id: &str,
+    run_id: &str,
+    request_id: &str,
+    payload_hash: &str,
+) -> Result<(), CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_continuation_request_id(request_id)?;
+    if !is_lowercase_sha256(payload_hash) {
+        return Err(CommandError::invalid_request("payloadHash"));
+    }
+    Ok(())
+}
+
+fn validate_continuation_request_id(request_id: &str) -> Result<(), CommandError> {
+    validate_non_empty_text(request_id, "continuationRequestId")?;
+    if request_id.len() > 200 {
+        return Err(CommandError::invalid_request("continuationRequestId"));
+    }
+    Ok(())
+}
+
 fn validate_agent_subagent_task(record: &AgentSubagentTaskRecord) -> Result<(), CommandError> {
     validate_non_empty_text(&record.project_id, "projectId")?;
     validate_non_empty_text(&record.parent_run_id, "parentRunId")?;
@@ -3266,6 +5712,18 @@ fn read_agent_subagent_task_row(row: &Row<'_>) -> rusqlite::Result<AgentSubagent
     })
 }
 
+fn read_agent_run_drive_lease(row: &Row<'_>) -> rusqlite::Result<AgentRunDriveLeaseRecord> {
+    Ok(AgentRunDriveLeaseRecord {
+        project_id: row.get(0)?,
+        run_id: row.get(1)?,
+        owner_instance_id: row.get(2)?,
+        owner_process_id: read_positive_u32(row, 3)?,
+        owner_process_birth_identity: row.get::<_, Option<String>>(4)?.unwrap_or_default(),
+        drive_token: row.get(5)?,
+        acquired_at: row.get(6)?,
+    })
+}
+
 fn read_agent_run_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentRunRecord> {
     let last_error_code: Option<String> = row.get(21)?;
     let last_error_message: Option<String> = row.get(22)?;
@@ -3430,6 +5888,14 @@ fn parse_agent_run_status(value: &str) -> AgentRunStatus {
     }
 }
 
+fn parse_agent_continuation_request_state(value: &str) -> AgentContinuationRequestState {
+    match value {
+        "prepared" => AgentContinuationRequestState::Prepared,
+        "driving" => AgentContinuationRequestState::Driving,
+        _ => AgentContinuationRequestState::Consumed,
+    }
+}
+
 fn parse_runtime_agent_id(value: &str) -> RuntimeAgentIdDto {
     match value {
         "plan" => RuntimeAgentIdDto::Plan,
@@ -3533,7 +5999,12 @@ fn map_agent_store_write_error(
 mod tests {
     use super::*;
 
-    use std::fs;
+    use serde_json::json;
+    use std::{
+        fs,
+        sync::{Arc, Barrier},
+        thread,
+    };
 
     use crate::db::{
         configure_connection, migrations::migrations, register_project_database_path_for_tests,
@@ -3590,6 +6061,294 @@ mod tests {
         .expect("insert agent run");
     }
 
+    fn seed_running_run(repo_root: &Path, project_id: &str, run_id: &str) {
+        seed_run(repo_root, project_id, run_id);
+        update_agent_run_status(
+            repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Running,
+            None,
+            "2026-07-15T14:00:00Z",
+        )
+        .expect("finish agent start");
+    }
+
+    fn owned_start_run(project_id: &str, run_id: &str) -> NewAgentRunRecord {
+        NewAgentRunRecord {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: None,
+            agent_definition_version: None,
+            project_id: project_id.into(),
+            agent_session_id: "session-1".into(),
+            run_id: run_id.into(),
+            provider_id: "provider-1".into(),
+            model_id: "model-1".into(),
+            prompt: "Recover this exact start".into(),
+            system_prompt: "System prompt".into(),
+            now: "2026-07-15T12:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn ready_agent_start_accepts_exact_original_replay_with_recovery_payload_intact() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-ready-start-replay";
+        let run_id = "run-ready-start-replay";
+        create_project_database(&repo_root, project_id);
+        let record = owned_start_run(project_id, run_id);
+        let payload_hash = "a".repeat(64);
+        let recovery_payload = serde_json::json!({
+            "schema": "test.owned_agent_start_recovery.v1",
+            "projectId": project_id,
+            "runId": run_id,
+            "controls": { "approvalMode": "suggest" },
+        })
+        .to_string();
+
+        assert!(matches!(
+            register_agent_run_start(
+                &repo_root,
+                &record,
+                &payload_hash,
+                &recovery_payload,
+                42,
+                "birth-original",
+            )
+            .expect("register original start"),
+            AgentRunStartRegistrationResult::Registered(_)
+        ));
+        mark_agent_run_start_ready(&repo_root, project_id, run_id, "2026-07-15T12:00:01Z")
+            .expect("mark ready");
+
+        let AgentRunStartRegistrationResult::Replayed { request, .. } = register_agent_run_start(
+            &repo_root,
+            &record,
+            &payload_hash,
+            &recovery_payload,
+            99,
+            "birth-replay",
+        )
+        .expect("accept exact replay") else {
+            panic!("exact ready replay should not create another run");
+        };
+        assert_eq!(request.state, AgentRunStartRequestState::Ready);
+        assert_eq!(request.recovery_payload_json, recovery_payload);
+    }
+
+    #[test]
+    fn interrupted_start_replacement_is_atomic_and_single_winner() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-start-replace-race";
+        let run_id = "run-start-replace-race";
+        create_project_database(&repo_root, project_id);
+        let record = owned_start_run(project_id, run_id);
+        let payload_hash = "b".repeat(64);
+        let recovery_payload = r#"{"schema":"test.start-recovery.v1"}"#.to_string();
+        register_agent_run_start(
+            &repo_root,
+            &record,
+            &payload_hash,
+            &recovery_payload,
+            42,
+            "birth-interrupted",
+        )
+        .expect("register interrupted start");
+        fail_preparing_agent_run_start(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunDiagnosticRecord {
+                code: "interrupted".into(),
+                message: "Original owner exited.".into(),
+            },
+            "2026-07-15T12:00:01Z",
+        )
+        .expect("mark interrupted start failed");
+        let expected = load_agent_run_start_request(&repo_root, project_id, run_id)
+            .expect("load failed marker")
+            .expect("failed marker exists");
+
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for index in 0..2_u32 {
+            let barrier = barrier.clone();
+            let repo_root = repo_root.clone();
+            let record = record.clone();
+            let expected = expected.clone();
+            let payload_hash = payload_hash.clone();
+            let recovery_payload = recovery_payload.clone();
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                replace_replayable_agent_run_start(
+                    &repo_root,
+                    &expected,
+                    &record,
+                    &payload_hash,
+                    &recovery_payload,
+                    100 + index,
+                    &format!("replacement-birth-{index}"),
+                )
+                .expect("replace interrupted start")
+            }));
+        }
+        barrier.wait();
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join replacement worker"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, AgentRunStartRegistrationResult::Registered(_)))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(
+                    outcome,
+                    AgentRunStartRegistrationResult::Replayed { .. }
+                ))
+                .count(),
+            1
+        );
+        let final_start = load_agent_run_start_request(&repo_root, project_id, run_id)
+            .expect("load replacement marker")
+            .expect("replacement marker remains present");
+        assert_eq!(final_start.state, AgentRunStartRequestState::Preparing);
+        assert_eq!(final_start.payload_hash, payload_hash);
+        assert_eq!(final_start.recovery_payload_json, recovery_payload);
+        load_agent_run(&repo_root, project_id, run_id).expect("replacement run remains present");
+    }
+
+    #[test]
+    fn file_change_event_transaction_rolls_back_when_payload_preparation_fails() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-file-change-rollback";
+        let run_id = "run-file-change-rollback";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        let events_before = read_all_agent_events(&repo_root, project_id, run_id)
+            .expect("load events before failed transaction");
+
+        let error = append_agent_file_change_with_event(
+            &repo_root,
+            &NewAgentFileChangeRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                change_group_id: None,
+                path: "src/lib.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: None,
+                created_at: "2026-07-15T12:00:01Z".into(),
+            },
+            |_| -> Result<JsonValue, CommandError> {
+                Err(CommandError::system_fault(
+                    "test_file_change_payload_failed",
+                    "Simulated freshness failure.",
+                ))
+            },
+        )
+        .expect_err("payload preparation failure should roll back transaction");
+
+        assert_eq!(error.code, "test_file_change_payload_failed");
+        assert!(load_agent_file_changes(&repo_root, project_id, run_id)
+            .expect("load file changes after rollback")
+            .is_empty());
+        let events_after = read_all_agent_events(&repo_root, project_id, run_id)
+            .expect("load events after failed transaction");
+        assert_eq!(events_after.len(), events_before.len());
+        assert_eq!(
+            events_after
+                .iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            events_before
+                .iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn file_change_and_event_commit_together_after_prior_events() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-file-change-order";
+        let run_id = "run-file-change-order";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        let prior_event = append_agent_event(
+            &repo_root,
+            &NewAgentEventRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                event_kind: AgentRunEventKind::CommandOutput,
+                payload_json: json!({ "toolName": "write" }).to_string(),
+                created_at: "2026-07-15T12:00:01Z".into(),
+            },
+        )
+        .expect("append prior event");
+
+        let (change, file_changed_event) = append_agent_file_change_with_event(
+            &repo_root,
+            &NewAgentFileChangeRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                change_group_id: Some("change-group-1".into()),
+                path: "src/lib.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: None,
+                created_at: "2026-07-15T12:00:02Z".into(),
+            },
+            |stored_change| {
+                Ok(json!({
+                    "path": stored_change.path.clone(),
+                    "traceId": stored_change.trace_id.clone(),
+                }))
+            },
+        )
+        .expect("append file change and event");
+
+        assert!(file_changed_event.id > prior_event.id);
+        assert_eq!(
+            file_changed_event.event_kind,
+            AgentRunEventKind::FileChanged
+        );
+        assert_eq!(file_changed_event.created_at, change.created_at);
+        let payload = serde_json::from_str::<JsonValue>(&file_changed_event.payload_json)
+            .expect("decode file-changed event payload");
+        assert_eq!(payload["path"], json!(change.path));
+        assert_eq!(payload["traceId"], json!(change.trace_id));
+
+        let stored_changes = load_agent_file_changes(&repo_root, project_id, run_id)
+            .expect("load committed file changes");
+        assert_eq!(stored_changes.len(), 1);
+        assert_eq!(stored_changes[0].id, change.id);
+        let events =
+            read_all_agent_events(&repo_root, project_id, run_id).expect("load committed events");
+        let prior_index = events
+            .iter()
+            .position(|event| event.id == prior_event.id)
+            .expect("prior event remains stored");
+        let file_changed_index = events
+            .iter()
+            .position(|event| event.id == file_changed_event.id)
+            .expect("file-changed event is stored");
+        assert!(file_changed_index > prior_index);
+    }
+
     fn append_action(repo_root: &Path, project_id: &str, run_id: &str, action_id: &str) {
         append_agent_action_request(
             repo_root,
@@ -3604,6 +6363,206 @@ mod tests {
             },
         )
         .expect("append action request");
+    }
+
+    #[test]
+    fn concurrent_agent_run_drive_lease_claims_have_one_winner() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-drive-lease-race";
+        let run_id = "run-drive-lease-race";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+
+        let barrier = Arc::new(Barrier::new(3));
+        let mut workers = Vec::new();
+        for index in 0..2_u32 {
+            let barrier = barrier.clone();
+            let repo_root = repo_root.clone();
+            workers.push(thread::spawn(move || {
+                barrier.wait();
+                claim_agent_run_drive_lease(
+                    &repo_root,
+                    project_id,
+                    run_id,
+                    &format!("app-instance-{index}"),
+                    10_000 + index,
+                    &format!("process-birth-{index}"),
+                    &format!("drive-token-{index}"),
+                    "2026-07-15T12:00:00Z",
+                )
+                .expect("claim drive lease")
+            }));
+        }
+        barrier.wait();
+
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join lease claimant"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, AgentRunDriveLeaseClaimResult::Acquired))
+                .count(),
+            1
+        );
+        assert_eq!(
+            outcomes
+                .iter()
+                .filter(|outcome| matches!(outcome, AgentRunDriveLeaseClaimResult::Held(_)))
+                .count(),
+            1
+        );
+
+        let held = outcomes
+            .into_iter()
+            .find_map(|outcome| match outcome {
+                AgentRunDriveLeaseClaimResult::Held(held) => Some(held),
+                AgentRunDriveLeaseClaimResult::Acquired
+                | AgentRunDriveLeaseClaimResult::RunNotDrivable(_) => None,
+            })
+            .expect("held lease describes winner");
+        assert!(release_agent_run_drive_lease(
+            &repo_root,
+            project_id,
+            run_id,
+            &held.owner_instance_id,
+            &held.drive_token,
+        )
+        .expect("release winning lease"));
+        assert_eq!(
+            claim_agent_run_drive_lease(
+                &repo_root,
+                project_id,
+                run_id,
+                "app-instance-after-release",
+                20_000,
+                "process-birth-after-release",
+                "drive-token-after-release",
+                "2026-07-15T12:01:00Z",
+            )
+            .expect("claim after release"),
+            AgentRunDriveLeaseClaimResult::Acquired
+        );
+    }
+
+    #[test]
+    fn agent_run_drive_lease_recovery_is_compare_and_swap_guarded() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-drive-lease-recovery";
+        let run_id = "run-drive-lease-recovery";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+
+        assert_eq!(
+            claim_agent_run_drive_lease(
+                &repo_root,
+                project_id,
+                run_id,
+                "prior-app-instance",
+                30_000,
+                "prior-process-birth",
+                "prior-drive-token",
+                "2026-07-15T12:00:00Z",
+            )
+            .expect("claim prior lease"),
+            AgentRunDriveLeaseClaimResult::Acquired
+        );
+        let expected = AgentRunDriveLeaseRecord {
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            owner_instance_id: "prior-app-instance".into(),
+            owner_process_id: 30_000,
+            owner_process_birth_identity: "prior-process-birth".into(),
+            drive_token: "prior-drive-token".into(),
+            acquired_at: "2026-07-15T12:00:00Z".into(),
+        };
+        let replacement = AgentRunDriveLeaseRecord {
+            owner_instance_id: "replacement-app-instance".into(),
+            owner_process_id: 40_000,
+            owner_process_birth_identity: "replacement-process-birth".into(),
+            drive_token: "replacement-drive-token".into(),
+            acquired_at: "2026-07-15T12:01:00Z".into(),
+            ..expected.clone()
+        };
+        let stale_expectation = AgentRunDriveLeaseRecord {
+            drive_token: "not-the-current-token".into(),
+            ..expected.clone()
+        };
+
+        assert!(
+            !replace_agent_run_drive_lease(&repo_root, &replacement, &stale_expectation,)
+                .expect("reject stale recovery CAS")
+        );
+        assert!(
+            replace_agent_run_drive_lease(&repo_root, &replacement, &expected,)
+                .expect("replace abandoned lease")
+        );
+        assert!(!release_agent_run_drive_lease(
+            &repo_root,
+            project_id,
+            run_id,
+            &expected.owner_instance_id,
+            &expected.drive_token,
+        )
+        .expect("old owner cannot release replacement"));
+        assert!(release_agent_run_drive_lease(
+            &repo_root,
+            project_id,
+            run_id,
+            &replacement.owner_instance_id,
+            &replacement.drive_token,
+        )
+        .expect("replacement owner releases lease"));
+    }
+
+    #[test]
+    fn agent_run_drive_lease_heartbeat_is_owner_and_token_guarded() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-drive-lease-heartbeat";
+        let run_id = "run-drive-lease-heartbeat";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        claim_agent_run_drive_lease(
+            &repo_root,
+            project_id,
+            run_id,
+            "lease-owner",
+            30_000,
+            "lease-owner-process-birth",
+            "lease-token",
+            "2026-07-15T12:00:00Z",
+        )
+        .expect("claim lease");
+
+        assert!(!renew_agent_run_drive_lease(
+            &repo_root,
+            project_id,
+            run_id,
+            "lease-owner",
+            "wrong-token",
+            "2026-07-15T12:00:05Z",
+        )
+        .expect("reject stale heartbeat token"));
+        assert!(renew_agent_run_drive_lease(
+            &repo_root,
+            project_id,
+            run_id,
+            "lease-owner",
+            "lease-token",
+            "2026-07-15T12:00:05Z",
+        )
+        .expect("renew current lease"));
+        let renewed = load_agent_run_drive_lease(&repo_root, project_id, run_id)
+            .expect("load renewed lease")
+            .expect("lease exists");
+        assert_eq!(renewed.acquired_at, "2026-07-15T12:00:05Z");
     }
 
     #[test]
@@ -3654,6 +6613,57 @@ mod tests {
         )
         .expect_err("resolved action cannot be answered again");
         assert_eq!(retry_error.code, "agent_action_request_already_resolved");
+    }
+
+    #[test]
+    fn rejecting_an_action_atomically_fails_the_run_and_exact_replay_is_a_noop() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-action-rejection";
+        let run_id = "run-action-rejection";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        append_action(&repo_root, project_id, run_id, "action-a");
+
+        let committed = reject_agent_action_and_fail_run(
+            &repo_root,
+            project_id,
+            run_id,
+            "action-a",
+            Some("Do not run this command."),
+            "2026-07-15T12:00:00Z",
+        )
+        .expect("reject action");
+        assert!(!committed.replayed);
+        assert_eq!(committed.action.status, "rejected");
+        assert_eq!(committed.snapshot.run.status, AgentRunStatus::Failed);
+        assert_eq!(committed.inserted_events.len(), 3);
+        let event_count = committed.snapshot.events.len();
+
+        let replay = reject_agent_action_and_fail_run(
+            &repo_root,
+            project_id,
+            run_id,
+            "action-a",
+            Some("Do not run this command."),
+            "2026-07-15T12:00:01Z",
+        )
+        .expect("replay exact rejection");
+        assert!(replay.replayed);
+        assert!(replay.inserted_events.is_empty());
+        assert_eq!(replay.snapshot.events.len(), event_count);
+
+        let conflict = reject_agent_action_and_fail_run(
+            &repo_root,
+            project_id,
+            run_id,
+            "action-a",
+            Some("Use a different response."),
+            "2026-07-15T12:00:02Z",
+        )
+        .expect_err("conflicting replay must fail");
+        assert_eq!(conflict.code, "agent_action_rejection_conflict");
     }
 
     #[test]
@@ -3741,5 +6751,613 @@ mod tests {
         )
         .expect("late handoff returns failed terminal state");
         assert_eq!(late_handoff.run.status, AgentRunStatus::Failed);
+    }
+
+    #[test]
+    fn explicit_continuation_reopens_completed_and_failed_runs_only() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "continuation-reopen";
+        create_project_database(&repo_root, project_id);
+
+        for (run_id, terminal_status) in [
+            ("completed-run", AgentRunStatus::Completed),
+            ("failed-run", AgentRunStatus::Failed),
+        ] {
+            seed_run(&repo_root, project_id, run_id);
+            let terminal = update_agent_run_status(
+                &repo_root,
+                project_id,
+                run_id,
+                terminal_status,
+                Some(AgentRunDiagnosticRecord {
+                    code: "prior_terminal".into(),
+                    message: "Prior turn ended.".into(),
+                }),
+                "2026-06-05T12:10:00Z",
+            )
+            .expect("finish prior turn");
+            assert_ne!(terminal.run.status, AgentRunStatus::Running);
+
+            let reopened = reopen_agent_run_for_continuation(
+                &repo_root,
+                project_id,
+                run_id,
+                "2026-06-05T12:11:00Z",
+            )
+            .expect("reopen terminal run for continuation");
+            assert_eq!(reopened.run.status, AgentRunStatus::Running);
+            assert!(reopened.run.completed_at.is_none());
+            assert!(reopened.run.cancelled_at.is_none());
+            assert!(reopened.run.last_error.is_none());
+        }
+
+        seed_run(&repo_root, project_id, "handed-off-run");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            "handed-off-run",
+            AgentRunStatus::Completed,
+            None,
+            "2026-06-05T12:12:00Z",
+        )
+        .expect("complete source run");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            "handed-off-run",
+            AgentRunStatus::HandedOff,
+            None,
+            "2026-06-05T12:13:00Z",
+        )
+        .expect("hand off source run");
+        let error = reopen_agent_run_for_continuation(
+            &repo_root,
+            project_id,
+            "handed-off-run",
+            "2026-06-05T12:14:00Z",
+        )
+        .expect_err("handed-off source must remain terminal");
+        assert_eq!(error.code, "agent_run_not_resumable");
+    }
+
+    fn continuation_preparation(
+        project_id: &str,
+        run_id: &str,
+        request_id: &str,
+        payload_hash: &str,
+    ) -> NewAgentContinuationPreparationRecord {
+        NewAgentContinuationPreparationRecord {
+            project_id: project_id.into(),
+            request_id: request_id.into(),
+            run_id: run_id.into(),
+            payload_hash: payload_hash.into(),
+            recovery_payload_json: serde_json::json!({
+                "schema": "test.agent_continuation_recovery.v1",
+                "projectId": project_id,
+                "runId": run_id,
+                "requestId": request_id,
+            })
+            .to_string(),
+            role: AgentMessageRole::User,
+            content: "Continue safely.".into(),
+            attachments: vec![NewMessageAttachmentInput {
+                kind: AgentMessageAttachmentKind::Text,
+                storage_path: "/tmp/context.txt".into(),
+                media_type: "text/plain".into(),
+                original_name: "context.txt".into(),
+                size_bytes: 12,
+                width: None,
+                height: None,
+            }],
+            linked_path_grant_payload_json: Some(
+                r#"{"schema":"xero.linked_context_paths.v1","grantKind":"linked_context_paths","paths":[{"kind":"file","absolutePath":"/tmp/context.txt"}]}"#.into(),
+            ),
+            message_payload_json: r#"{"role":"user","text":"Continue safely."}"#.into(),
+            action_answer: None,
+            prepared_at: "2026-07-15T14:00:00Z".into(),
+        }
+    }
+
+    #[test]
+    fn continuation_preparation_is_atomic_and_idempotent() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "continuation-atomic";
+        let run_id = "run-continuation-atomic";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Completed,
+            None,
+            "2026-07-15T13:59:00Z",
+        )
+        .expect("complete initial turn");
+
+        let payload_hash = "a".repeat(64);
+        let record =
+            continuation_preparation(project_id, run_id, "continuation-request-1", &payload_hash);
+        let prepared =
+            prepare_agent_continuation(&repo_root, &record).expect("prepare continuation");
+        assert!(prepared.inserted);
+        assert_eq!(prepared.snapshot.run.status, AgentRunStatus::Running);
+        assert_eq!(prepared.snapshot.messages.len(), 1);
+        assert_eq!(prepared.snapshot.messages[0].attachments.len(), 1);
+        assert_eq!(prepared.snapshot.events.len(), 2);
+
+        let retry = prepare_agent_continuation(&repo_root, &record).expect("retry same request");
+        assert!(!retry.inserted);
+        assert_eq!(retry.request.message_id, prepared.request.message_id);
+        assert_eq!(retry.snapshot.messages.len(), 1);
+        assert_eq!(retry.snapshot.events.len(), 2);
+
+        let conflict = prepare_agent_continuation(
+            &repo_root,
+            &NewAgentContinuationPreparationRecord {
+                payload_hash: "b".repeat(64),
+                ..record
+            },
+        )
+        .expect_err("same request id with different payload must fail");
+        assert_eq!(conflict.code, "agent_continuation_request_conflict");
+        let snapshot = load_agent_run(&repo_root, project_id, run_id).expect("load after conflict");
+        assert_eq!(snapshot.messages.len(), 1);
+        assert_eq!(snapshot.events.len(), 2);
+    }
+
+    #[test]
+    fn action_approval_and_continuation_preparation_commit_and_replay_together() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "continuation-action-atomic";
+        let run_id = "run-continuation-action-atomic";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Paused,
+            None,
+            "2026-07-15T13:59:00Z",
+        )
+        .expect("pause run");
+        append_action(&repo_root, project_id, run_id, "action-a");
+
+        let mut record = continuation_preparation(
+            project_id,
+            run_id,
+            "continuation-action-request",
+            &"c".repeat(64),
+        );
+        record.action_answer = Some(AgentContinuationActionAnswerRecord {
+            action_id: Some("action-a".into()),
+            response: "Approved.".into(),
+        });
+        record.attachments[0].size_bytes = -1;
+        prepare_agent_continuation(&repo_root, &record)
+            .expect_err("a later preparation failure must roll back the approval");
+        let rolled_back = load_agent_run(&repo_root, project_id, run_id).expect("load rollback");
+        assert_eq!(rolled_back.run.status, AgentRunStatus::Paused);
+        assert_eq!(rolled_back.action_requests[0].status, "pending");
+        assert!(rolled_back.messages.is_empty());
+
+        record.attachments[0].size_bytes = 12;
+        let prepared = prepare_agent_continuation(&repo_root, &record).expect("prepare approval");
+        assert_eq!(prepared.snapshot.run.status, AgentRunStatus::Running);
+        assert_eq!(prepared.snapshot.action_requests[0].status, "answered");
+        assert_eq!(
+            prepared.snapshot.action_requests[0].response.as_deref(),
+            Some("Approved.")
+        );
+        assert_eq!(prepared.snapshot.events.len(), 3);
+        let replay = prepare_agent_continuation(&repo_root, &record).expect("replay approval");
+        assert!(!replay.inserted);
+        assert_eq!(replay.snapshot.events.len(), 3);
+        assert_eq!(replay.snapshot.messages.len(), 1);
+    }
+
+    #[test]
+    fn failed_continuation_preparation_rolls_back_and_can_retry() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "continuation-rollback";
+        let run_id = "run-continuation-rollback";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Completed,
+            None,
+            "2026-07-15T13:59:00Z",
+        )
+        .expect("complete initial turn");
+
+        let payload_hash = "c".repeat(64);
+        let mut record = continuation_preparation(
+            project_id,
+            run_id,
+            "continuation-request-rollback",
+            &payload_hash,
+        );
+        record.attachments[0].size_bytes = -1;
+        let error = prepare_agent_continuation(&repo_root, &record)
+            .expect_err("invalid attachment must abort the transaction");
+        assert_eq!(error.code, "agent_message_attachment_invalid_size");
+
+        let after_failure = load_agent_run(&repo_root, project_id, run_id).expect("load rollback");
+        assert_eq!(after_failure.run.status, AgentRunStatus::Completed);
+        assert!(after_failure.messages.is_empty());
+        assert!(after_failure.events.is_empty());
+        assert!(load_agent_continuation_preparation(
+            &repo_root,
+            project_id,
+            run_id,
+            "continuation-request-rollback",
+            &payload_hash,
+        )
+        .expect("inspect rollback")
+        .is_none());
+
+        record.attachments[0].size_bytes = 12;
+        let retry = prepare_agent_continuation(&repo_root, &record)
+            .expect("retry valid preparation after rollback");
+        assert!(retry.inserted);
+        assert_eq!(retry.snapshot.run.status, AgentRunStatus::Running);
+        assert_eq!(retry.snapshot.messages.len(), 1);
+        assert_eq!(retry.snapshot.events.len(), 2);
+    }
+
+    #[test]
+    fn driving_continuation_is_not_reset_by_a_terminal_failure_without_provider_evidence() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "continuation-startup-recovery";
+        let run_id = "run-continuation-startup-recovery";
+        create_project_database(&repo_root, project_id);
+        seed_running_run(&repo_root, project_id, run_id);
+        let payload_hash = "d".repeat(64);
+        let record = continuation_preparation(
+            project_id,
+            run_id,
+            "continuation-startup-request",
+            &payload_hash,
+        );
+        prepare_agent_continuation(&repo_root, &record).expect("prepare continuation");
+        assert!(matches!(
+            mark_agent_continuation_drive_started(
+                &repo_root,
+                project_id,
+                run_id,
+                &record.request_id,
+                "2026-07-15T14:01:00Z",
+            )
+            .expect("mark drive started"),
+            AgentContinuationDriveStartResult::Started(_)
+        ));
+        assert!(matches!(
+            mark_agent_continuation_drive_started(
+                &repo_root,
+                project_id,
+                run_id,
+                &record.request_id,
+                "2026-07-15T14:01:30Z",
+            )
+            .expect("observe already-driving continuation"),
+            AgentContinuationDriveStartResult::AlreadyDriving(_)
+        ));
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Failed,
+            Some(AgentRunDiagnosticRecord {
+                code: "agent_environment_startup_failed".into(),
+                message: "Environment startup failed.".into(),
+            }),
+            "2026-07-15T14:02:00Z",
+        )
+        .expect("record startup failure");
+        finish_agent_continuation_drive(
+            &repo_root,
+            project_id,
+            run_id,
+            &record.request_id,
+            false,
+            "2026-07-15T14:03:00Z",
+        )
+        .expect("leave ambiguous drive unchanged");
+
+        let retry = prepare_agent_continuation(&repo_root, &record).expect("recover request");
+        assert_eq!(retry.request.state, AgentContinuationRequestState::Driving);
+        assert!(retry.request.consumed_at.is_none());
+        assert_eq!(retry.snapshot.messages.len(), 1);
+    }
+
+    #[test]
+    fn driving_continuation_reconciles_only_from_request_scoped_completion_evidence() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "continuation-completion-recovery";
+        let run_id = "run-continuation-completion-recovery";
+        create_project_database(&repo_root, project_id);
+        seed_running_run(&repo_root, project_id, run_id);
+        let record = continuation_preparation(
+            project_id,
+            run_id,
+            "continuation-completion-request",
+            &"e".repeat(64),
+        );
+        prepare_agent_continuation(&repo_root, &record).expect("prepare continuation");
+        mark_agent_continuation_drive_started(
+            &repo_root,
+            project_id,
+            run_id,
+            &record.request_id,
+            "2026-07-15T15:00:00Z",
+        )
+        .expect("mark driving");
+
+        let before_completion = reconcile_completed_agent_continuation(
+            &repo_root,
+            project_id,
+            run_id,
+            &record.request_id,
+            "2026-07-15T15:01:00Z",
+        )
+        .expect("reconcile before completion")
+        .expect("request exists");
+        assert_eq!(
+            before_completion.state,
+            AgentContinuationRequestState::Driving
+        );
+
+        append_agent_event(
+            &repo_root,
+            &NewAgentEventRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                event_kind: AgentRunEventKind::RunCompleted,
+                payload_json: r#"{"summary":"completed"}"#.into(),
+                created_at: "2026-07-15T15:02:00Z".into(),
+            },
+        )
+        .expect("append completion evidence");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Completed,
+            None,
+            "2026-07-15T15:02:01Z",
+        )
+        .expect("complete run");
+
+        let reconciled = reconcile_completed_agent_continuation(
+            &repo_root,
+            project_id,
+            run_id,
+            &record.request_id,
+            "2026-07-15T15:03:00Z",
+        )
+        .expect("reconcile completion")
+        .expect("request exists");
+        assert_eq!(reconciled.state, AgentContinuationRequestState::Consumed);
+        assert_eq!(
+            reconciled.consumed_at.as_deref(),
+            Some("2026-07-15T15:03:00Z")
+        );
+    }
+
+    #[test]
+    fn paused_action_required_turn_reconciles_a_driving_continuation_as_consumed() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "continuation-paused-recovery";
+        let run_id = "run-continuation-paused-recovery";
+        create_project_database(&repo_root, project_id);
+        seed_running_run(&repo_root, project_id, run_id);
+        let record = continuation_preparation(
+            project_id,
+            run_id,
+            "continuation-paused-request",
+            &"9".repeat(64),
+        );
+        prepare_agent_continuation(&repo_root, &record).expect("prepare continuation");
+        mark_agent_continuation_drive_started(
+            &repo_root,
+            project_id,
+            run_id,
+            &record.request_id,
+            "2026-07-15T15:10:00Z",
+        )
+        .expect("mark driving");
+        append_agent_event(
+            &repo_root,
+            &NewAgentEventRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                event_kind: AgentRunEventKind::ActionRequired,
+                payload_json: r#"{"actionId":"approval-1"}"#.into(),
+                created_at: "2026-07-15T15:11:00Z".into(),
+            },
+        )
+        .expect("append provider outcome");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Paused,
+            None,
+            "2026-07-15T15:11:01Z",
+        )
+        .expect("pause run");
+
+        let reconciled = reconcile_completed_agent_continuation(
+            &repo_root,
+            project_id,
+            run_id,
+            &record.request_id,
+            "2026-07-15T15:12:00Z",
+        )
+        .expect("reconcile paused outcome")
+        .expect("request exists");
+        assert_eq!(reconciled.state, AgentContinuationRequestState::Consumed);
+    }
+
+    #[test]
+    fn failed_run_never_reconciles_a_driving_continuation_as_consumed() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "continuation-failed-recovery";
+        let run_id = "run-continuation-failed-recovery";
+        create_project_database(&repo_root, project_id);
+        seed_running_run(&repo_root, project_id, run_id);
+        let record = continuation_preparation(
+            project_id,
+            run_id,
+            "continuation-failed-request",
+            &"f".repeat(64),
+        );
+        prepare_agent_continuation(&repo_root, &record).expect("prepare continuation");
+        mark_agent_continuation_drive_started(
+            &repo_root,
+            project_id,
+            run_id,
+            &record.request_id,
+            "2026-07-15T16:00:00Z",
+        )
+        .expect("mark driving");
+        append_agent_event(
+            &repo_root,
+            &NewAgentEventRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                event_kind: AgentRunEventKind::RunCompleted,
+                payload_json: r#"{"summary":"misleading evidence"}"#.into(),
+                created_at: "2026-07-15T16:01:00Z".into(),
+            },
+        )
+        .expect("append completion event");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Failed,
+            Some(AgentRunDiagnosticRecord {
+                code: "provider_failed".into(),
+                message: "Provider failed after emitting an event.".into(),
+            }),
+            "2026-07-15T16:01:01Z",
+        )
+        .expect("fail run");
+
+        let reconciled = reconcile_completed_agent_continuation(
+            &repo_root,
+            project_id,
+            run_id,
+            &record.request_id,
+            "2026-07-15T16:02:00Z",
+        )
+        .expect("reconcile failed run")
+        .expect("request exists");
+        assert_eq!(reconciled.state, AgentContinuationRequestState::Driving);
+        assert!(reconciled.consumed_at.is_none());
+    }
+
+    #[test]
+    fn cancellation_cas_blocks_a_new_drive_after_success_and_detects_changed_ownership() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "cancel-drive-cas";
+        let run_id = "run-cancel-drive-cas";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+        assert_eq!(
+            claim_agent_run_drive_lease(
+                &repo_root,
+                project_id,
+                run_id,
+                "owner-1",
+                101,
+                "owner-1-process-birth",
+                "drive-1",
+                "2026-07-15T14:00:00Z",
+            )
+            .expect("claim drive"),
+            AgentRunDriveLeaseClaimResult::Acquired
+        );
+        let raced = cancel_agent_run_with_expected_drive_lease(
+            &repo_root,
+            project_id,
+            run_id,
+            None,
+            false,
+            r#"{"code":"agent_run_cancelled"}"#,
+            "2026-07-15T14:01:00Z",
+        )
+        .expect("observe changed lease");
+        assert!(matches!(
+            raced,
+            AgentRunCancellationCasResult::LeaseChanged(Some(_))
+        ));
+        let lease = load_agent_run_drive_lease(&repo_root, project_id, run_id)
+            .expect("load lease")
+            .expect("held lease");
+        let applied = cancel_agent_run_with_expected_drive_lease(
+            &repo_root,
+            project_id,
+            run_id,
+            Some(&lease),
+            false,
+            r#"{"code":"agent_run_cancelled"}"#,
+            "2026-07-15T14:02:00Z",
+        )
+        .expect("cancel with matching lease");
+        assert!(matches!(
+            applied,
+            AgentRunCancellationCasResult::Applied {
+                transitioned: true,
+                ..
+            }
+        ));
+        let late_accept = update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Running,
+            None,
+            "2026-07-15T14:02:30Z",
+        )
+        .expect("late queued-prompt acceptance observes cancellation");
+        assert_eq!(late_accept.run.status, AgentRunStatus::Cancelled);
+        assert!(matches!(
+            claim_agent_run_drive_lease(
+                &repo_root,
+                project_id,
+                run_id,
+                "owner-2",
+                102,
+                "owner-2-process-birth",
+                "drive-2",
+                "2026-07-15T14:03:00Z",
+            )
+            .expect("cancelled claim result"),
+            AgentRunDriveLeaseClaimResult::RunNotDrivable(AgentRunStatus::Cancelled)
+        ));
     }
 }

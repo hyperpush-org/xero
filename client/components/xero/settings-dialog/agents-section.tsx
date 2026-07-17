@@ -41,6 +41,7 @@ interface AgentsSectionProps {
   onArchiveAgentDefinition?: (request: {
     projectId: string
     definitionId: string
+    expectedCurrentVersion: number
   }) => Promise<AgentDefinitionSummaryDto>
   onGetAgentDefinitionVersion?: (request: {
     projectId: string
@@ -202,6 +203,7 @@ export function AgentsSection({
         await onArchiveAgentDefinition({
           projectId,
           definitionId: definition.definitionId,
+          expectedCurrentVersion: definition.currentVersion,
         })
         refresh()
         onRegistryChanged?.()

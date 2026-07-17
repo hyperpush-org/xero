@@ -17,9 +17,9 @@ use super::{
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET, AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
     AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH, AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_READ_MANY,
     AUTONOMOUS_TOOL_SEARCH, AUTONOMOUS_TOOL_SKILL, AUTONOMOUS_TOOL_STAT, AUTONOMOUS_TOOL_SUBAGENT,
-    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE, AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS,
-    AUTONOMOUS_TOOL_TOOL_SEARCH, AUTONOMOUS_TOOL_WORKFLOW_DEFINITION,
-    AUTONOMOUS_TOOL_WORKSPACE_INDEX,
+    AUTONOMOUS_TOOL_SUGGEST_ROUTING, AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+    AUTONOMOUS_TOOL_TODO, AUTONOMOUS_TOOL_TOOL_ACCESS, AUTONOMOUS_TOOL_TOOL_SEARCH,
+    AUTONOMOUS_TOOL_WORKFLOW_DEFINITION, AUTONOMOUS_TOOL_WORKSPACE_INDEX,
 };
 use crate::{
     auth::now_timestamp,
@@ -101,6 +101,13 @@ pub struct AutonomousAgentDefinitionRequest {
     pub definition_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source_definition_id: Option<String>,
+    /// Compare-and-swap guard for archive approval. The exact version is part
+    /// of the approved tool input so approval cannot drift to a newer Agent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expected_current_version: Option<u32>,
+    /// Exact immutable source version for clone approval.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_version: Option<u32>,
     #[serde(default)]
     pub include_archived: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -480,10 +487,31 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<AutonomousAgentDefinitionOutput> {
         let definition_id =
             required_request_text(request.definition_id.as_deref(), "definitionId")?;
+        let requested_definition = required_definition(request.definition.as_ref())?;
+        let expected_version = requested_definition
+            .get("version")
+            .and_then(JsonValue::as_u64)
+            .and_then(|version| u32::try_from(version).ok())
+            .filter(|version| *version > 0)
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "agent_definition_version_required",
+                    "Updating an agent requires the exact current definition version.",
+                )
+            })?;
         let existing = load_custom_definition(&self.repo_root, &definition_id)?;
+        if expected_version != existing.current_version {
+            return Err(CommandError::user_fixable(
+                "agent_definition_version_conflict",
+                format!(
+                    "Agent definition `{definition_id}` changed from version {expected_version} to version {}. Reload it before saving your edits.",
+                    existing.current_version
+                ),
+            ));
+        }
         let next_version = existing.current_version.saturating_add(1);
         let snapshot = normalize_definition_snapshot(
-            required_definition(request.definition.as_ref())?,
+            requested_definition,
             Some(&definition_id),
             next_version,
             false,
@@ -523,7 +551,7 @@ impl AutonomousToolRuntime {
 
         let now = now_timestamp();
         let audit_snapshot = snapshot.clone();
-        let saved = project_store::insert_agent_definition(
+        let saved = project_store::insert_agent_definition_if_current_version(
             &self.repo_root,
             &project_store::NewAgentDefinitionRecord {
                 definition_id: summary.definition_id.clone(),
@@ -539,6 +567,7 @@ impl AutonomousToolRuntime {
                 created_at: now.clone(),
                 updated_at: now.clone(),
             },
+            expected_version,
         )?;
         let _ = project_store::record_agent_definition_custom_audit_event(
             &self.repo_root,
@@ -578,7 +607,20 @@ impl AutonomousToolRuntime {
     ) -> CommandResult<AutonomousAgentDefinitionOutput> {
         let definition_id =
             required_request_text(request.definition_id.as_deref(), "definitionId")?;
+        let expected_current_version = request
+            .expected_current_version
+            .filter(|version| *version > 0)
+            .ok_or_else(|| CommandError::invalid_request("expectedCurrentVersion"))?;
         let existing = load_custom_definition(&self.repo_root, &definition_id)?;
+        if existing.current_version != expected_current_version {
+            return Err(CommandError::user_fixable(
+                "agent_definition_version_conflict",
+                format!(
+                    "Agent definition `{definition_id}` changed from version {expected_current_version} to {}. Reload it before archiving.",
+                    existing.current_version
+                ),
+            ));
+        }
         let summary = summary_from_record(existing, None);
         if !operator_approved {
             return Ok(AutonomousAgentDefinitionOutput {
@@ -598,6 +640,7 @@ impl AutonomousToolRuntime {
         let archived = project_store::archive_agent_definition(
             &self.repo_root,
             &definition_id,
+            expected_current_version,
             &now_timestamp(),
         )?;
         let archived_summary = summary_from_record(archived, None);
@@ -627,6 +670,10 @@ impl AutonomousToolRuntime {
             request.source_definition_id.as_deref(),
             "sourceDefinitionId",
         )?;
+        let requested_source_version = request
+            .source_version
+            .filter(|version| *version > 0)
+            .ok_or_else(|| CommandError::invalid_request("sourceVersion"))?;
         let source = project_store::load_agent_definition(&self.repo_root, &source_definition_id)?
             .ok_or_else(|| {
                 CommandError::user_fixable(
@@ -634,17 +681,26 @@ impl AutonomousToolRuntime {
                     format!("Xero could not find agent definition `{source_definition_id}`."),
                 )
             })?;
+        if source.current_version != requested_source_version {
+            return Err(CommandError::user_fixable(
+                "agent_definition_source_version_conflict",
+                format!(
+                    "Clone source `{source_definition_id}` changed from version {requested_source_version} to {}. Reload it before cloning.",
+                    source.current_version
+                ),
+            ));
+        }
         let source_version = project_store::load_agent_definition_version(
             &self.repo_root,
             &source.definition_id,
-            source.current_version,
+            requested_source_version,
         )?
         .ok_or_else(|| {
             CommandError::user_fixable(
                 "agent_definition_version_not_found",
                 format!(
                     "Xero could not load `{}` version {} for cloning.",
-                    source.definition_id, source.current_version
+                    source.definition_id, requested_source_version
                 ),
             )
         })?;
@@ -674,25 +730,32 @@ impl AutonomousToolRuntime {
             ));
         }
         if !operator_approved {
-            let review = project_store::build_agent_definition_pre_save_review(
+            let mut review = project_store::build_agent_definition_pre_save_review(
                 &summary.definition_id,
                 None,
                 1,
                 &snapshot,
                 &now_timestamp(),
             );
+            if let Some(review) = review.as_object_mut() {
+                review.insert("sourceDefinitionId".into(), json!(&source.definition_id));
+                review.insert("sourceVersion".into(), json!(requested_source_version));
+            }
             return Ok(approval_required_output(
                 request.action,
                 summary,
                 validation_report,
-                "Cloning this agent definition requires explicit operator approval.",
+                format!(
+                    "Cloning `{}` version {} requires explicit operator approval.",
+                    source.definition_id, requested_source_version
+                ),
                 Some(review),
             ));
         }
 
         let now = now_timestamp();
         let audit_snapshot = snapshot.clone();
-        let saved = project_store::insert_agent_definition(
+        let saved = project_store::insert_agent_definition_clone_if_source_current_version(
             &self.repo_root,
             &project_store::NewAgentDefinitionRecord {
                 definition_id: summary.definition_id.clone(),
@@ -708,6 +771,8 @@ impl AutonomousToolRuntime {
                 created_at: now.clone(),
                 updated_at: now.clone(),
             },
+            &source.definition_id,
+            requested_source_version,
         )?;
         let _ = project_store::record_agent_definition_custom_audit_event(
             &self.repo_root,
@@ -721,7 +786,7 @@ impl AutonomousToolRuntime {
             Some(&audit_snapshot),
             json!({
                 "sourceDefinitionId": &source.definition_id,
-                "sourceVersion": source.current_version
+                "sourceVersion": requested_source_version
             }),
             &now,
         );
@@ -3209,11 +3274,12 @@ pub(super) fn validate_workflow_structure(
                 duplicate_phase_ids.insert(phase_id);
             }
         }
-        validate_workflow_allowed_tools(phase_object, index, diagnostics);
-        validate_workflow_checks(
+        let effective_allowed_tools =
+            validate_workflow_allowed_tools(phase_object, index, diagnostics);
+        validate_workflow_required_checks(
             phase_object.get("requiredChecks"),
             &format!("workflowStructure.phases[{index}].requiredChecks"),
-            false,
+            effective_allowed_tools.as_ref(),
             diagnostics,
         );
         validate_workflow_retry_limit(phase_object, index, diagnostics);
@@ -3276,10 +3342,10 @@ pub(super) fn validate_workflow_structure(
                     ));
                 }
             }
-            validate_workflow_checks(
+            validate_workflow_branch_condition(
                 branch_object.get("condition"),
                 &format!("workflowStructure.phases[{index}].branches[{branch_index}].condition"),
-                true,
+                effective_workflow_allowed_tools(phase_object),
                 diagnostics,
             );
         }
@@ -3311,9 +3377,9 @@ fn validate_workflow_allowed_tools(
     phase_object: &JsonMap<String, JsonValue>,
     phase_index: usize,
     diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
-) {
+) -> Option<BTreeSet<String>> {
     let Some(allowed_tools) = phase_object.get("allowedTools") else {
-        return;
+        return None;
     };
     let Some(allowed_tools) = allowed_tools.as_array() else {
         diagnostics.push(diagnostic(
@@ -3321,7 +3387,7 @@ fn validate_workflow_allowed_tools(
             "Stage allowedTools must be an array.",
             format!("workflowStructure.phases[{phase_index}].allowedTools"),
         ));
-        return;
+        return None;
     };
     let known_tools = tool_access_all_known_tools();
     for (tool_index, tool) in allowed_tools.iter().enumerate() {
@@ -3342,35 +3408,101 @@ fn validate_workflow_allowed_tools(
             ));
         }
     }
+    effective_workflow_allowed_tools(phase_object)
 }
 
-fn validate_workflow_checks(
+fn effective_workflow_allowed_tools(
+    phase_object: &JsonMap<String, JsonValue>,
+) -> Option<BTreeSet<String>> {
+    let allowed_tools = phase_object.get("allowedTools")?.as_array()?;
+    if allowed_tools.is_empty() {
+        return None;
+    }
+    let mut effective = allowed_tools
+        .iter()
+        .filter_map(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|tool| !tool.is_empty())
+        .map(ToOwned::to_owned)
+        .collect::<BTreeSet<_>>();
+    effective.extend(
+        [
+            AUTONOMOUS_TOOL_ACTION_REQUIRED,
+            AUTONOMOUS_TOOL_SUGGEST_ROUTING,
+            AUTONOMOUS_TOOL_TODO,
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+        ]
+        .into_iter()
+        .map(ToOwned::to_owned),
+    );
+    Some(effective)
+}
+
+fn validate_workflow_required_checks(
     value: Option<&JsonValue>,
     path: &str,
-    allow_always: bool,
+    effective_allowed_tools: Option<&BTreeSet<String>>,
     diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
 ) {
     let Some(value) = value else {
         return;
     };
-    if let Some(checks) = value.as_array() {
-        for (index, check) in checks.iter().enumerate() {
-            validate_workflow_check(
-                check,
-                &format!("{path}[{index}]"),
-                allow_always,
-                diagnostics,
-            );
-        }
+    let Some(checks) = value.as_array() else {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_required_checks_invalid",
+            "Stage requiredChecks must be an array.",
+            path,
+        ));
+        return;
+    };
+    for (index, check) in checks.iter().enumerate() {
+        validate_workflow_check(
+            check,
+            &format!("{path}[{index}]"),
+            false,
+            effective_allowed_tools,
+            diagnostics,
+        );
+    }
+}
+
+fn validate_workflow_branch_condition(
+    value: Option<&JsonValue>,
+    path: &str,
+    effective_allowed_tools: Option<BTreeSet<String>>,
+    diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
+) {
+    let Some(value) = value else {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_branch_condition_invalid",
+            "Stage branch condition must be an object.",
+            path,
+        ));
+        return;
+    };
+    if !value.is_object() {
+        diagnostics.push(diagnostic(
+            "agent_definition_workflow_branch_condition_invalid",
+            "Stage branch condition must be an object.",
+            path,
+        ));
         return;
     }
-    validate_workflow_check(value, path, allow_always, diagnostics);
+    validate_workflow_check(
+        value,
+        path,
+        true,
+        effective_allowed_tools.as_ref(),
+        diagnostics,
+    );
 }
 
 fn validate_workflow_check(
     value: &JsonValue,
     path: &str,
     allow_always: bool,
+    effective_allowed_tools: Option<&BTreeSet<String>>,
     diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
 ) {
     let Some(object) = value.as_object() else {
@@ -3394,8 +3526,10 @@ fn validate_workflow_check(
         "tool_succeeded" => {
             let known_tools = tool_access_all_known_tools();
             let mut saw_tool = false;
+            let mut referenced_tools = BTreeSet::new();
             if let Some(tool_name) = workflow_text(object, "toolName") {
                 saw_tool = true;
+                referenced_tools.insert(tool_name.clone());
                 validate_workflow_tool_name(
                     &tool_name,
                     &known_tools,
@@ -3410,6 +3544,7 @@ fn validate_workflow_check(
                     &format!("{path}.toolNames"),
                     diagnostics,
                     &mut saw_tool,
+                    &mut referenced_tools,
                 );
             }
             if !saw_tool {
@@ -3417,6 +3552,14 @@ fn validate_workflow_check(
                     "agent_definition_workflow_text_required",
                     "Stage check requires non-empty text field `toolName` or non-empty string array `toolNames`.",
                     format!("{path}.toolName"),
+                ));
+            } else if effective_allowed_tools
+                .is_some_and(|allowed_tools| referenced_tools.is_disjoint(allowed_tools))
+            {
+                diagnostics.push(diagnostic(
+                    "agent_definition_workflow_tool_unavailable",
+                    "Stage tool_succeeded predicate cannot be satisfied because none of its tools are executable under this Stage's allowedTools.",
+                    path,
                 ));
             }
             validate_workflow_positive_count(object, path, diagnostics);
@@ -3463,6 +3606,7 @@ fn validate_workflow_tool_names(
     path: &str,
     diagnostics: &mut Vec<AutonomousAgentDefinitionValidationDiagnostic>,
     saw_tool: &mut bool,
+    referenced_tools: &mut BTreeSet<String>,
 ) {
     let Some(items) = value.as_array() else {
         diagnostics.push(diagnostic(
@@ -3495,6 +3639,7 @@ fn validate_workflow_tool_names(
             continue;
         };
         *saw_tool = true;
+        referenced_tools.insert(tool_name.to_owned());
         validate_workflow_tool_name(tool_name, known_tools, &item_path, diagnostics);
     }
 }
@@ -4027,7 +4172,7 @@ fn approval_required_output(
     action: AutonomousAgentDefinitionAction,
     summary: AutonomousAgentDefinitionSummary,
     validation_report: AutonomousAgentDefinitionValidationReport,
-    message: &'static str,
+    message: impl Into<String>,
     approval_review: Option<JsonValue>,
 ) -> AutonomousAgentDefinitionOutput {
     AutonomousAgentDefinitionOutput {
@@ -4940,6 +5085,8 @@ mod tests {
             action: AutonomousAgentDefinitionAction::Save,
             definition_id: None,
             source_definition_id: None,
+            expected_current_version: None,
+            source_version: None,
             include_archived: false,
             definition: Some(valid_observe_only_definition()),
         };
@@ -4991,6 +5138,8 @@ mod tests {
             action: AutonomousAgentDefinitionAction::Save,
             definition_id: None,
             source_definition_id: None,
+            expected_current_version: None,
+            source_version: None,
             include_archived: false,
             definition: Some(valid_observe_only_definition()),
         };
@@ -5002,12 +5151,16 @@ mod tests {
         };
         assert!(saved_output.applied);
 
+        let mut update_definition = valid_observe_only_definition();
+        update_definition["version"] = json!(1);
         let update_request = AutonomousAgentDefinitionRequest {
             action: AutonomousAgentDefinitionAction::Update,
             definition_id: Some("release_notes_helper".into()),
             source_definition_id: None,
+            expected_current_version: None,
+            source_version: None,
             include_archived: false,
-            definition: Some(valid_observe_only_definition()),
+            definition: Some(update_definition),
         };
         let unapproved = runtime
             .agent_definition(update_request)
@@ -5049,6 +5202,195 @@ mod tests {
     }
 
     #[test]
+    fn stale_agent_definition_update_is_rejected_instead_of_overwriting() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-version-conflict");
+        let runtime = agent_create_runtime(&repo_root);
+        runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Save,
+                definition_id: None,
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(valid_observe_only_definition()),
+            })
+            .expect("seed definition v1");
+
+        let mut first_edit = valid_observe_only_definition();
+        first_edit["version"] = json!(1);
+        first_edit["displayName"] = json!("First editor");
+        runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Update,
+                definition_id: Some("release_notes_helper".into()),
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(first_edit),
+            })
+            .expect("first editor saves v2");
+
+        let mut stale_edit = valid_observe_only_definition();
+        stale_edit["version"] = json!(1);
+        stale_edit["displayName"] = json!("Stale editor");
+        let error = runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Update,
+                definition_id: Some("release_notes_helper".into()),
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(stale_edit),
+            })
+            .expect_err("stale editor must not overwrite v2");
+        assert_eq!(error.code, "agent_definition_version_conflict");
+
+        let current = project_store::load_agent_definition(&repo_root, "release_notes_helper")
+            .expect("load current definition")
+            .expect("definition exists");
+        assert_eq!(current.current_version, 2);
+        assert_eq!(current.display_name, "First editor");
+    }
+
+    #[test]
+    fn archive_approval_is_bound_to_the_expected_current_version() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-archive-approval-cas");
+        let runtime = agent_create_runtime(&repo_root);
+        runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Save,
+                definition_id: None,
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(valid_observe_only_definition()),
+            })
+            .expect("seed definition v1");
+
+        let archive_request = AutonomousAgentDefinitionRequest {
+            action: AutonomousAgentDefinitionAction::Archive,
+            definition_id: Some("release_notes_helper".into()),
+            source_definition_id: None,
+            expected_current_version: Some(1),
+            source_version: None,
+            include_archived: false,
+            definition: None,
+        };
+        let unapproved = runtime
+            .agent_definition(archive_request.clone())
+            .expect("archive approval response");
+        let AutonomousToolOutput::AgentDefinition(unapproved) = unapproved.output else {
+            panic!("expected agent definition output");
+        };
+        assert!(unapproved.approval_required);
+        assert_eq!(unapproved.definition.expect("archive summary").version, 1);
+
+        let mut update = valid_observe_only_definition();
+        update["version"] = json!(1);
+        update["displayName"] = json!("Updated while archive awaited approval");
+        runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Update,
+                definition_id: Some("release_notes_helper".into()),
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(update),
+            })
+            .expect("update source to v2");
+
+        let conflict = runtime
+            .agent_definition_with_operator_approval(archive_request)
+            .expect_err("version-one approval cannot archive version two");
+        assert_eq!(conflict.code, "agent_definition_version_conflict");
+        let current = project_store::load_agent_definition(&repo_root, "release_notes_helper")
+            .expect("load current definition")
+            .expect("definition exists");
+        assert_eq!(current.current_version, 2);
+        assert_eq!(current.lifecycle_state, "active");
+    }
+
+    #[test]
+    fn clone_approval_is_bound_to_the_exact_source_version() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-clone-approval-cas");
+        let runtime = agent_create_runtime(&repo_root);
+        runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Save,
+                definition_id: None,
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(valid_observe_only_definition()),
+            })
+            .expect("seed source v1");
+
+        let clone_request = AutonomousAgentDefinitionRequest {
+            action: AutonomousAgentDefinitionAction::Clone,
+            definition_id: Some("release_notes_clone".into()),
+            source_definition_id: Some("release_notes_helper".into()),
+            expected_current_version: None,
+            source_version: Some(1),
+            include_archived: false,
+            definition: Some(json!({
+                "id": "release_notes_clone",
+                "displayName": "Release Notes Clone",
+                "shortLabel": "Clone"
+            })),
+        };
+        let unapproved = runtime
+            .agent_definition(clone_request.clone())
+            .expect("clone approval response");
+        let AutonomousToolOutput::AgentDefinition(unapproved) = unapproved.output else {
+            panic!("expected agent definition output");
+        };
+        assert!(unapproved.approval_required);
+        let review = unapproved.approval_review.expect("clone approval review");
+        assert_eq!(review["sourceDefinitionId"], json!("release_notes_helper"));
+        assert_eq!(review["sourceVersion"], json!(1));
+
+        let mut update = valid_observe_only_definition();
+        update["version"] = json!(1);
+        update["displayName"] = json!("Updated clone source");
+        runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Update,
+                definition_id: Some("release_notes_helper".into()),
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(update),
+            })
+            .expect("update source to v2");
+
+        let conflict = runtime
+            .agent_definition_with_operator_approval(clone_request)
+            .expect_err("version-one approval cannot clone version two");
+        assert_eq!(conflict.code, "agent_definition_source_version_conflict");
+        assert!(
+            project_store::load_agent_definition(&repo_root, "release_notes_clone")
+                .expect("load clone target")
+                .is_none()
+        );
+    }
+
+    #[test]
     fn agent_create_saves_valid_observe_only_definition_without_repo_mutation() {
         let tempdir = tempfile::tempdir().expect("temp dir");
         let repo_root = tempdir.path().join("repo");
@@ -5061,6 +5403,8 @@ mod tests {
             action: AutonomousAgentDefinitionAction::Save,
             definition_id: None,
             source_definition_id: None,
+            expected_current_version: None,
+            source_version: None,
             include_archived: false,
             definition: Some(valid_observe_only_definition()),
         };
@@ -5153,6 +5497,8 @@ mod tests {
             action: AutonomousAgentDefinitionAction::Save,
             definition_id: None,
             source_definition_id: None,
+            expected_current_version: None,
+            source_version: None,
             include_archived: false,
             definition: Some(blank_canvas_definition()),
         };
@@ -5230,6 +5576,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Save,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5284,6 +5632,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Preview,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5357,6 +5707,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::ListAttachableSkills,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: None,
             })
@@ -5399,6 +5751,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5431,6 +5785,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::ListAttachableSkills,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: None,
             })
@@ -5461,6 +5817,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(untrusted_definition),
             })
@@ -5486,6 +5844,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(unknown_definition),
             })
@@ -5526,6 +5886,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5565,6 +5927,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Preview,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5639,6 +6003,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5681,6 +6047,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5740,6 +6108,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Preview,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5905,6 +6275,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Preview,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -5998,6 +6370,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Preview,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -6053,6 +6427,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Save,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(valid_observe_only_definition()),
             })
@@ -6072,6 +6448,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Update,
                 definition_id: Some("release_notes_helper".into()),
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(reloaded_snapshot.clone()),
             })
@@ -6169,6 +6547,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -6275,6 +6655,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -6309,6 +6691,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -6343,6 +6727,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -6376,6 +6762,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -6400,6 +6788,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -6427,6 +6817,8 @@ mod tests {
                 action: AutonomousAgentDefinitionAction::Validate,
                 definition_id: None,
                 source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
                 include_archived: false,
                 definition: Some(definition),
             })
@@ -6503,6 +6895,130 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "agent_definition_workflow_tool_unknown"));
+    }
+
+    #[test]
+    fn stage_tool_predicates_require_at_least_one_executable_tool() {
+        let mut definition = valid_observe_only_definition();
+        definition["lifecycleState"] = json!("active");
+        definition["workflowStructure"] = json!({
+            "startPhaseId": "inspect",
+            "phases": [
+                {
+                    "id": "inspect",
+                    "title": "Inspect",
+                    "allowedTools": ["read"],
+                    "requiredChecks": [
+                        {"kind": "tool_succeeded", "toolNames": ["search", "find"]}
+                    ],
+                    "branches": [{
+                        "targetPhaseId": "finish",
+                        "condition": {"kind": "tool_succeeded", "toolName": "project_context_search"}
+                    }]
+                },
+                {"id": "finish", "title": "Finish", "allowedTools": ["read"]}
+            ]
+        });
+
+        let report = validate_definition_snapshot(&definition);
+        let unavailable = report
+            .diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code == "agent_definition_workflow_tool_unavailable")
+            .collect::<Vec<_>>();
+        assert_eq!(unavailable.len(), 2, "{:#?}", report.diagnostics);
+        assert!(unavailable
+            .iter()
+            .any(|diagnostic| diagnostic.path.ends_with("requiredChecks[0]")));
+        assert!(unavailable
+            .iter()
+            .any(|diagnostic| diagnostic.path.ends_with("branches[0].condition")));
+    }
+
+    #[test]
+    fn stage_tool_predicates_accept_multi_tool_overlap_and_implicit_runtime_tools() {
+        let mut definition = valid_observe_only_definition();
+        definition["lifecycleState"] = json!("active");
+        definition["workflowStructure"] = json!({
+            "startPhaseId": "inspect",
+            "phases": [
+                {
+                    "id": "inspect",
+                    "title": "Inspect",
+                    "allowedTools": ["read"],
+                    "requiredChecks": [
+                        {"kind": "tool_succeeded", "toolNames": ["search", "read"]}
+                    ],
+                    "branches": [{
+                        "targetPhaseId": "finish",
+                        "condition": {"kind": "tool_succeeded", "toolName": "tool_search"}
+                    }]
+                },
+                {"id": "finish", "title": "Finish", "allowedTools": ["read"]}
+            ]
+        });
+
+        let report = validate_definition_snapshot(&definition);
+        assert!(
+            !report.diagnostics.iter().any(|diagnostic| {
+                diagnostic.code == "agent_definition_workflow_tool_unavailable"
+            }),
+            "{:#?}",
+            report.diagnostics
+        );
+    }
+
+    #[test]
+    fn stage_regression_agent_definition_rejects_single_object_required_checks() {
+        let mut definition = valid_observe_only_definition();
+        definition["workflowStructure"] = json!({
+            "startPhaseId": "inspect",
+            "phases": [{
+                "id": "inspect",
+                "title": "Inspect",
+                "allowedTools": ["todo"],
+                "requiredChecks": {
+                    "kind": "todo_completed",
+                    "todoId": "inspect_done"
+                }
+            }]
+        });
+
+        let report = validate_definition_snapshot(&definition);
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_workflow_required_checks_invalid"
+                && diagnostic.path == "workflowStructure.phases[0].requiredChecks"
+        }));
+    }
+
+    #[test]
+    fn stage_regression_agent_definition_rejects_array_branch_condition() {
+        let mut definition = valid_observe_only_definition();
+        definition["workflowStructure"] = json!({
+            "startPhaseId": "inspect",
+            "phases": [
+                {
+                    "id": "inspect",
+                    "title": "Inspect",
+                    "branches": [{
+                        "targetPhaseId": "summarize",
+                        "condition": [{"kind": "always"}]
+                    }]
+                },
+                {
+                    "id": "summarize",
+                    "title": "Summarize"
+                }
+            ]
+        });
+
+        let report = validate_definition_snapshot(&definition);
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_definition_workflow_branch_condition_invalid"
+                && diagnostic.path == "workflowStructure.phases[0].branches[0].condition"
+        }));
     }
 
     #[test]

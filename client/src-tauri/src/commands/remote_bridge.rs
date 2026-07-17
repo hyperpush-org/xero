@@ -16,6 +16,7 @@ use std::{
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Emitter, Manager, Runtime, State};
 use xero_remote_bridge::{
     AccountDevice, AuthStatus, BridgeAccount, BridgeConfig, BridgeError, BridgeResult,
@@ -759,6 +760,21 @@ fn command_dedupe_key(command: &InboundCommand) -> Option<String> {
         .map(ToOwned::to_owned)
 }
 
+fn remote_continuation_request_id(command: &InboundCommand) -> String {
+    let identity = command_dedupe_key(command).unwrap_or_else(|| {
+        format!(
+            "{}:{}:{}:{}",
+            command.computer_id,
+            command.device_id,
+            command.session_id.as_deref().unwrap_or_default(),
+            command.seq
+        )
+    });
+    let mut hasher = Sha256::new();
+    hasher.update(identity.as_bytes());
+    format!("remote-continuation-{:x}", hasher.finalize())
+}
+
 fn is_critical_command(kind: &InboundCommandKind) -> bool {
     matches!(
         kind,
@@ -1375,6 +1391,7 @@ fn route_start_computer_use_session<R: Runtime + 'static>(
                             project_id: global.project_id.clone(),
                             agent_session_id: global.session.agent_session_id.clone(),
                             run_id: snapshot.run.run_id,
+                            continuation_request_id: remote_continuation_request_id(&command),
                             controls,
                             prompt: Some(prompt.to_string()),
                             attachments,
@@ -1503,6 +1520,7 @@ fn route_send_message<R: Runtime + 'static>(
                     project_id: located.project_id.clone(),
                     agent_session_id: agent_session_id.clone(),
                     run_id: snapshot.run.run_id,
+                    continuation_request_id: remote_continuation_request_id(&command),
                     controls,
                     prompt: Some(message.to_string()),
                     attachments,
@@ -1592,6 +1610,7 @@ fn route_update_session_controls<R: Runtime + 'static>(
                 project_id: located.project_id.clone(),
                 agent_session_id,
                 run_id: existing.run.run_id,
+                continuation_request_id: remote_continuation_request_id(&command),
                 controls,
                 prompt: None,
                 attachments: Vec::new(),

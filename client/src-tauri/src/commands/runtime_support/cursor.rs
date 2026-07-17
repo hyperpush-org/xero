@@ -4,6 +4,7 @@ use std::{
 };
 
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use tauri::{AppHandle, Runtime};
 use xero_agent_core::{
     PermissionProfileSandbox, ProjectTrustState, SandboxApprovalSource, SandboxExecutionContext,
@@ -23,18 +24,19 @@ use crate::{
         self, AgentMessageAttachmentKind, AgentMessageRole, AgentRunDiagnosticRecord,
         AgentRunEventKind, AgentRunStatus, AgentToolCallFinishRecord, AgentToolCallStartRecord,
         AgentToolCallState, NewAgentEventRecord, NewAgentFileChangeRecord, NewAgentMessageRecord,
-        NewAgentRunRecord, NewMessageAttachmentInput, RuntimeRunSnapshotRecord, RuntimeRunStatus,
+        NewAgentRunRecord, RuntimeRunSnapshotRecord, RuntimeRunStatus,
     },
-    runtime::{CURSOR_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND},
+    runtime::{
+        agent_core::publish_committed_agent_event, CURSOR_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND,
+    },
     state::DesktopState,
 };
 
 use super::run::{
-    apply_owned_runtime_run_pending_controls_with_status, complete_owned_runtime_run,
-    emit_owned_runtime_progress, emit_runtime_run_updated,
-    ensure_owned_runtime_provider_turn_capabilities, fail_owned_runtime_run,
-    runtime_control_input_from_active, runtime_run_dto_from_snapshot,
-    staged_attachment_dto_to_message_attachment, OwnedRuntimePromptStart,
+    clear_owned_runtime_prompt_if_current, complete_owned_runtime_run, emit_owned_runtime_progress,
+    emit_runtime_run_updated, ensure_owned_runtime_provider_turn_capabilities,
+    fail_owned_runtime_run, runtime_control_input_from_active, runtime_run_dto_from_snapshot,
+    OwnedRuntimePromptStart,
 };
 
 const CURSOR_SIDECAR_BINARY_NAME: &str = "xero-cursor-sidecar";
@@ -102,6 +104,11 @@ fn bootstrap_and_drive_cursor_runtime_prompt_inner<R: Runtime>(
         state,
         &task.repo_root,
         &runtime_snapshot,
+        task.run_controls
+            .pending
+            .as_ref()
+            .and_then(|pending| pending.queued_prompt_continuation_request_id.as_deref())
+            .unwrap_or("runtime-start"),
         task.prompt,
         task.attachments,
         controls,
@@ -113,6 +120,7 @@ pub(crate) fn drive_cursor_runtime_prompt<R: Runtime + 'static>(
     state: &DesktopState,
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
+    continuation_request_id: &str,
     prompt: String,
     attachments: Vec<StagedAgentAttachmentDto>,
 ) -> CommandResult<()> {
@@ -130,6 +138,7 @@ pub(crate) fn drive_cursor_runtime_prompt<R: Runtime + 'static>(
         state,
         repo_root,
         snapshot,
+        continuation_request_id,
         prompt,
         attachments,
         controls,
@@ -168,6 +177,7 @@ fn drive_cursor_sidecar_turn<R: Runtime>(
     state: &DesktopState,
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
+    continuation_request_id: &str,
     prompt: String,
     attachments: Vec<StagedAgentAttachmentDto>,
     controls: RuntimeRunControlInputDto,
@@ -204,23 +214,81 @@ fn drive_cursor_sidecar_turn<R: Runtime>(
     let api_key_file =
         write_private_file(&run_dir.join("cursor-api-key"), provider.api_key.as_bytes())?;
 
-    let lease = state.agent_run_supervisor().begin(
+    ensure_cursor_agent_run(repo_root, snapshot, &prompt, &controls, &provider.model_id)?;
+    let lease = state.agent_run_supervisor().begin_persisted(
+        repo_root,
         &snapshot.run.project_id,
         &snapshot.run.agent_session_id,
         &snapshot.run.run_id,
     )?;
-    let prepared = prepare_cursor_agent_run(
+    let continuation = prepare_cursor_user_turn(
         repo_root,
         snapshot,
+        continuation_request_id,
         &prompt,
         &attachments,
-        &controls,
-        &provider.model_id,
     )?;
-    let runtime_snapshot = apply_owned_runtime_run_pending_controls_with_status(
+    let continuation_request =
+        if continuation.request.state == project_store::AgentContinuationRequestState::Driving {
+            project_store::reconcile_completed_agent_continuation(
+                repo_root,
+                &snapshot.run.project_id,
+                &snapshot.run.run_id,
+                continuation_request_id,
+                &now_timestamp(),
+            )?
+            .ok_or_else(|| {
+                CommandError::system_fault(
+                "agent_continuation_request_missing",
+                "The prepared Cursor continuation disappeared during completion reconciliation.",
+            )
+            })?
+        } else {
+            continuation.request
+        };
+    let mut prepared;
+    match continuation_request.state {
+        project_store::AgentContinuationRequestState::Consumed => {
+            let current = clear_owned_runtime_prompt_if_current(
+                repo_root,
+                snapshot,
+                continuation_request_id,
+                snapshot.run.status.clone(),
+                "Cursor prompt already completed.",
+            )?;
+            let runtime_run = runtime_run_dto_from_snapshot(&current);
+            emit_runtime_run_updated(app, Some(&runtime_run))?;
+            drop(lease);
+            return Ok(());
+        }
+        project_store::AgentContinuationRequestState::Driving => {
+            drop(lease);
+            return Err(CommandError::user_fixable(
+                "agent_continuation_recovery_required",
+                "Cursor may already have received this prompt. Xero kept it pending for explicit reconciliation instead of replaying it.",
+            ));
+        }
+        project_store::AgentContinuationRequestState::Prepared => {
+            prepared = continuation.snapshot;
+            if matches!(
+                prepared.run.status,
+                AgentRunStatus::Paused | AgentRunStatus::Completed | AgentRunStatus::Failed
+            ) {
+                prepared = project_store::reopen_agent_run_for_continuation(
+                    repo_root,
+                    &snapshot.run.project_id,
+                    &snapshot.run.run_id,
+                    &now_timestamp(),
+                )?;
+            }
+        }
+    }
+    let runtime_snapshot = emit_owned_runtime_progress(
+        app,
         repo_root,
         snapshot,
         RuntimeRunStatus::Running,
+        None,
         "Starting Cursor sidecar.",
     )?;
     let runtime_run = runtime_run_dto_from_snapshot(&runtime_snapshot);
@@ -265,6 +333,34 @@ fn drive_cursor_sidecar_turn<R: Runtime>(
     if let Some(cursor_agent_id) = cursor_agent_id {
         argv.push("--cursor-agent-id".into());
         argv.push(cursor_agent_id);
+    }
+
+    match project_store::mark_agent_continuation_drive_started(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.run_id,
+        continuation_request_id,
+        &now_timestamp(),
+    )? {
+        project_store::AgentContinuationDriveStartResult::Started(_) => {}
+        project_store::AgentContinuationDriveStartResult::AlreadyDriving(_) => {
+            drop(lease);
+            return Err(CommandError::user_fixable(
+                "agent_continuation_outcome_unknown",
+                "Cursor may already have received this prompt. Xero will not replay it without reconciliation evidence.",
+            ));
+        }
+        project_store::AgentContinuationDriveStartResult::Consumed(_) => {
+            drop(lease);
+            return Ok(());
+        }
+        project_store::AgentContinuationDriveStartResult::Missing => {
+            drop(lease);
+            return Err(CommandError::system_fault(
+                "agent_continuation_request_missing",
+                "The prepared Cursor continuation disappeared before sidecar dispatch.",
+            ));
+        }
     }
 
     let output = SandboxedProcessRunner::new().run(
@@ -329,8 +425,44 @@ fn drive_cursor_sidecar_turn<R: Runtime>(
             finalize_cursor_agent_run(app, repo_root, snapshot, report)
         }
     };
+    let finish = if result.is_ok() {
+        project_store::finish_agent_continuation_drive(
+            repo_root,
+            &snapshot.run.project_id,
+            &snapshot.run.run_id,
+            continuation_request_id,
+            true,
+            &now_timestamp(),
+        )
+    } else {
+        // The sidecar process may have observed the prompt. Keep Driving until durable
+        // reconciliation proves whether replay is safe.
+        Ok(None)
+    };
     drop(lease);
-    result
+    let outcome = match (result, finish) {
+        (Err(error), _) => Err(error),
+        (Ok(()), Err(error)) => Err(error),
+        (Ok(()), Ok(_)) => Ok(()),
+    };
+    if outcome.is_ok() {
+        let latest = project_store::load_runtime_run(
+            repo_root,
+            &snapshot.run.project_id,
+            &snapshot.run.agent_session_id,
+        )?
+        .unwrap_or(runtime_snapshot);
+        let cleared = clear_owned_runtime_prompt_if_current(
+            repo_root,
+            &latest,
+            continuation_request_id,
+            latest.run.status.clone(),
+            "Cursor accepted queued prompt.",
+        )?;
+        let runtime_run = runtime_run_dto_from_snapshot(&cleared);
+        emit_runtime_run_updated(app, Some(&runtime_run))?;
+    }
+    outcome
 }
 
 #[derive(Clone)]
@@ -383,11 +515,10 @@ fn cursor_provider_settings<R: Runtime>(
     })
 }
 
-fn prepare_cursor_agent_run(
+fn ensure_cursor_agent_run(
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
     prompt: &str,
-    attachments: &[StagedAgentAttachmentDto],
     controls: &RuntimeRunControlInputDto,
     model_id: &str,
 ) -> CommandResult<project_store::AgentRunSnapshotRecord> {
@@ -400,15 +531,7 @@ fn prepare_cursor_agent_run(
                     "Xero cannot continue this run with Cursor because the persisted agent run belongs to a different provider.",
                 ));
             }
-            append_user_turn(repo_root, snapshot, prompt, attachments, &now)?;
-            project_store::update_agent_run_status(
-                repo_root,
-                &snapshot.run.project_id,
-                &snapshot.run.run_id,
-                AgentRunStatus::Running,
-                None,
-                &now,
-            )
+            Ok(existing)
         }
         Err(error) if error.code == "agent_run_not_found" => {
             let system_prompt = "Cursor SDK via Xero Cursor sidecar. Cursor-specific mechanics are trace detail; routine user experience should remain provider-like.".to_string();
@@ -440,7 +563,6 @@ fn prepare_cursor_agent_run(
                     attachments: Vec::new(),
                 },
             )?;
-            append_user_turn(repo_root, snapshot, prompt, attachments, &now)?;
             append_agent_event(
                 repo_root,
                 snapshot,
@@ -466,52 +588,80 @@ fn prepare_cursor_agent_run(
     }
 }
 
-fn append_user_turn(
+fn prepare_cursor_user_turn(
     repo_root: &Path,
     snapshot: &RuntimeRunSnapshotRecord,
+    continuation_request_id: &str,
     prompt: &str,
     attachments: &[StagedAgentAttachmentDto],
-    now: &str,
-) -> CommandResult<()> {
-    project_store::append_agent_message(
+) -> CommandResult<project_store::AgentContinuationPreparationResult> {
+    let attachment_inputs = attachments
+        .iter()
+        .map(|attachment| project_store::NewMessageAttachmentInput {
+            kind: match attachment.kind {
+                AgentAttachmentKindDto::Image => AgentMessageAttachmentKind::Image,
+                AgentAttachmentKindDto::Document => AgentMessageAttachmentKind::Document,
+                AgentAttachmentKindDto::Text => AgentMessageAttachmentKind::Text,
+            },
+            storage_path: attachment.absolute_path.clone(),
+            media_type: attachment.media_type.clone(),
+            original_name: attachment.original_name.clone(),
+            size_bytes: attachment.size_bytes,
+            width: attachment.width,
+            height: attachment.height,
+        })
+        .collect::<Vec<_>>();
+    let mut hasher = Sha256::new();
+    hasher.update(prompt.as_bytes());
+    hasher.update([0]);
+    hasher.update(serde_json::to_vec(attachments).map_err(|error| {
+        CommandError::system_fault(
+            "cursor_continuation_hash_failed",
+            format!("Xero could not encode the Cursor continuation identity: {error}"),
+        )
+    })?);
+    let payload_hash = format!("{:x}", hasher.finalize());
+    let recovery_payload_json = serde_json::to_string(&json!({
+        "schema": "xero.cursor_continuation_recovery.v1",
+        "projectId": snapshot.run.project_id,
+        "runId": snapshot.run.run_id,
+        "continuationRequestId": continuation_request_id,
+        "prompt": prompt,
+        "attachments": attachments,
+    }))
+    .map_err(|error| {
+        CommandError::system_fault(
+            "cursor_continuation_recovery_encode_failed",
+            format!("Xero could not encode the Cursor recovery payload: {error}"),
+        )
+    })?;
+    let now = now_timestamp();
+    project_store::prepare_agent_continuation(
         repo_root,
-        &NewAgentMessageRecord {
+        &project_store::NewAgentContinuationPreparationRecord {
             project_id: snapshot.run.project_id.clone(),
+            request_id: continuation_request_id.to_owned(),
             run_id: snapshot.run.run_id.clone(),
+            payload_hash,
+            recovery_payload_json,
             role: AgentMessageRole::User,
-            content: prompt.into(),
-            provider_metadata_json: None,
-            created_at: now.into(),
-            attachments: attachments.iter().map(staged_to_new_attachment).collect(),
+            content: prompt.to_owned(),
+            attachments: attachment_inputs,
+            linked_path_grant_payload_json: None,
+            message_payload_json: serde_json::to_string(&json!({
+                "role": "user",
+                "text": prompt,
+            }))
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "cursor_continuation_event_encode_failed",
+                    format!("Xero could not encode the Cursor continuation event: {error}"),
+                )
+            })?,
+            action_answer: None,
+            prepared_at: now,
         },
-    )?;
-    append_agent_event(
-        repo_root,
-        snapshot,
-        AgentRunEventKind::MessageDelta,
-        json!({
-            "role": "user",
-            "text": prompt,
-            "attachments": attachments.iter().map(staged_attachment_dto_to_message_attachment).collect::<Vec<_>>(),
-        }),
-    )?;
-    Ok(())
-}
-
-fn staged_to_new_attachment(attachment: &StagedAgentAttachmentDto) -> NewMessageAttachmentInput {
-    NewMessageAttachmentInput {
-        kind: match attachment.kind {
-            AgentAttachmentKindDto::Image => AgentMessageAttachmentKind::Image,
-            AgentAttachmentKindDto::Document => AgentMessageAttachmentKind::Document,
-            AgentAttachmentKindDto::Text => AgentMessageAttachmentKind::Text,
-        },
-        storage_path: attachment.absolute_path.clone(),
-        media_type: attachment.media_type.clone(),
-        original_name: attachment.original_name.clone(),
-        size_bytes: attachment.size_bytes,
-        width: attachment.width,
-        height: attachment.height,
-    }
+    )
 }
 
 #[derive(Default)]
@@ -698,25 +848,73 @@ fn persist_sidecar_agent_event(
             );
         }
     } else if kind == AgentRunEventKind::FileChanged {
-        if let Some(path) = payload.get("path").and_then(JsonValue::as_str) {
-            let _ = project_store::append_agent_file_change(
-                repo_root,
-                &NewAgentFileChangeRecord {
-                    project_id: snapshot.run.project_id.clone(),
-                    run_id: snapshot.run.run_id.clone(),
-                    change_group_id: None,
-                    path: path.to_string(),
-                    operation: payload
-                        .get("operation")
-                        .and_then(JsonValue::as_str)
-                        .unwrap_or("write")
-                        .to_string(),
-                    old_hash: None,
-                    new_hash: None,
-                    created_at: now_timestamp(),
-                },
-            );
+        let path = payload
+            .get("path")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                CommandError::system_fault(
+                    "cursor_file_change_path_missing",
+                    "Cursor sidecar emitted a file-changed event without a path.",
+                )
+            })?
+            .to_string();
+        let operation = payload
+            .get("operation")
+            .and_then(JsonValue::as_str)
+            .unwrap_or("write")
+            .to_string();
+        let mut touched_paths = vec![path.clone()];
+        if let Some(to_path) = payload.get("toPath").and_then(JsonValue::as_str) {
+            touched_paths.push(to_path.to_string());
         }
+        let recorded_at = now_timestamp();
+        let (_, stored_event) = project_store::append_agent_file_change_with_event(
+            repo_root,
+            &NewAgentFileChangeRecord {
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                change_group_id: None,
+                path,
+                operation,
+                old_hash: None,
+                new_hash: None,
+                created_at: recorded_at.clone(),
+            },
+            |stored_change| {
+                project_store::refresh_project_record_freshness_for_paths(
+                    repo_root,
+                    &snapshot.run.project_id,
+                    &touched_paths,
+                    &recorded_at,
+                )?;
+                project_store::refresh_agent_memory_freshness_for_paths(
+                    repo_root,
+                    &snapshot.run.project_id,
+                    &touched_paths,
+                    &recorded_at,
+                )?;
+                let mut event_payload = payload;
+                if let Some(object) = event_payload.as_object_mut() {
+                    object.insert("projectId".into(), json!(snapshot.run.project_id.clone()));
+                    object.insert("traceId".into(), json!(stored_change.trace_id.clone()));
+                    object.insert(
+                        "topLevelRunId".into(),
+                        json!(stored_change.top_level_run_id.clone()),
+                    );
+                    object.insert(
+                        "subagentId".into(),
+                        json!(stored_change.subagent_id.clone()),
+                    );
+                    object.insert(
+                        "subagentRole".into(),
+                        json!(stored_change.subagent_role.clone()),
+                    );
+                }
+                Ok(event_payload)
+            },
+        )?;
+        publish_committed_agent_event(repo_root, &stored_event);
+        return Ok(());
     }
     append_agent_event(repo_root, snapshot, kind, payload)
 }

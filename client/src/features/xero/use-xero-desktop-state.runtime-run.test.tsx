@@ -547,7 +547,11 @@ function createMockAdapter(options?: {
     async (
       runId: string,
       _response: string,
-      _options?: { actionId?: string | null; autoCompact?: unknown },
+      _options?: {
+        continuationRequestId?: string
+        actionId?: string | null
+        autoCompact?: unknown
+      },
     ) => {
       const projectId = Object.keys(runtimeRuns).find((candidate) => runtimeRuns[candidate]?.runId === runId)
       if (projectId) {
@@ -861,6 +865,7 @@ function createMockAdapter(options?: {
       projectId: string
       agentSessionId: string
       runId: string
+      continuationRequestId: string
       controls?: RuntimeRunControlInputDto | null
       prompt?: string | null
     }) => {
@@ -1508,6 +1513,7 @@ describe('useXeroDesktopState runtime-run hydration', () => {
 
     await waitFor(() => expect(setup.resumeAgentRun).toHaveBeenCalledTimes(1))
     expect(setup.resumeAgentRun).toHaveBeenCalledWith('run-project-1', 'Approved.', {
+      continuationRequestId: expect.stringMatching(/^runtime-prompt-/),
       actionId: 'command-pnpm-create-astro-latest',
       autoCompact: null,
     })
@@ -1659,6 +1665,39 @@ describe('useXeroDesktopState runtime-run hydration', () => {
     expect(screen.getByTestId('pending-control-model-id')).toHaveTextContent('none')
     expect(setup.getProjectSnapshot.mock.calls.length).toBe(initialSnapshotCalls)
     expect(setup.getRuntimeRun.mock.calls.length).toBeGreaterThan(initialRuntimeRunCalls)
+  })
+
+  it('reuses a runtime-control continuation id after an ambiguous failure and rotates it after success', async () => {
+    const updateErrors: Record<string, Error> = {
+      'project-1': new Error('response channel closed'),
+    }
+    const setup = createMockAdapter({
+      runtimeRuns: {
+        'project-1': makeRuntimeRun('project-1'),
+      },
+      updateRuntimeRunControlErrors: updateErrors,
+    })
+
+    render(<Harness adapter={setup.adapter} />)
+
+    await waitFor(() => expect(screen.getByTestId('runtime-run-id')).toHaveTextContent('run-project-1'))
+    const queueButton = screen.getByRole('button', { name: 'Queue runtime controls' })
+    fireEvent.click(queueButton)
+    await waitFor(() => expect(setup.updateRuntimeRunControls).toHaveBeenCalledTimes(1))
+    const firstRequestId = setup.updateRuntimeRunControls.mock.calls[0]?.[0].continuationRequestId
+
+    delete updateErrors['project-1']
+    fireEvent.click(queueButton)
+    await waitFor(() => expect(setup.updateRuntimeRunControls).toHaveBeenCalledTimes(2))
+    expect(setup.updateRuntimeRunControls.mock.calls[1]?.[0].continuationRequestId).toBe(
+      firstRequestId,
+    )
+
+    fireEvent.click(queueButton)
+    await waitFor(() => expect(setup.updateRuntimeRunControls).toHaveBeenCalledTimes(3))
+    expect(setup.updateRuntimeRunControls.mock.calls[2]?.[0].continuationRequestId).not.toBe(
+      firstRequestId,
+    )
   })
 
   it('hydrates autonomous run truth independently from the durable ledger', async () => {

@@ -217,6 +217,17 @@ pub(crate) fn append_event(
     Ok(event)
 }
 
+pub(crate) fn publish_committed_agent_event(repo_root: &Path, event: &AgentEventRecord) {
+    publish_agent_event(event.clone());
+    crate::commands::remote_bridge::forward_agent_event(repo_root, event);
+    if let Err(error) = publish_coordination_for_agent_event(repo_root, event) {
+        eprintln!(
+            "[agent-continuation] durable event `{}` committed but coordination projection failed: {}",
+            event.id, error.message
+        );
+    }
+}
+
 pub(crate) fn touch_agent_run_heartbeat(
     repo_root: &Path,
     project_id: &str,
@@ -445,6 +456,19 @@ pub(crate) fn capture_project_record_for_run(
     Ok(())
 }
 
+pub(crate) fn validate_required_final_response(
+    runtime_agent_id: RuntimeAgentIdDto,
+    project_id: &str,
+    message: &str,
+) -> CommandResult<()> {
+    if runtime_agent_id != RuntimeAgentIdDto::Crawl {
+        return Ok(());
+    }
+
+    let report = parse_crawl_report_payload(message)?;
+    validate_crawl_report_payload(&report, project_id)
+}
+
 fn capture_crawl_report_records(
     repo_root: &Path,
     snapshot: &AgentRunSnapshotRecord,
@@ -461,7 +485,7 @@ fn capture_crawl_report_records(
             )
         })?;
     let report = parse_crawl_report_payload(&message.content)?;
-    validate_crawl_report_payload(&report)?;
+    validate_crawl_report_payload(&report, &snapshot.run.project_id)?;
     let source_item_ids = vec![format!("agent_messages:{}", message.id)];
     let source_fingerprints = report
         .get("freshness")
@@ -778,7 +802,7 @@ fn balanced_json_object_candidate(message: &str) -> Option<String> {
     None
 }
 
-fn validate_crawl_report_payload(report: &JsonValue) -> CommandResult<()> {
+fn validate_crawl_report_payload(report: &JsonValue, project_id: &str) -> CommandResult<()> {
     let Some(object) = report.as_object() else {
         return Err(CommandError::user_fixable(
             "crawl_report_invalid",
@@ -796,9 +820,69 @@ fn validate_crawl_report_payload(report: &JsonValue) -> CommandResult<()> {
             format!("Crawl report schema must be `{CRAWL_REPORT_SCHEMA}`."),
         ));
     }
+    let required_string = |field: &str| -> CommandResult<&str> {
+        object
+            .get(field)
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                CommandError::user_fixable(
+                    "crawl_report_field_invalid",
+                    format!("Crawl report field `{field}` must be a non-empty string."),
+                )
+            })
+    };
+    let reported_project_id = required_string("projectId")?;
+    if reported_project_id != project_id {
+        return Err(CommandError::user_fixable(
+            "crawl_report_project_mismatch",
+            format!(
+                "Crawl report projectId `{reported_project_id}` does not match the active project `{project_id}`."
+            ),
+        ));
+    }
+    let generated_at = required_string("generatedAt")?;
+    if time::OffsetDateTime::parse(generated_at, &time::format_description::well_known::Rfc3339)
+        .is_err()
+    {
+        return Err(CommandError::user_fixable(
+            "crawl_report_field_invalid",
+            "Crawl report field `generatedAt` must be an RFC 3339 timestamp.",
+        ));
+    }
+
+    for field in ["coverage", "overview", "freshness"] {
+        let valid = object
+            .get(field)
+            .and_then(JsonValue::as_object)
+            .is_some_and(|value| !value.is_empty());
+        if !valid {
+            return Err(CommandError::user_fixable(
+                "crawl_report_field_invalid",
+                format!("Crawl report field `{field}` must be a non-empty object."),
+            ));
+        }
+    }
+    let overview_has_summary = object
+        .get("overview")
+        .and_then(JsonValue::as_object)
+        .is_some_and(|overview| {
+            ["summary", "description"].iter().any(|field| {
+                overview
+                    .get(*field)
+                    .and_then(JsonValue::as_str)
+                    .is_some_and(|value| !value.trim().is_empty())
+            })
+        });
+    if !overview_has_summary {
+        return Err(CommandError::user_fixable(
+            "crawl_report_field_invalid",
+            "Crawl report `overview` must include a non-empty `summary` or `description`.",
+        ));
+    }
+
     for field in [
-        "coverage",
-        "overview",
         "techStack",
         "commands",
         "tests",
@@ -806,12 +890,19 @@ fn validate_crawl_report_payload(report: &JsonValue) -> CommandResult<()> {
         "hotspots",
         "constraints",
         "unknowns",
-        "freshness",
     ] {
-        if !object.contains_key(field) {
+        let valid = object
+            .get(field)
+            .and_then(JsonValue::as_array)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .all(|item| item.as_object().is_some_and(|item| !item.is_empty()))
+            });
+        if !valid {
             return Err(CommandError::user_fixable(
-                "crawl_report_field_missing",
-                format!("Crawl report is missing required field `{field}`."),
+                "crawl_report_field_invalid",
+                format!("Crawl report field `{field}` must be an array of non-empty objects."),
             ));
         }
     }
@@ -3489,7 +3580,12 @@ fn record_single_file_change_event(
     run_id: &str,
     change: FileChangeEvent<'_>,
 ) -> CommandResult<()> {
-    let stored_change = project_store::append_agent_file_change(
+    let mut touched_paths = vec![change.path.to_string()];
+    if let Some(to_path) = change.to_path.as_ref() {
+        touched_paths.push(to_path.clone());
+    }
+    let recorded_at = now_timestamp();
+    let (_, event) = project_store::append_agent_file_change_with_event(
         repo_root,
         &NewAgentFileChangeRecord {
             project_id: project_id.into(),
@@ -3499,50 +3595,41 @@ fn record_single_file_change_event(
             operation: change.operation.into(),
             old_hash: change.old_hash.clone(),
             new_hash: change.new_hash.clone(),
-            created_at: now_timestamp(),
+            created_at: recorded_at.clone(),
+        },
+        |stored_change| {
+            project_store::refresh_project_record_freshness_for_paths(
+                repo_root,
+                project_id,
+                &touched_paths,
+                &recorded_at,
+            )?;
+            project_store::refresh_agent_memory_freshness_for_paths(
+                repo_root,
+                project_id,
+                &touched_paths,
+                &recorded_at,
+            )?;
+            Ok(json!({
+                "path": change.path,
+                "operation": change.operation,
+                "toPath": change.to_path,
+                "oldHash": change.old_hash,
+                "newHash": change.new_hash,
+                "toolCallId": change.tool_call_id,
+                "toolName": change.tool_name,
+                "codeChangeGroupId": change.code_change_group_id,
+                "codeCommitId": change.history_metadata.and_then(|metadata| metadata.commit_id.as_deref()),
+                "codeWorkspaceEpoch": change.history_metadata.and_then(|metadata| metadata.workspace_epoch),
+                "projectId": project_id,
+                "traceId": stored_change.trace_id.clone(),
+                "topLevelRunId": stored_change.top_level_run_id.clone(),
+                "subagentId": stored_change.subagent_id.clone(),
+                "subagentRole": stored_change.subagent_role.clone(),
+            }))
         },
     )?;
-    let mut touched_paths = vec![change.path.to_string()];
-    if let Some(to_path) = change.to_path.as_ref() {
-        touched_paths.push(to_path.clone());
-    }
-    let freshness_checked_at = now_timestamp();
-    project_store::refresh_project_record_freshness_for_paths(
-        repo_root,
-        project_id,
-        &touched_paths,
-        &freshness_checked_at,
-    )?;
-    project_store::refresh_agent_memory_freshness_for_paths(
-        repo_root,
-        project_id,
-        &touched_paths,
-        &freshness_checked_at,
-    )?;
-
-    append_event(
-        repo_root,
-        project_id,
-        run_id,
-        AgentRunEventKind::FileChanged,
-        json!({
-            "path": change.path,
-            "operation": change.operation,
-            "toPath": change.to_path,
-            "oldHash": change.old_hash,
-            "newHash": change.new_hash,
-            "toolCallId": change.tool_call_id,
-            "toolName": change.tool_name,
-            "codeChangeGroupId": change.code_change_group_id,
-            "codeCommitId": change.history_metadata.and_then(|metadata| metadata.commit_id.as_deref()),
-            "codeWorkspaceEpoch": change.history_metadata.and_then(|metadata| metadata.workspace_epoch),
-            "projectId": project_id,
-            "traceId": stored_change.trace_id,
-            "topLevelRunId": stored_change.top_level_run_id,
-            "subagentId": stored_change.subagent_id,
-            "subagentRole": stored_change.subagent_role,
-        }),
-    )?;
+    publish_committed_agent_event(repo_root, &event);
     Ok(())
 }
 
@@ -6296,6 +6383,64 @@ Repository map captured.
             .expect_err("invalid report should be rejected");
 
         assert_eq!(error.code, "crawl_report_invalid");
+    }
+
+    #[test]
+    fn required_crawl_report_validation_rejects_wrong_project_and_invalid_shapes() {
+        let valid = json!({
+            "schema": CRAWL_REPORT_SCHEMA,
+            "projectId": "project-1",
+            "generatedAt": "2026-05-06T00:00:00Z",
+            "coverage": { "confidence": 0.91 },
+            "overview": { "summary": "Tauri desktop app." },
+            "techStack": [],
+            "commands": [],
+            "tests": [],
+            "architecture": [],
+            "hotspots": [],
+            "constraints": [],
+            "unknowns": [],
+            "freshness": { "sourceFingerprints": [] }
+        });
+        validate_crawl_report_payload(&valid, "project-1").expect("valid crawl report");
+
+        let mut missing_project = valid.clone();
+        missing_project
+            .as_object_mut()
+            .expect("report object")
+            .remove("projectId");
+        assert_eq!(
+            validate_crawl_report_payload(&missing_project, "project-1")
+                .expect_err("project id is required")
+                .code,
+            "crawl_report_field_invalid"
+        );
+
+        let mut wrong_project = valid.clone();
+        wrong_project["projectId"] = json!("project-2");
+        assert_eq!(
+            validate_crawl_report_payload(&wrong_project, "project-1")
+                .expect_err("project id must match")
+                .code,
+            "crawl_report_project_mismatch"
+        );
+
+        for (field, invalid_value) in [
+            ("generatedAt", JsonValue::Null),
+            ("coverage", json!([])),
+            ("overview", json!({})),
+            ("techStack", json!(["Rust"])),
+            ("freshness", json!({})),
+        ] {
+            let mut invalid = valid.clone();
+            invalid[field] = invalid_value;
+            let error = validate_crawl_report_payload(&invalid, "project-1")
+                .expect_err("invalid field shape must be rejected");
+            assert_eq!(
+                error.code, "crawl_report_field_invalid",
+                "unexpected error for `{field}`"
+            );
+        }
     }
 
     #[test]

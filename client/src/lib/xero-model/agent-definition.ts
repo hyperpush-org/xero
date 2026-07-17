@@ -538,7 +538,32 @@ export const customAgentHandoffPolicySchema = z
   })
 export type CustomAgentHandoffPolicyDto = z.infer<typeof customAgentHandoffPolicySchema>
 
-export const customAgentWorkflowGateSchema = z.discriminatedUnion('kind', [
+const normalizeWorkflowToolSucceededName = (value: unknown): unknown => {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return value
+  const record = value as Record<string, unknown>
+  if (record.kind !== 'tool_succeeded') return value
+  if (typeof record.toolName === 'string' && record.toolName.trim().length > 0) return value
+  if (!Array.isArray(record.toolNames)) return value
+  const firstToolName = record.toolNames.find(
+    (toolName): toolName is string => typeof toolName === 'string' && toolName.trim().length > 0,
+  )
+  return firstToolName ? { ...record, toolName: firstToolName } : value
+}
+
+const customAgentWorkflowToolSucceededGateSchema = z.preprocess(
+  normalizeWorkflowToolSucceededName,
+  z
+    .object({
+      kind: z.literal('tool_succeeded'),
+      toolName: nonEmptyTextSchema,
+      toolNames: trimmedTextArraySchema.min(1).optional(),
+      minCount: z.number().int().positive().optional(),
+      description: z.string().optional(),
+    })
+    .strict(),
+)
+
+export const customAgentWorkflowGateSchema = z.union([
   z
     .object({
       kind: z.literal('todo_completed'),
@@ -546,18 +571,23 @@ export const customAgentWorkflowGateSchema = z.discriminatedUnion('kind', [
       description: z.string().optional(),
     })
     .strict(),
+  customAgentWorkflowToolSucceededGateSchema,
+])
+export type CustomAgentWorkflowGateDto = z.infer<typeof customAgentWorkflowGateSchema>
+
+const customAgentWorkflowToolSucceededBranchConditionSchema = z.preprocess(
+  normalizeWorkflowToolSucceededName,
   z
     .object({
       kind: z.literal('tool_succeeded'),
       toolName: nonEmptyTextSchema,
+      toolNames: trimmedTextArraySchema.min(1).optional(),
       minCount: z.number().int().positive().optional(),
-      description: z.string().optional(),
     })
     .strict(),
-])
-export type CustomAgentWorkflowGateDto = z.infer<typeof customAgentWorkflowGateSchema>
+)
 
-export const customAgentWorkflowBranchConditionSchema = z.discriminatedUnion('kind', [
+export const customAgentWorkflowBranchConditionSchema = z.union([
   z.object({ kind: z.literal('always') }).strict(),
   z
     .object({
@@ -565,13 +595,7 @@ export const customAgentWorkflowBranchConditionSchema = z.discriminatedUnion('ki
       todoId: nonEmptyTextSchema,
     })
     .strict(),
-  z
-    .object({
-      kind: z.literal('tool_succeeded'),
-      toolName: nonEmptyTextSchema,
-      minCount: z.number().int().positive().optional(),
-    })
-    .strict(),
+  customAgentWorkflowToolSucceededBranchConditionSchema,
 ])
 export type CustomAgentWorkflowBranchConditionDto = z.infer<
   typeof customAgentWorkflowBranchConditionSchema
@@ -602,22 +626,24 @@ export const customAgentWorkflowPhaseSchema = z
       ctx,
       ['allowedTools'],
       phase.allowedTools ?? [],
-      'Custom agent workflow phase allowed tools must be unique.',
+      'Custom agent stage allowed tools must be unique.',
     )
     const requiredCheckKeys =
       phase.requiredChecks?.map((check) => {
         switch (check.kind) {
           case 'todo_completed':
             return `todo_completed:${check.todoId}`
-          case 'tool_succeeded':
-            return `tool_succeeded:${check.toolName}:${check.minCount ?? 1}`
+          case 'tool_succeeded': {
+            const toolNames = [...new Set([check.toolName, ...(check.toolNames ?? [])])].sort()
+            return `tool_succeeded:${toolNames.join('|')}:${check.minCount ?? 1}`
+          }
         }
       }) ?? []
     addDuplicateStringIssues(
       ctx,
       ['requiredChecks'],
       requiredCheckKeys,
-      'Custom agent workflow phase required checks must be unique.',
+      'Custom agent stage required checks must be unique.',
     )
     const branchKeys =
       phase.branches?.map((branch) =>
@@ -627,8 +653,41 @@ export const customAgentWorkflowPhaseSchema = z
       ctx,
       ['branches'],
       branchKeys,
-      'Custom agent workflow phase branches must be unique.',
+      'Custom agent stage exits must be unique.',
     )
+    if ((phase.allowedTools?.length ?? 0) > 0) {
+      const effectiveAllowedTools = new Set([
+        ...(phase.allowedTools ?? []),
+        'action_required',
+        'suggest_routing',
+        'todo',
+        'tool_search',
+        'tool_access',
+      ])
+      const addUnexecutablePredicateIssue = (
+        predicate: { kind: string; toolName?: string; toolNames?: string[] },
+        path: (string | number)[],
+      ) => {
+        if (predicate.kind !== 'tool_succeeded') return
+        const referencedTools = new Set([
+          ...(predicate.toolNames ?? []),
+          ...(predicate.toolName ? [predicate.toolName] : []),
+        ])
+        if ([...referencedTools].some((toolName) => effectiveAllowedTools.has(toolName))) return
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path,
+          message:
+            "Custom agent Stage tool_succeeded predicate cannot be satisfied because none of its tools are executable under this Stage's allowedTools.",
+        })
+      }
+      phase.requiredChecks?.forEach((check, index) => {
+        addUnexecutablePredicateIssue(check, ['requiredChecks', index])
+      })
+      phase.branches?.forEach((branch, index) => {
+        addUnexecutablePredicateIssue(branch.condition, ['branches', index, 'condition'])
+      })
+    }
   })
 export type CustomAgentWorkflowPhaseDto = z.infer<typeof customAgentWorkflowPhaseSchema>
 
@@ -644,14 +703,14 @@ export const customAgentWorkflowStructureSchema = z
       ctx,
       ['phases'],
       phaseIds,
-      'Custom agent workflow phase ids must be unique.',
+      'Custom agent stage ids must be unique.',
     )
     const phaseIdSet = new Set(phaseIds)
     if (workflow.startPhaseId && !phaseIdSet.has(workflow.startPhaseId)) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['startPhaseId'],
-        message: 'Custom agent workflow start phase must reference a declared phase.',
+        message: 'Custom agent start stage must reference a declared stage.',
       })
     }
     workflow.phases.forEach((phase, phaseIndex) => {
@@ -660,7 +719,7 @@ export const customAgentWorkflowStructureSchema = z
           ctx.addIssue({
             code: z.ZodIssueCode.custom,
             path: ['phases', phaseIndex, 'branches', branchIndex, 'targetPhaseId'],
-            message: 'Custom agent workflow branch target must reference a declared phase.',
+            message: 'Custom agent Stage exit target must reference a declared Stage.',
           })
         }
       })
@@ -839,6 +898,7 @@ export const archiveAgentDefinitionRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
     definitionId: z.string().trim().min(1),
+    expectedCurrentVersion: z.number().int().positive(),
   })
   .strict()
 export type ArchiveAgentDefinitionRequestDto = z.infer<
@@ -990,6 +1050,13 @@ export const updateAgentDefinitionRequestSchema = z
         code: z.ZodIssueCode.custom,
         path: ['definitionId'],
         message: 'Update definition request id must match the canonical definition id.',
+      })
+    }
+    if (request.definition.version == null) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['definition', 'version'],
+        message: 'Update definition requests must include the exact current definition version.',
       })
     }
   })

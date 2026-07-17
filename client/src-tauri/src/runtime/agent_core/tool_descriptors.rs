@@ -1208,8 +1208,8 @@ fn agent_definition_policy_fragment(
         format!("Base runtime capability profile: {}.", runtime_agent_id.as_str()),
         format!("Purpose: {}", blank_as_none(&task_purpose).unwrap_or(&description)),
         optional_section("Prompt fragments", &prompt_fragments),
-        optional_section("Workflow contract", &workflow_contract),
-        optional_section("Workflow structure (runtime-enforced)", &workflow_structure),
+        optional_section("Run contract", &workflow_contract),
+        optional_section("Stage structure (runtime-enforced)", &workflow_structure),
         optional_section("Final response contract", &final_response_contract),
         optional_section("Output contract", &output_contract),
         optional_section("Database touchpoints", &db_touchpoints),
@@ -6109,6 +6109,22 @@ fn agent_definition_schema() -> JsonValue {
                 string_schema("Source definition id for clone."),
             ),
             (
+                "sourceVersion",
+                json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Exact current source version for clone. Required so approval cannot drift to a newer source version."
+                }),
+            ),
+            (
+                "expectedCurrentVersion",
+                json!({
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "Expected current Agent version for archive. Required so approval cannot archive a newer version."
+                }),
+            ),
+            (
                 "includeArchived",
                 boolean_schema("Include archived definitions when action=list."),
             ),
@@ -6116,7 +6132,7 @@ fn agent_definition_schema() -> JsonValue {
                 "definition",
                 json!({
                     "type": "object",
-                    "description": "Reviewable canonical agent definition draft. Required for draft, validate, preview, save, update, and clone overrides. Custom definitions use schemaVersion 3, must include an explicit attachedSkills array, and should include handoffPolicy with enabled, routingMode (same_agent or suggest), allowedTargets, preserveDefinitionVersion, carrySummary, and includeDurableContext. Custom handoff allowedTargets use {kind:\"built_in\",runtimeAgentId:\"ask|engineer|debug|generalist\"} or {kind:\"custom\",definitionId,version?}; Plan, Computer Use, Crawl, and Agent Create are not configurable custom-agent route targets. To attach a skill, first call action=list_attachable_skills and copy the returned metadata-only attachment object; attached skills inject context every run and do not grant the skill tool.",
+                    "description": "Reviewable canonical agent definition draft. Required for draft, validate, preview, save, update, and clone overrides. Update must preserve the exact current version returned by get so concurrent edits are rejected instead of overwritten. Custom definitions use schemaVersion 3, must include an explicit attachedSkills array, and should include handoffPolicy with enabled, routingMode (same_agent or suggest), allowedTargets, preserveDefinitionVersion, carrySummary, and includeDurableContext. Custom handoff allowedTargets use {kind:\"built_in\",runtimeAgentId:\"ask|engineer|debug|generalist\"} or {kind:\"custom\",definitionId,version?}; Plan, Computer Use, Crawl, and Agent Create are not configurable custom-agent route targets. To attach a skill, first call action=list_attachable_skills and copy the returned metadata-only attachment object; attached skills inject context every run and do not grant the skill tool.",
                     "additionalProperties": true
                 }),
             ),

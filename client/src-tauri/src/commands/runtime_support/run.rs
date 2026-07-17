@@ -39,8 +39,9 @@ use crate::{
         RuntimeRunTransportRecord, RuntimeRunUpsertRecord,
     },
     runtime::{
-        create_owned_agent_run, drive_owned_agent_run, normalize_openai_codex_model_id,
-        AgentProviderConfig, AnthropicProviderConfig, AutonomousToolRuntime, BedrockProviderConfig,
+        create_owned_agent_run, drive_owned_agent_continuation, normalize_openai_codex_model_id,
+        register_existing_initial_agent_continuation, AgentProviderConfig, AnthropicProviderConfig,
+        AutonomousToolRuntime, BedrockProviderConfig, ContinueOwnedAgentRunRequest,
         DeepSeekProviderConfig, OpenAiCodexResponsesProviderConfig, OpenAiCompatibleProviderConfig,
         OpenAiResponsesProviderConfig, OwnedAgentRunRequest, RuntimeProvider, VertexProviderConfig,
         XaiResponsesProviderConfig, ANTHROPIC_PROVIDER_ID, AZURE_OPENAI_PROVIDER_ID,
@@ -342,6 +343,11 @@ fn launch_owned_runtime_run<R: Runtime + 'static>(
     attach_queued_runtime_attachments(&mut run_controls, &initial_attachments);
     attach_queued_runtime_linked_paths(&mut run_controls, &initial_linked_paths);
     let run_id = generate_runtime_run_id();
+    if let Some(pending) = run_controls.pending.as_mut() {
+        if pending.queued_prompt.is_some() {
+            pending.queued_prompt_continuation_request_id = Some(format!("runtime-start:{run_id}"));
+        }
+    }
     let prompt = initial_prompt.and_then(|prompt| {
         let trimmed = prompt.trim();
         (!trimmed.is_empty()).then(|| trimmed.to_string())
@@ -536,29 +542,85 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
             return Ok(());
         }
     };
+    let Some(continuation_request_id) = task
+        .run_controls
+        .pending
+        .as_ref()
+        .and_then(|pending| pending.queued_prompt_continuation_request_id.as_deref())
+        .map(str::trim)
+        .filter(|request_id| !request_id.is_empty())
+        .map(ToOwned::to_owned)
+    else {
+        let error = CommandError::system_fault(
+            "runtime_start_continuation_identity_missing",
+            "Xero could not start the runtime because its durable prompt identity is missing.",
+        );
+        record_owned_runtime_failure(
+            app,
+            &task.repo_root,
+            &runtime_snapshot,
+            &error,
+            "Owned agent task failed.",
+        );
+        return Ok(());
+    };
     let owned_request = OwnedAgentRunRequest {
         repo_root: task.repo_root.clone(),
         project_id: task.project_id.clone(),
         agent_session_id: task.agent_session_id.clone(),
         run_id: task.run_id.clone(),
-        prompt: task.prompt,
+        prompt: task.prompt.clone(),
         attachments: task
             .attachments
             .iter()
             .map(staged_attachment_dto_to_message_attachment)
             .collect(),
+        linked_paths: task.linked_paths.clone(),
+        controls: controls.clone(),
+        tool_runtime: tool_runtime.clone(),
+        provider_config: provider_config.clone(),
+        provider_preflight: Some(provider_preflight.clone()),
+    };
+    let initial_agent_snapshot = match create_owned_agent_run(&owned_request) {
+        Ok(snapshot) => snapshot,
+        Err(create_error) => {
+            match project_store::load_agent_run(&task.repo_root, &task.project_id, &task.run_id) {
+                Ok(existing) => existing,
+                Err(_) => {
+                    record_owned_runtime_failure(
+                        app,
+                        &task.repo_root,
+                        &runtime_snapshot,
+                        &create_error,
+                        "Owned agent task failed.",
+                    );
+                    return Ok(());
+                }
+            }
+        }
+    };
+    let continuation = ContinueOwnedAgentRunRequest {
+        repo_root: task.repo_root.clone(),
+        project_id: task.project_id.clone(),
+        run_id: task.run_id.clone(),
+        continuation_request_id: continuation_request_id.clone(),
+        prompt: task.prompt,
+        attachments: owned_request.attachments,
         linked_paths: task.linked_paths,
         controls,
         tool_runtime,
         provider_config,
         provider_preflight: Some(provider_preflight),
+        answer_pending_actions: false,
+        answer_pending_action_id: None,
+        auto_compact: None,
+        internal_resume: None,
     };
-    let lease = match state.agent_run_supervisor().begin(
-        &task.project_id,
-        &task.agent_session_id,
-        &task.run_id,
+    let registration = match register_existing_initial_agent_continuation(
+        &continuation,
+        &initial_agent_snapshot,
     ) {
-        Ok(lease) => lease,
+        Ok(registration) => registration,
         Err(error) => {
             record_owned_runtime_failure(
                 app,
@@ -570,33 +632,96 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
             return Ok(());
         }
     };
+    let registration =
+        if registration.request.state == project_store::AgentContinuationRequestState::Driving {
+            match project_store::reconcile_completed_agent_continuation(
+                &task.repo_root,
+                &task.project_id,
+                &task.run_id,
+                &continuation_request_id,
+                &now_timestamp(),
+            ) {
+                Ok(Some(request)) => request,
+                Ok(None) => return Ok(()),
+                Err(error) => {
+                    record_owned_runtime_failure(
+                        app,
+                        &task.repo_root,
+                        &runtime_snapshot,
+                        &error,
+                        "Owned agent task failed.",
+                    );
+                    return Ok(());
+                }
+            }
+        } else {
+            registration.request
+        };
+    if registration.state == project_store::AgentContinuationRequestState::Driving {
+        // Provider dispatch may already have happened in a previous process. Keep the prompt
+        // pending until request-scoped completion evidence can reconcile it.
+        return Ok(());
+    }
 
-    if let Err(error) = create_owned_agent_run(&owned_request) {
-        drop(lease);
-        record_owned_runtime_failure(
+    let outcome = if registration.state == project_store::AgentContinuationRequestState::Consumed {
+        Ok(initial_agent_snapshot)
+    } else {
+        let lease = match state.agent_run_supervisor().begin_persisted(
+            &task.repo_root,
+            &task.project_id,
+            &task.agent_session_id,
+            &task.run_id,
+        ) {
+            Ok(lease) => lease,
+            Err(error) if error.code == "agent_run_already_active" => return Ok(()),
+            Err(error) => {
+                record_owned_runtime_failure(
+                    app,
+                    &task.repo_root,
+                    &runtime_snapshot,
+                    &error,
+                    "Owned agent task failed.",
+                );
+                return Ok(());
+            }
+        };
+        runtime_snapshot = emit_owned_runtime_progress(
             app,
             &task.repo_root,
             &runtime_snapshot,
-            &error,
-            "Owned agent task failed.",
+            RuntimeRunStatus::Running,
+            None,
+            "Starting provider stream.",
+        )?;
+        let outcome = drive_owned_agent_continuation(
+            continuation,
+            lease.token(),
+            Some(state.agent_run_supervisor().clone()),
         );
-        return Ok(());
-    }
-    runtime_snapshot = apply_owned_runtime_run_pending_controls_with_status(
-        &task.repo_root,
-        &runtime_snapshot,
-        RuntimeRunStatus::Running,
-        "Starting provider stream.",
-    )?;
-    let runtime_run = runtime_run_dto_from_snapshot(&runtime_snapshot);
-    emit_runtime_run_updated(app, Some(&runtime_run))?;
+        drop(lease);
+        outcome
+    };
 
-    let token = lease.token();
-    let outcome = drive_owned_agent_run(
-        owned_request,
-        token,
-        Some(state.agent_run_supervisor().clone()),
-    );
+    let durable_request = project_store::reconcile_completed_agent_continuation(
+        &task.repo_root,
+        &task.project_id,
+        &task.run_id,
+        &continuation_request_id,
+        &now_timestamp(),
+    )?;
+    if durable_request.is_some_and(|request| {
+        request.state == project_store::AgentContinuationRequestState::Consumed
+    }) {
+        runtime_snapshot = clear_owned_runtime_prompt_if_current(
+            &task.repo_root,
+            &runtime_snapshot,
+            &continuation_request_id,
+            RuntimeRunStatus::Running,
+            "Provider accepted queued prompt.",
+        )?;
+        let runtime_run = runtime_run_dto_from_snapshot(&runtime_snapshot);
+        emit_runtime_run_updated(app, Some(&runtime_run))?;
+    }
     let terminal_failure = match outcome {
         Ok(agent_snapshot)
             if agent_snapshot.run.status == project_store::AgentRunStatus::Completed =>
@@ -640,7 +765,6 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
             "Owned agent task failed.",
         );
     }
-    drop(lease);
     Ok(())
 }
 
@@ -1237,6 +1361,40 @@ pub(crate) fn resolve_owned_agent_provider_config<R: Runtime>(
     }
 }
 
+pub(crate) fn resolve_persisted_owned_agent_provider_config<R: Runtime>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    provider_id: &str,
+    model_id: &str,
+    controls: &RuntimeRunControlInputDto,
+) -> CommandResult<AgentProviderConfig> {
+    if let Some(config) = state.owned_agent_provider_config_override() {
+        return Ok(config);
+    }
+    let provider_profiles = load_provider_credentials_view(app, state)?;
+    let profile = provider_profiles
+        .active_profile()
+        .filter(|profile| profile.provider_id == provider_id)
+        .or_else(|| {
+            provider_profiles
+                .profiles()
+                .iter()
+                .find(|profile| profile.provider_id == provider_id)
+        })
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "provider_not_found",
+                format!(
+                    "Xero could not recover a persisted agent run because provider `{provider_id}` is no longer configured."
+                ),
+            )
+        })?;
+    let mut persisted_controls = controls.clone();
+    persisted_controls.provider_profile_id = Some(profile.profile_id.clone());
+    persisted_controls.model_id = model_id.to_owned();
+    resolve_owned_agent_provider_config(app, state, Some(&persisted_controls))
+}
+
 fn refresh_openai_codex_session_before_run<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
@@ -1705,6 +1863,15 @@ fn persist_owned_runtime_run(
                 created_at: now,
             }),
             control_state: Some(run_controls.clone()),
+            expected_snapshot: existing.map(|snapshot| {
+                project_store::RuntimeRunWriteExpectationRecord {
+                    run_id: snapshot.run.run_id.clone(),
+                    status: snapshot.run.status.clone(),
+                    last_checkpoint_sequence: snapshot.last_checkpoint_sequence,
+                    control_state: snapshot.controls.clone(),
+                    updated_at: snapshot.run.updated_at.clone(),
+                }
+            }),
         },
     )
 }
@@ -1750,6 +1917,7 @@ pub(crate) fn update_owned_runtime_run_controls(
     snapshot: &RuntimeRunSnapshotRecord,
     provider_id: &str,
     controls: Option<RuntimeRunControlInputDto>,
+    continuation_request_id: &str,
     prompt: Option<String>,
     attachments: &[crate::commands::StagedAgentAttachmentDto],
     linked_paths: &[crate::commands::RuntimeLinkedPathDto],
@@ -1849,6 +2017,14 @@ pub(crate) fn update_owned_runtime_run_controls(
         .filter(|prompt| !prompt.is_empty())
         .map(ToOwned::to_owned)
         .or_else(|| base_pending.and_then(|pending| pending.queued_prompt.clone()));
+    let queued_prompt_continuation_request_id = prompt
+        .as_deref()
+        .map(str::trim)
+        .filter(|prompt| !prompt.is_empty())
+        .map(|_| continuation_request_id.to_owned())
+        .or_else(|| {
+            base_pending.and_then(|pending| pending.queued_prompt_continuation_request_id.clone())
+        });
     let now = now_timestamp();
     let queued_prompt_at = if queued_prompt.is_some() {
         prompt
@@ -1885,6 +2061,7 @@ pub(crate) fn update_owned_runtime_run_controls(
             queued_at: now,
             queued_prompt,
             queued_prompt_at,
+            queued_prompt_continuation_request_id,
             queued_attachments: queued_runtime_attachments(attachments),
             queued_linked_paths: queued_runtime_linked_paths(linked_paths),
         }),
@@ -1956,6 +2133,37 @@ pub(crate) fn apply_owned_runtime_run_pending_controls_with_status(
         checkpoint_summary,
         snapshot.last_checkpoint_sequence.saturating_add(1),
         Some(snapshot),
+    )
+}
+
+pub(crate) fn clear_owned_runtime_prompt_if_current(
+    repo_root: &Path,
+    snapshot: &RuntimeRunSnapshotRecord,
+    continuation_request_id: &str,
+    status: RuntimeRunStatus,
+    checkpoint_summary: &str,
+) -> CommandResult<RuntimeRunSnapshotRecord> {
+    let Some(latest) = load_persisted_runtime_run(
+        repo_root,
+        &snapshot.run.project_id,
+        &snapshot.run.agent_session_id,
+    )?
+    else {
+        return Ok(snapshot.clone());
+    };
+    if latest.run.run_id != snapshot.run.run_id
+        || !latest.controls.pending.as_ref().is_some_and(|pending| {
+            pending.queued_prompt_continuation_request_id.as_deref()
+                == Some(continuation_request_id)
+        })
+    {
+        return Ok(latest);
+    }
+    apply_owned_runtime_run_pending_controls_with_status(
+        repo_root,
+        &latest,
+        status,
+        checkpoint_summary,
     )
 }
 

@@ -507,6 +507,7 @@ fn resume_scheduled_wakeup<R: Runtime + 'static>(
         repo_root: repo_root.to_path_buf(),
         project_id: record.project_id.clone(),
         run_id: record.run_id.clone(),
+        continuation_request_id: format!("scheduled-wakeup:{}", record.wake_id),
         prompt,
         attachments: Vec::new(),
         linked_paths: Vec::new(),

@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 44;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 54;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -53,6 +53,19 @@ pub fn migrations() -> &'static Migrations<'static> {
             // Migration 18 gained a column after v43 databases had already applied it.
             // Bump the schema epoch so stale app-data is rebuilt from the current schema.
             M::up(NOOP_SCHEMA_VERSION_MARKER_SQL),
+            M::up(MIGRATION_037_AGENT_RUN_DRIVE_LEASES_SQL),
+            M::up(MIGRATION_038_AGENT_CONTINUATION_REQUESTS_SQL),
+            M::up(MIGRATION_039_WORKFLOW_RUN_START_REQUESTS_SQL),
+            M::up(MIGRATION_040_WORKFLOW_COMMAND_LEASES_SQL),
+            M::up(MIGRATION_041_RUNTIME_QUEUED_PROMPT_IDENTITY_SQL),
+            M::up(MIGRATION_042_WORKFLOW_DRIVER_LEASES_SQL),
+            // The Workflow run status constraint gained the durable `cancelling`
+            // state. Project state is epoch-versioned, so rebuild old app-data
+            // from the current baseline instead of carrying compatibility DDL.
+            M::up(NOOP_SCHEMA_VERSION_MARKER_SQL),
+            M::up(MIGRATION_043_AGENT_START_IDENTITY_AND_LEASE_BIRTH_SQL),
+            M::up(MIGRATION_044_WORKFLOW_LEASE_OWNER_BIRTH_SQL),
+            M::up(MIGRATION_045_AGENT_RECOVERY_PAYLOADS_SQL),
         ])
     });
 
@@ -60,6 +73,184 @@ pub fn migrations() -> &'static Migrations<'static> {
 }
 
 const NOOP_SCHEMA_VERSION_MARKER_SQL: &str = "";
+
+const MIGRATION_045_AGENT_RECOVERY_PAYLOADS_SQL: &str = r#"
+    ALTER TABLE agent_run_start_requests
+        ADD COLUMN recovery_payload_json TEXT NOT NULL
+        DEFAULT '{}'
+        CHECK (json_valid(recovery_payload_json));
+
+    ALTER TABLE agent_continuation_requests
+        ADD COLUMN recovery_payload_json TEXT NOT NULL
+        DEFAULT '{}'
+        CHECK (json_valid(recovery_payload_json));
+"#;
+
+const MIGRATION_044_WORKFLOW_LEASE_OWNER_BIRTH_SQL: &str = r#"
+    ALTER TABLE workflow_driver_leases
+        ADD COLUMN owner_process_birth_identity TEXT;
+    ALTER TABLE workflow_command_leases
+        ADD COLUMN owner_process_birth_identity TEXT;
+"#;
+
+const MIGRATION_043_AGENT_START_IDENTITY_AND_LEASE_BIRTH_SQL: &str = r#"
+    ALTER TABLE agent_run_drive_leases
+        ADD COLUMN owner_process_birth_identity TEXT;
+
+    CREATE TABLE agent_run_start_requests (
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        state TEXT NOT NULL,
+        owner_process_id INTEGER NOT NULL,
+        owner_process_birth_identity TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        ready_at TEXT,
+        failed_at TEXT,
+        PRIMARY KEY (project_id, run_id),
+        CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (state IN ('preparing', 'ready', 'failed')),
+        CHECK (owner_process_id > 0),
+        CHECK (owner_process_birth_identity <> ''),
+        CHECK (created_at <> ''),
+        CHECK ((state = 'preparing' AND ready_at IS NULL AND failed_at IS NULL)
+            OR (state = 'ready' AND ready_at IS NOT NULL AND failed_at IS NULL)
+            OR (state = 'failed' AND ready_at IS NULL AND failed_at IS NOT NULL)),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+"#;
+
+const MIGRATION_042_WORKFLOW_DRIVER_LEASES_SQL: &str = r#"
+    CREATE TABLE workflow_driver_leases (
+        project_id TEXT NOT NULL,
+        workflow_run_id TEXT NOT NULL,
+        owner_instance_id TEXT NOT NULL,
+        owner_process_id INTEGER NOT NULL,
+        lease_token TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, workflow_run_id),
+        CHECK (owner_instance_id <> ''),
+        CHECK (owner_process_id > 0),
+        CHECK (lease_token <> ''),
+        CHECK (acquired_at <> ''),
+        CHECK (heartbeat_at <> ''),
+        FOREIGN KEY (project_id, workflow_run_id)
+            REFERENCES workflow_runs(project_id, id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX idx_workflow_driver_leases_heartbeat
+        ON workflow_driver_leases(project_id, heartbeat_at);
+"#;
+
+// Runtime control snapshots now durably bind queued prompts to their continuation request id.
+// The snapshot is JSON-backed, so the schema epoch is the compatibility boundary.
+const MIGRATION_041_RUNTIME_QUEUED_PROMPT_IDENTITY_SQL: &str = "";
+
+const MIGRATION_040_WORKFLOW_COMMAND_LEASES_SQL: &str = r#"
+    CREATE TABLE workflow_command_leases (
+        project_id TEXT NOT NULL,
+        workflow_run_id TEXT NOT NULL,
+        node_run_id TEXT NOT NULL,
+        owner_instance_id TEXT NOT NULL,
+        owner_process_id INTEGER NOT NULL,
+        lease_token TEXT NOT NULL,
+        command_process_id INTEGER,
+        command_process_birth_identity TEXT,
+        acquired_at TEXT NOT NULL,
+        heartbeat_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, node_run_id),
+        CHECK (owner_instance_id <> ''),
+        CHECK (owner_process_id > 0),
+        CHECK (lease_token <> ''),
+        CHECK (command_process_id IS NULL OR command_process_id > 0),
+        CHECK (command_process_birth_identity IS NULL OR (
+            command_process_id IS NOT NULL AND command_process_birth_identity <> ''
+        )),
+        CHECK (acquired_at <> ''),
+        CHECK (heartbeat_at <> ''),
+        FOREIGN KEY (project_id, workflow_run_id)
+            REFERENCES workflow_runs(project_id, id) ON DELETE CASCADE,
+        FOREIGN KEY (project_id, node_run_id)
+            REFERENCES workflow_run_nodes(project_id, id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX idx_workflow_command_leases_run
+        ON workflow_command_leases(project_id, workflow_run_id, heartbeat_at);
+"#;
+
+const MIGRATION_039_WORKFLOW_RUN_START_REQUESTS_SQL: &str = r#"
+    CREATE TABLE workflow_run_start_requests (
+        project_id TEXT NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        workflow_run_id TEXT NOT NULL,
+        created_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, idempotency_key),
+        CHECK (idempotency_key <> '' AND length(idempotency_key) <= 200),
+        CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (created_at <> ''),
+        FOREIGN KEY (project_id, workflow_run_id)
+            REFERENCES workflow_runs(project_id, id) ON DELETE CASCADE
+    );
+
+    CREATE UNIQUE INDEX idx_workflow_run_start_requests_run
+        ON workflow_run_start_requests(project_id, workflow_run_id);
+"#;
+
+const MIGRATION_038_AGENT_CONTINUATION_REQUESTS_SQL: &str = r#"
+    CREATE TABLE agent_continuation_requests (
+        project_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        payload_hash TEXT NOT NULL,
+        state TEXT NOT NULL,
+        message_id INTEGER NOT NULL,
+        linked_path_grant_event_id INTEGER,
+        message_event_id INTEGER NOT NULL,
+        prepared_at TEXT NOT NULL,
+        drive_started_at TEXT,
+        consumed_at TEXT,
+        PRIMARY KEY (project_id, request_id),
+        CHECK (request_id <> ''),
+        CHECK (length(payload_hash) = 64 AND payload_hash NOT GLOB '*[^0-9a-f]*'),
+        CHECK (state IN ('prepared', 'driving', 'consumed')),
+        CHECK (prepared_at <> ''),
+        CHECK ((state = 'prepared' AND drive_started_at IS NULL AND consumed_at IS NULL)
+            OR (state = 'driving' AND drive_started_at IS NOT NULL AND consumed_at IS NULL)
+            OR (state = 'consumed' AND consumed_at IS NOT NULL)),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE,
+        FOREIGN KEY (message_id)
+            REFERENCES agent_messages(id) ON DELETE CASCADE,
+        FOREIGN KEY (linked_path_grant_event_id)
+            REFERENCES agent_events(id) ON DELETE CASCADE,
+        FOREIGN KEY (message_event_id)
+            REFERENCES agent_events(id) ON DELETE CASCADE
+    );
+
+    CREATE INDEX idx_agent_continuation_requests_run_state
+        ON agent_continuation_requests(project_id, run_id, state, prepared_at);
+"#;
+
+const MIGRATION_037_AGENT_RUN_DRIVE_LEASES_SQL: &str = r#"
+    CREATE TABLE agent_run_drive_leases (
+        project_id TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        owner_instance_id TEXT NOT NULL,
+        owner_process_id INTEGER NOT NULL,
+        drive_token TEXT NOT NULL,
+        acquired_at TEXT NOT NULL,
+        PRIMARY KEY (project_id, run_id),
+        CHECK (owner_instance_id <> ''),
+        CHECK (owner_process_id > 0),
+        CHECK (drive_token <> ''),
+        CHECK (acquired_at <> ''),
+        FOREIGN KEY (project_id, run_id)
+            REFERENCES agent_runs(project_id, run_id) ON DELETE CASCADE
+    );
+"#;
 
 const MIGRATION_036_ENGINEER_WEB_STAGE_TOOLS_SQL: &str = r#"
     INSERT OR IGNORE INTO agent_definition_versions (
@@ -812,7 +1003,7 @@ const MIGRATION_025_MULTI_AGENT_WORKFLOWS_SQL: &str = r#"
         CHECK (id <> ''),
         CHECK (workflow_id <> ''),
         CHECK (workflow_version_id <> ''),
-        CHECK (status IN ('queued', 'running', 'paused', 'completed', 'failed', 'cancelled')),
+        CHECK (status IN ('queued', 'running', 'paused', 'cancelling', 'completed', 'failed', 'cancelled')),
         CHECK (terminal_status IS NULL OR terminal_status IN ('success', 'failure', 'cancelled', 'needs_human')),
         CHECK (started_at <> ''),
         CHECK (updated_at <> ''),
@@ -3679,6 +3870,9 @@ mod tests {
             "repositories",
             "agent_sessions",
             "agent_runs",
+            "agent_run_drive_leases",
+            "agent_run_start_requests",
+            "agent_continuation_requests",
             "agent_messages",
             "agent_definition_versions",
             "agent_definitions",
@@ -3691,6 +3885,8 @@ mod tests {
             "workflow_gate_decisions",
             "workflow_loop_attempts",
             "workflow_events",
+            "workflow_command_leases",
+            "workflow_driver_leases",
             "delivery_projects",
             "delivery_milestones",
             "delivery_requirements",
@@ -3739,6 +3935,40 @@ mod tests {
             usage_columns.contains(&"billable_input_tokens".to_string()),
             "agent_usage should include `billable_input_tokens`"
         );
+
+        let command_lease_columns = table_columns(&connection, "workflow_command_leases");
+        for column in [
+            "workflow_run_id",
+            "node_run_id",
+            "owner_instance_id",
+            "owner_process_id",
+            "owner_process_birth_identity",
+            "lease_token",
+            "command_process_id",
+            "command_process_birth_identity",
+            "heartbeat_at",
+        ] {
+            assert!(
+                command_lease_columns.contains(&column.to_string()),
+                "workflow_command_leases should include `{column}`"
+            );
+        }
+
+        let driver_lease_columns = table_columns(&connection, "workflow_driver_leases");
+        for column in [
+            "workflow_run_id",
+            "owner_instance_id",
+            "owner_process_id",
+            "owner_process_birth_identity",
+            "lease_token",
+            "acquired_at",
+            "heartbeat_at",
+        ] {
+            assert!(
+                driver_lease_columns.contains(&column.to_string()),
+                "workflow_driver_leases should include `{column}`"
+            );
+        }
     }
 
     #[test]

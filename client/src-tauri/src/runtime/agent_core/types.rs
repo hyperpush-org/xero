@@ -20,6 +20,7 @@ pub struct ContinueOwnedAgentRunRequest {
     pub repo_root: PathBuf,
     pub project_id: String,
     pub run_id: String,
+    pub continuation_request_id: String,
     pub prompt: String,
     pub attachments: Vec<MessageAttachment>,
     pub linked_paths: Vec<RuntimeLinkedPathDto>,
@@ -61,7 +62,8 @@ pub struct MessageAttachment {
     pub height: Option<i64>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct AgentAutoCompactPreference {
     pub enabled: bool,
     pub threshold_percent: Option<u8>,
@@ -2020,6 +2022,19 @@ impl ProviderAdapter for FakeProviderAdapter {
             });
         }
 
+        if instruction_messages_contain(&request.messages, "Xero custom output contract gate:") {
+            let message =
+                "## Summary\n\nXero owned-agent runtime accepted the task and completed the run."
+                    .to_string();
+            emit(ProviderStreamEvent::MessageDelta(message.clone()))?;
+            return Ok(ProviderTurnOutcome::Complete {
+                message,
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            });
+        }
+
         let has_tool_message = request
             .messages
             .iter()
@@ -2247,6 +2262,17 @@ fn latest_instruction_message_contains(messages: &[ProviderMessage], needle: &st
             | ProviderMessage::Tool { .. } => None,
         })
         .unwrap_or(false)
+}
+
+fn instruction_messages_contain(messages: &[ProviderMessage], needle: &str) -> bool {
+    messages.iter().any(|message| match message {
+        ProviderMessage::Developer { content } | ProviderMessage::User { content, .. } => {
+            content.contains(needle)
+        }
+        ProviderMessage::Assistant { .. }
+        | ProviderMessage::AssistantContext { .. }
+        | ProviderMessage::Tool { .. } => false,
+    })
 }
 
 fn fake_memory_candidate(

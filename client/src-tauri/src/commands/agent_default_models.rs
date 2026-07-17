@@ -94,6 +94,8 @@ pub fn set_agent_default_model<R: Runtime>(
                     action: AutonomousAgentDefinitionAction::Update,
                     definition_id: Some(definition_id),
                     source_definition_id: None,
+                    expected_current_version: None,
+                    source_version: None,
                     include_archived: false,
                     definition: Some(snapshot),
                 },

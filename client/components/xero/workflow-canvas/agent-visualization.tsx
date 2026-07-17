@@ -1462,7 +1462,10 @@ function AgentVisualizationInner({
   const editingInitial = useMemo(() => {
     if (!editing) return null
     const result = buildAgentGraphForEditing(mode ?? 'create', initialDetail ?? null)
-    return { detail: result.detail }
+    return {
+      detail: result.detail,
+      sourceSnapshot: result.sourceSnapshot,
+    }
   }, [editing, mode, initialDetail])
   const editingSeedBaselineTargetRef = useRef<WorkflowAgentDetailDto | null>(
     editingInitial?.detail ?? null,
@@ -3278,13 +3281,13 @@ function AgentVisualizationInner({
       if (!current) return current
       const existingPhases = current.workflowStructure?.phases ?? []
       const id = uniqueEntityId(
-        `phase_${existingPhases.length + 1}`,
+        `stage_${existingPhases.length + 1}`,
         existingPhases.map((phase) => ({ id: phase.id })),
       )
       const index = existingPhases.length
       const nextPhase = {
         id,
-        title: `Phase ${index + 1}`,
+        title: `Stage ${index + 1}`,
         description: '',
         allowedTools: [],
         requiredChecks: [],
@@ -3686,6 +3689,7 @@ function AgentVisualizationInner({
         {
           initialDefinitionId,
           attachedSkills: editingDetail?.attachedSkills ?? [],
+          sourceSnapshot: editingInitial?.sourceSnapshot,
         },
       )
       const submitMode = mode ?? 'create'
@@ -3812,6 +3816,7 @@ function AgentVisualizationInner({
         {
           initialDefinitionId,
           attachedSkills,
+          sourceSnapshot: editing ? editingInitial?.sourceSnapshot : null,
         },
       )
       return { snapshot, definitionId }
@@ -4900,8 +4905,8 @@ function makeEditingNode(
         type: 'stage',
         data: {
           phase: {
-            id: `phase_${counter}`,
-            title: `Phase ${counter}`,
+            id: `stage_${counter}`,
+            title: `Stage ${counter}`,
             description: '',
             allowedTools: [],
             requiredChecks: [],

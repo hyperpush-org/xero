@@ -139,6 +139,7 @@ describe('AgentsSection', () => {
       expect(archive).toHaveBeenCalledWith({
         projectId: 'project-1',
         definitionId: 'project_research',
+        expectedCurrentVersion: 3,
       })
     })
     await waitFor(() => {

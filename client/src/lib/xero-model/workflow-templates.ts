@@ -271,6 +271,7 @@ function instantiateContinuousDeliveryTemplate(
         nodeId: 'work',
         status: 'failed',
       }),
+      edge('work_failure_fallback', 'work', 'failed', 'failure', 'failed', 90),
       edge('check_to_router', 'check', 'verification_router', 'success', 'route', 10),
       edge(
         'verification_passed',
@@ -300,6 +301,7 @@ function instantiateContinuousDeliveryTemplate(
           values: ['gaps_found', 'needs_changes'],
         },
       ),
+      edge('verification_fallback', 'verification_router', 'human_verify', 'conditional', 'review', 90),
       loopEdge('gap_back_to_work', 'gap_closure', 'work', 'gap closure', 'gap_closure', 2, 'human_verify'),
       edge(
         'debug_to_work',
@@ -325,6 +327,7 @@ function instantiateContinuousDeliveryTemplate(
           onExhausted: 'human_verify',
         },
       ),
+      edge('debug_fallback', 'debug', 'human_verify', 'conditional', 'review', 80),
       edge('review_to_router', 'review', 'review_router', 'success', 'route', 10),
       edge(
         'review_clear',
@@ -356,6 +359,7 @@ function instantiateContinuousDeliveryTemplate(
           value: 0,
         },
       ),
+      edge('review_fallback', 'review_router', 'human_verify', 'conditional', 'review', 90),
       loopEdge('fix_back_to_review', 'fix', 'review', 'review fix', 'review_fix', 3, 'human_verify'),
       edge('summary_to_success', 'summary', 'success', 'success', 'complete', 10),
       edge('human_to_needs_human', 'human_verify', 'needs_human', 'manual_override', 'escalate', 10),
@@ -620,6 +624,7 @@ function instantiateGsdAutoTemplate(
         path: '$.hasItem',
         value: false,
       }),
+      edge('phase_route_fallback', 'phase_router', 'needs_human', 'conditional', 'review', 90),
       edge('discuss_to_plan', 'smart_discuss', 'phase_plan', 'success', 'plan', 10),
       edge('plan_to_execute', 'phase_plan', 'phase_execute', 'success', 'execute', 10),
       edge('execute_failed_to_debug', 'phase_execute', 'debug_phase', 'recovery', 'debug', 5, {
@@ -627,6 +632,7 @@ function instantiateGsdAutoTemplate(
         nodeId: 'phase_execute',
         status: 'failed',
       }),
+      edge('execute_failure_fallback', 'phase_execute', 'needs_human', 'failure', 'blocked', 90),
       edge('execute_to_command', 'phase_execute', 'verify_command', 'success', 'check', 10),
       edge('command_to_verify', 'verify_command', 'phase_verify', 'success', 'review', 10),
       edge('command_failed', 'verify_command', 'debug_phase', 'failure', 'debug check', 10),
@@ -649,6 +655,7 @@ function instantiateGsdAutoTemplate(
         path: '$.status',
         values: ['human_needed', 'failed'],
       }),
+      edge('verify_route_fallback', 'verification_router', 'human_verify', 'conditional', 'review', 90),
       loopEdge('gap_closure_to_execute', 'gap_closure', 'phase_execute', 'close gaps', 'gap_closure', 2, 'human_verify'),
       edge('debug_to_execute', 'debug_phase', 'phase_execute', 'loop', 'retry execute', 30, {
         kind: 'artifact_field_equals',
@@ -671,6 +678,7 @@ function instantiateGsdAutoTemplate(
         path: '$.recommended_route',
         values: ['ask_human', 'fail'],
       }),
+      edge('debug_route_fallback', 'debug_phase', 'human_verify', 'conditional', 'review', 80),
       edge('debug_to_human', 'debug_phase', 'human_verify', 'failure', 'human', 90),
       edge('review_to_router', 'phase_review', 'review_router', 'success', 'route', 10),
       edge('review_clear', 'review_router', 'write_phase_context', 'conditional', 'clear', 10, {
@@ -687,6 +695,7 @@ function instantiateGsdAutoTemplate(
         operator: 'gt',
         value: 0,
       }),
+      edge('review_route_fallback', 'review_router', 'human_verify', 'conditional', 'review', 90),
       loopEdge('fix_back_to_review', 'phase_fix', 'phase_review', 'review fix', 'review_fix', 3, 'human_verify'),
       edge('context_to_plan_record', 'write_phase_context', 'write_phase_plan', 'success', 'record plan', 10),
       edge('plan_record_to_summary_record', 'write_phase_plan', 'write_phase_summary', 'success', 'record summary', 10),
@@ -707,6 +716,7 @@ function instantiateGsdAutoTemplate(
         checkpointNodeId: 'human_verify',
         decision: 'stop',
       }),
+      edge('human_verify_fallback', 'human_verify', 'needs_human', 'manual_override', 'review', 100),
       edge('phase_complete_to_query', 'mark_phase_complete', 'query_phases', 'loop', 'next phase', 10, { kind: 'always' }, {
         loopKey: 'delivery_phase_iteration',
         maxAttempts: 100,
@@ -733,6 +743,7 @@ function instantiateGsdAutoTemplate(
         path: '$.status',
         values: ['gaps_found', 'tech_debt', 'human_needed', 'failed'],
       }),
+      edge('audit_route_fallback', 'audit_router', 'human_audit', 'conditional', 'review', 90),
       edge('requirement_to_complete', 'complete_requirement', 'complete_milestone', 'success', 'complete milestone', 10),
       edge('complete_to_write_archive', 'complete_milestone', 'write_milestone_archive', 'success', 'record archive', 10),
       edge('write_archive_to_archive', 'write_milestone_archive', 'archive_milestone', 'success', 'archive', 10),
@@ -757,6 +768,7 @@ function instantiateGsdAutoTemplate(
           },
         ],
       }),
+      edge('human_audit_fallback', 'human_audit', 'needs_human', 'manual_override', 'review', 90),
       edge('next_milestone_finish', 'next_milestone_offer', 'success', 'manual_override', 'finish', 10, {
         kind: 'human_decision_is',
         checkpointNodeId: 'next_milestone_offer',
@@ -781,6 +793,7 @@ function instantiateGsdAutoTemplate(
         checkpointNodeId: 'next_milestone_offer',
         decision: 'pause',
       }),
+      edge('next_milestone_fallback', 'next_milestone_offer', 'needs_human', 'manual_override', 'review', 90),
     ],
   })
 }
@@ -836,6 +849,7 @@ function instantiateReleaseTrainTemplate(
         path: '$.hasItem',
         value: false,
       }),
+      edge('candidate_route_fallback', 'candidate_route', 'release_human', 'conditional', 'review', 90),
       edge('check_to_review', 'release_check', 'release_review', 'success', 'review', 10),
       edge('review_to_archive', 'release_review', 'archive_evidence', 'success', 'record', 10),
       loopEdge('archive_to_query', 'archive_evidence', 'query_candidates', 'next candidate', 'release_candidate_iteration', 50, 'release_human'),
@@ -894,6 +908,7 @@ function instantiateBugTriageTemplate(
         path: '$.hasItem',
         value: false,
       }),
+      edge('bug_route_fallback', 'bug_route', 'bug_human', 'conditional', 'review', 90),
       edge('triage_to_fix', 'triage', 'fix_bug', 'success', 'fix', 10),
       edge('fix_to_check', 'fix_bug', 'bug_check', 'success', 'check', 10),
       edge('check_to_close', 'bug_check', 'close_bug', 'success', 'close', 10),

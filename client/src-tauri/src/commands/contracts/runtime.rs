@@ -1194,6 +1194,7 @@ pub struct UpdateRuntimeRunControlsRequestDto {
     pub project_id: String,
     pub agent_session_id: String,
     pub run_id: String,
+    pub continuation_request_id: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub controls: Option<RuntimeRunControlInputDto>,
     #[serde(default, skip_serializing_if = "Option::is_none")]

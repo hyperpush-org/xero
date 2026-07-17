@@ -33,7 +33,8 @@ use xero_agent_core::ApprovalDecisionRequest;
 use super::runtime_support::{
     agent_provider_config_identity, emit_owned_runtime_progress,
     ensure_owned_runtime_provider_turn_capabilities, generate_runtime_run_id,
-    load_persisted_runtime_run, resolve_owned_agent_provider_config, resolve_project_root,
+    load_persisted_runtime_run, resolve_owned_agent_provider_config,
+    resolve_persisted_owned_agent_provider_config, resolve_project_root,
     staged_attachment_dto_to_message_attachment,
 };
 
@@ -111,6 +112,7 @@ pub fn send_agent_message<R: Runtime + 'static>(
     request: SendAgentMessageRequestDto,
 ) -> CommandResult<AgentRunDto> {
     validate_non_empty(&request.run_id, "runId")?;
+    validate_non_empty(&request.continuation_request_id, "continuationRequestId")?;
     validate_non_empty(&request.prompt, "prompt")?;
     let LocatedAgentRun {
         repo_root,
@@ -139,6 +141,7 @@ pub fn send_agent_message<R: Runtime + 'static>(
         repo_root,
         project_id: project_id.clone(),
         run_id: request.run_id,
+        continuation_request_id: request.continuation_request_id,
         prompt: request.prompt,
         attachments: request
             .attachments
@@ -220,6 +223,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
     request: ResumeAgentRunRequestDto,
 ) -> CommandResult<AgentRunDto> {
     validate_non_empty(&request.run_id, "runId")?;
+    validate_non_empty(&request.continuation_request_id, "continuationRequestId")?;
     validate_non_empty(&request.response, "response")?;
     if let Some(action_id) = request.action_id.as_deref() {
         validate_non_empty(action_id, "actionId")?;
@@ -244,6 +248,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: resume_run_id.clone(),
+        continuation_request_id: request.continuation_request_id,
         prompt: request.response,
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -262,7 +267,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
     } else {
         DesktopRunDriveMode::Background
     };
-    let prepared = runtime.continue_run(continuation, drive_mode)?;
+    let mut prepared = runtime.continue_run(continuation, drive_mode)?;
     if resume_action_id.is_some() && prepared.drive_required {
         let progress_result = emit_runtime_action_resume_progress(
             &app,
@@ -274,6 +279,7 @@ pub fn resume_agent_run<R: Runtime + 'static>(
         let spawn_result = runtime.spawn_owned_agent_continuation(
             prepared.snapshot.run.agent_session_id.clone(),
             prepared.drive_request.clone(),
+            prepared.drive_lease.take(),
         );
         progress_result?;
         spawn_result?;
@@ -317,7 +323,7 @@ fn emit_runtime_action_resume_progress<R: Runtime>(
     Ok(())
 }
 
-fn tool_runtime_for_provider<R: Runtime>(
+pub(crate) fn tool_runtime_for_provider<R: Runtime>(
     app: &AppHandle<R>,
     state: &DesktopState,
     project_id: &str,
@@ -349,6 +355,190 @@ fn provider_profile_id_for_controls(
         .filter(|profile_id| !profile_id.is_empty())
         .unwrap_or(provider_id)
         .to_string()
+}
+
+pub(crate) fn recover_prepared_agent_runs_for_project<R: Runtime + 'static>(
+    app: &AppHandle<R>,
+    state: &DesktopState,
+    repo_root: &Path,
+    project_id: &str,
+) -> CommandResult<usize> {
+    let runtime = DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
+    let mut first_error: Option<CommandError> = None;
+
+    // A crash can land after the Ready start marker but before the initial continuation marker.
+    // Bind the already-persisted user turn before scanning Prepared requests.
+    for start in project_store::list_ready_agent_run_starts(repo_root, project_id)? {
+        let existing = project_store::list_agent_continuation_requests_for_run(
+            repo_root,
+            project_id,
+            &start.run_id,
+        )?;
+        if !existing.is_empty() {
+            continue;
+        }
+        let recovered = match crate::runtime::decode_owned_agent_start_recovery_payload(&start) {
+            Ok(Some(recovered)) => recovered,
+            Ok(None) => continue,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        let snapshot = project_store::load_agent_run(repo_root, project_id, &start.run_id)?;
+        let provider_config = match resolve_persisted_owned_agent_provider_config(
+            app,
+            state,
+            &snapshot.run.provider_id,
+            &snapshot.run.model_id,
+            &recovered.runtime_controls,
+        ) {
+            Ok(config) => config,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        let (resolved_provider_id, resolved_model_id) =
+            agent_provider_config_identity(&provider_config);
+        if resolved_provider_id != snapshot.run.provider_id
+            || resolved_model_id != snapshot.run.model_id
+        {
+            first_error.get_or_insert_with(|| {
+                CommandError::user_fixable(
+                    "agent_recovery_provider_mismatch",
+                    format!(
+                        "Xero cannot recover run `{}` because `{resolved_provider_id}/{resolved_model_id}` does not match its persisted provider `{}/{}`.",
+                        snapshot.run.run_id, snapshot.run.provider_id, snapshot.run.model_id
+                    ),
+                )
+            });
+            continue;
+        }
+        let tool_runtime = match tool_runtime_for_provider(app, state, project_id, &provider_config)
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        let owned = OwnedAgentRunRequest {
+            repo_root: repo_root.to_path_buf(),
+            project_id: recovered.project_id,
+            agent_session_id: recovered.agent_session_id,
+            run_id: recovered.run_id,
+            prompt: recovered.prompt,
+            attachments: recovered.attachments,
+            linked_paths: recovered.linked_paths,
+            controls: recovered.controls,
+            tool_runtime,
+            provider_config,
+            provider_preflight: None,
+        };
+        let continuation = crate::runtime::initial_owned_agent_continuation_request(&owned);
+        if let Err(error) =
+            crate::runtime::register_existing_initial_agent_continuation(&continuation, &snapshot)
+        {
+            first_error.get_or_insert(error);
+        }
+    }
+
+    let mut recovered_count = 0;
+    for durable in project_store::list_prepared_agent_continuation_requests(repo_root, project_id)?
+    {
+        let snapshot = match project_store::load_agent_run(repo_root, project_id, &durable.run_id) {
+            Ok(snapshot) if snapshot.run.status == project_store::AgentRunStatus::Running => {
+                snapshot
+            }
+            Ok(_) => continue,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        let start_ready =
+            project_store::load_agent_run_start_request(repo_root, project_id, &durable.run_id)?
+                .is_some_and(|start| {
+                    start.state == project_store::AgentRunStartRequestState::Ready
+                });
+        if !start_ready {
+            continue;
+        }
+        let recovered =
+            match crate::runtime::decode_owned_agent_continuation_recovery_payload(&durable) {
+                Ok(recovered) => recovered,
+                Err(error) => {
+                    first_error.get_or_insert(error);
+                    continue;
+                }
+            };
+        let provider_config = match resolve_persisted_owned_agent_provider_config(
+            app,
+            state,
+            &snapshot.run.provider_id,
+            &snapshot.run.model_id,
+            &recovered.runtime_controls,
+        ) {
+            Ok(config) => config,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        let (resolved_provider_id, resolved_model_id) =
+            agent_provider_config_identity(&provider_config);
+        if resolved_provider_id != snapshot.run.provider_id
+            || resolved_model_id != snapshot.run.model_id
+        {
+            first_error.get_or_insert_with(|| {
+                CommandError::user_fixable(
+                    "agent_recovery_provider_mismatch",
+                    format!(
+                        "Xero cannot recover run `{}` because `{resolved_provider_id}/{resolved_model_id}` does not match its persisted provider `{}/{}`.",
+                        snapshot.run.run_id, snapshot.run.provider_id, snapshot.run.model_id
+                    ),
+                )
+            });
+            continue;
+        }
+        let tool_runtime = match tool_runtime_for_provider(app, state, project_id, &provider_config)
+        {
+            Ok(runtime) => runtime,
+            Err(error) => {
+                first_error.get_or_insert(error);
+                continue;
+            }
+        };
+        let continuation = ContinueOwnedAgentRunRequest {
+            repo_root: repo_root.to_path_buf(),
+            project_id: recovered.project_id,
+            run_id: recovered.run_id,
+            continuation_request_id: durable.request_id.clone(),
+            prompt: recovered.prompt,
+            attachments: recovered.attachments,
+            linked_paths: recovered.linked_paths,
+            controls: recovered.controls,
+            tool_runtime,
+            provider_config,
+            provider_preflight: None,
+            answer_pending_actions: recovered.answer_pending_actions,
+            answer_pending_action_id: recovered.answer_pending_action_id,
+            auto_compact: recovered.auto_compact,
+            internal_resume: recovered.internal_resume,
+        };
+        match runtime.recover_prepared_continuation(continuation) {
+            Ok(true) => recovered_count += 1,
+            Ok(false) => {}
+            Err(error) => {
+                first_error.get_or_insert(error);
+            }
+        }
+    }
+    if let Some(error) = first_error {
+        return Err(error);
+    }
+    Ok(recovered_count)
 }
 
 #[tauri::command]

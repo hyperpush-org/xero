@@ -1,6 +1,12 @@
 import { z } from 'zod'
 import { isoTimestampSchema, nonEmptyOptionalTextSchema, normalizeOptionalText, normalizeText } from '@xero/ui/model/shared'
-import { getRuntimeAgentLabel, runtimeAgentIdSchema, runtimeRunControlInputSchema, runtimeRunDiagnosticSchema } from '@xero/ui/model/runtime'
+import {
+  getRuntimeAgentLabel,
+  runtimeAgentIdSchema,
+  runtimeRunControlInputSchema,
+  runtimeRunDiagnosticSchema,
+  stagedAgentAttachmentSchema,
+} from '@xero/ui/model/runtime'
 import { runtimeProtocolEventKindSchema } from './runtime-protocol'
 
 export const agentRunStatusSchema = z.enum([
@@ -388,8 +394,10 @@ export const startAgentTaskRequestSchema = z
   .object({
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
+    runId: z.string().trim().min(1),
     prompt: z.string().trim().min(1),
     controls: runtimeRunControlInputSchema.nullable().optional(),
+    attachments: z.array(stagedAgentAttachmentSchema).default([]),
   })
   .strict()
 
@@ -404,7 +412,9 @@ export const agentAutoCompactPreferenceSchema = z
 export const sendAgentMessageRequestSchema = z
   .object({
     runId: z.string().trim().min(1),
+    continuationRequestId: z.string().trim().min(1).max(200),
     prompt: z.string().trim().min(1),
+    attachments: z.array(stagedAgentAttachmentSchema).default([]),
     autoCompact: agentAutoCompactPreferenceSchema.nullable().optional(),
   })
   .strict()
@@ -426,6 +436,7 @@ export const rejectAgentActionRequestSchema = z
 export const resumeAgentRunRequestSchema = z
   .object({
     runId: z.string().trim().min(1),
+    continuationRequestId: z.string().trim().min(1).max(200),
     response: z.string().trim().min(1),
     actionId: z.string().trim().min(1).nullable().optional(),
     autoCompact: agentAutoCompactPreferenceSchema.nullable().optional(),

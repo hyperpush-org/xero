@@ -181,6 +181,18 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                                 );
                             }
 
+                            if let Err(error) = commands::update_runtime_run_controls::recover_pending_runtime_prompts_for_project(
+                                app_handle.clone(),
+                                desktop_state.inner().clone(),
+                                root.to_path_buf(),
+                                &record.project_id,
+                            ) {
+                                eprintln!(
+                                    "[runtime] queued-prompt recovery skipped for {}: {} - {}",
+                                    record.root_path, error.code, error.message
+                                );
+                            }
+
                             let updated = runtime::pricing::backfill_agent_usage_costs(root);
                             if updated > 0 {
                                 eprintln!(
@@ -261,6 +273,7 @@ pub fn configure_builder_with_state<R: tauri::Runtime + 'static>(
                 commands::dictation::shutdown_on_close(window.app_handle());
                 commands::emulator::shutdown::shutdown_on_close(window.app_handle());
                 commands::remote_bridge::shutdown_on_close(window.app_handle());
+                runtime::workflow_orchestrator::reconcile::shutdown_running_workflow_commands();
                 runtime::shutdown_desktop_control_sidecar();
             }
         })
@@ -618,6 +631,7 @@ pub fn run() {
                 tauri::RunEvent::Exit | tauri::RunEvent::ExitRequested { .. }
             ) {
                 commands::adrenaline_mode::shutdown_on_close(app);
+                runtime::workflow_orchestrator::reconcile::shutdown_running_workflow_commands();
             }
 
             #[cfg(target_os = "macos")]

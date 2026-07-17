@@ -85,6 +85,7 @@ export const workflowRunStatusSchema = z.enum([
   'queued',
   'running',
   'paused',
+  'cancelling',
   'completed',
   'failed',
   'cancelled',
@@ -828,6 +829,9 @@ export function validateWorkflowDefinition(input: unknown): WorkflowValidationRe
 
 function validateWorkflowDefinitionGraph(
   definition: WorkflowDefinitionDto,
+  graph: Pick<WorkflowDefinitionDto, 'startNodeId' | 'nodes' | 'edges'> = definition,
+  pathPrefix = '',
+  subgraphContext?: { id: string },
 ): WorkflowValidationDiagnosticDto[] {
   const diagnostics: WorkflowValidationDiagnosticDto[] = []
   const nodeIds = new Set<string>()
@@ -835,9 +839,10 @@ function validateWorkflowDefinitionGraph(
   const producedArtifactRefs = new Set<string>()
   const artifactContractByRef = new Map<string, WorkflowArtifactContractDto>()
 
-  definition.nodes.forEach((node, index) => {
+  graph.nodes.forEach((node, index) => {
+    const nodePath = `${pathPrefix}nodes.${index}`
     if (nodeIds.has(node.id)) {
-      diagnostics.push(error('duplicate_node_id', `nodes.${index}.id`, `Node id \`${node.id}\` is duplicated.`))
+      diagnostics.push(error('duplicate_node_id', `${nodePath}.id`, `Node id \`${node.id}\` is duplicated.`))
     }
     nodeIds.add(node.id)
     const producedArtifactType = producedArtifactTypeForNode(node)
@@ -854,99 +859,148 @@ function validateWorkflowDefinitionGraph(
       if (!contract && node.outputContract.extraction !== 'generic_text') {
         diagnostics.push(error(
           'artifact_contract_missing',
-          `nodes.${index}.outputContract`,
+          `${nodePath}.outputContract`,
           `JSON artifact \`${node.outputContract.artifactType}\` v${node.outputContract.schemaVersion} must declare an artifact contract.`,
         ))
       }
       if (contract && artifactRef) artifactContractByRef.set(artifactRef, contract)
       if (
         node.outputContract.renderTextPath &&
+        !node.outputContract.renderTextPath.trim().startsWith('$')
+      ) {
+        diagnostics.push(error(
+          'render_text_path_invalid',
+          `${nodePath}.outputContract.renderTextPath`,
+          'Render paths must use a JSON path that starts with `$`.',
+        ))
+      } else if (
+        node.outputContract.renderTextPath &&
         contract?.jsonSchema &&
         !jsonSchemaAllowsPath(contract.jsonSchema, node.outputContract.renderTextPath)
       ) {
         diagnostics.push(error(
           'render_text_path_not_in_schema',
-          `nodes.${index}.outputContract.renderTextPath`,
+          `${nodePath}.outputContract.renderTextPath`,
           `Render path \`${node.outputContract.renderTextPath}\` is not allowed by the \`${node.outputContract.artifactType}\` artifact schema.`,
         ))
       }
+    } else if (artifactRef && producedArtifactType) {
+      const contract = definition.artifactContracts.find(
+        (candidate) => candidate.artifactType === producedArtifactType && candidate.schemaVersion === 1,
+      )
+      if (contract) artifactContractByRef.set(artifactRef, contract)
     }
   })
 
   const subgraphIds = new Set<string>()
   definition.subgraphs.forEach((subgraph, index) => {
-    if (subgraphIds.has(subgraph.id)) {
+    if (!subgraphContext && subgraphIds.has(subgraph.id)) {
       diagnostics.push(error('duplicate_subgraph_id', `subgraphs.${index}.id`, `Subgraph id \`${subgraph.id}\` is duplicated.`))
     }
     subgraphIds.add(subgraph.id)
-    const subgraphNodeIds = new Set(subgraph.nodes.map((node) => node.id))
+    if (subgraphContext) return
     if (subgraph.nodes.length === 0) {
       diagnostics.push(error('subgraph_nodes_empty', `subgraphs.${index}.nodes`, `Subgraph \`${subgraph.id}\` must contain at least one node.`))
-    } else if (!subgraphNodeIds.has(subgraph.startNodeId)) {
-      diagnostics.push(error('subgraph_start_node_missing', `subgraphs.${index}.startNodeId`, `Subgraph \`${subgraph.id}\` references a missing start node.`))
+      return
     }
-    subgraph.edges.forEach((edge, edgeIndex) => {
-      if (!subgraphNodeIds.has(edge.fromNodeId)) {
-        diagnostics.push(error('subgraph_edge_source_missing', `subgraphs.${index}.edges.${edgeIndex}.fromNodeId`, `Subgraph edge \`${edge.id}\` references a missing source node.`))
-      }
-      if (!subgraphNodeIds.has(edge.toNodeId)) {
-        diagnostics.push(error('subgraph_edge_target_missing', `subgraphs.${index}.edges.${edgeIndex}.toNodeId`, `Subgraph edge \`${edge.id}\` references a missing target node.`))
-      }
-      validateConditionShape(edge.condition, `subgraphs.${index}.edges.${edgeIndex}.condition`, diagnostics)
-    })
+    diagnostics.push(...validateWorkflowDefinitionGraph(
+      definition,
+      subgraph,
+      `subgraphs.${index}.`,
+      { id: subgraph.id },
+    ))
   })
 
-  if (!nodeIds.has(definition.startNodeId)) {
-    diagnostics.push(error('start_node_missing', 'startNodeId', 'The start node must exist.'))
+  if (!nodeIds.has(graph.startNodeId)) {
+    diagnostics.push(subgraphContext
+      ? error('subgraph_start_node_missing', `${pathPrefix}startNodeId`, `Subgraph \`${subgraphContext.id}\` references a missing start node.`)
+      : error('start_node_missing', 'startNodeId', 'The start node must exist.'))
   }
 
   const outgoingDefaults = new Map<string, string>()
   const outgoingEdges = new Map<string, WorkflowEdgeDto[]>()
 
-  definition.edges.forEach((edge, index) => {
+  const loopKeys = new Set(graph.edges.flatMap((edge) => edge.loopPolicy ? [edge.loopPolicy.loopKey] : []))
+  graph.edges.forEach((edge, index) => {
+    const edgePath = `${pathPrefix}edges.${index}`
     if (edgeIds.has(edge.id)) {
-      diagnostics.push(error('duplicate_edge_id', `edges.${index}.id`, `Edge id \`${edge.id}\` is duplicated.`))
+      diagnostics.push(error('duplicate_edge_id', `${edgePath}.id`, `Edge id \`${edge.id}\` is duplicated.`))
     }
     edgeIds.add(edge.id)
     if (!nodeIds.has(edge.fromNodeId)) {
-      diagnostics.push(error('edge_source_missing', `edges.${index}.fromNodeId`, `Edge \`${edge.id}\` references a missing source node.`))
+      diagnostics.push(error(subgraphContext ? 'subgraph_edge_source_missing' : 'edge_source_missing', `${edgePath}.fromNodeId`, `Edge \`${edge.id}\` references a missing source node.`))
     }
     if (!nodeIds.has(edge.toNodeId)) {
-      diagnostics.push(error('edge_target_missing', `edges.${index}.toNodeId`, `Edge \`${edge.id}\` references a missing target node.`))
+      diagnostics.push(error(subgraphContext ? 'subgraph_edge_target_missing' : 'edge_target_missing', `${edgePath}.toNodeId`, `Edge \`${edge.id}\` references a missing target node.`))
     }
     if (edge.condition.kind === 'always') {
       const buckets = defaultEdgeBuckets(edge.type)
-      const conflicts = buckets.some((bucket) => {
-        if (bucket === 'all') {
-          return [...outgoingDefaults.keys()].some((key) => key.startsWith(`${edge.fromNodeId}:`))
-        }
-        return outgoingDefaults.has(`${edge.fromNodeId}:all`) || outgoingDefaults.has(`${edge.fromNodeId}:${bucket}`)
-      })
+      const conflicts = buckets.some((bucket) =>
+        outgoingDefaults.has(`${edge.fromNodeId}:${bucket}`),
+      )
       if (conflicts) {
-        diagnostics.push(error('duplicate_default_edge', `edges.${index}.condition`, `Node \`${edge.fromNodeId}\` has more than one default else edge.`))
+        diagnostics.push(error('duplicate_default_edge', `${edgePath}.condition`, `Node \`${edge.fromNodeId}\` has more than one default else edge.`))
       } else {
         buckets.forEach((bucket) => outgoingDefaults.set(`${edge.fromNodeId}:${bucket}`, edge.id))
       }
     }
     if (edge.type === 'loop' || edge.loopPolicy) {
       if (!edge.loopPolicy) {
-        diagnostics.push(error('loop_policy_missing', `edges.${index}.loopPolicy`, `Loop edge \`${edge.id}\` must declare a loop policy.`))
+        diagnostics.push(error('loop_policy_missing', `${edgePath}.loopPolicy`, `Loop edge \`${edge.id}\` must declare a loop policy.`))
       } else {
         if (edge.loopPolicy.maxAttempts <= 0) {
-          diagnostics.push(error('loop_max_attempts_invalid', `edges.${index}.loopPolicy.maxAttempts`, `Loop edge \`${edge.id}\` must allow at least one attempt.`))
+          diagnostics.push(error('loop_max_attempts_invalid', `${edgePath}.loopPolicy.maxAttempts`, `Loop edge \`${edge.id}\` must allow at least one attempt.`))
         }
         if (!nodeIds.has(edge.loopPolicy.onExhausted)) {
-          diagnostics.push(error('loop_exhaustion_target_missing', `edges.${index}.loopPolicy.onExhausted`, `Loop edge \`${edge.id}\` must route exhaustion to an existing node.`))
+          diagnostics.push(error('loop_exhaustion_target_missing', `${edgePath}.loopPolicy.onExhausted`, `Loop edge \`${edge.id}\` must route exhaustion to an existing node.`))
         }
+        edge.loopPolicy.selectedArtifactRefs.forEach((artifactRef, artifactIndex) => {
+          if (!producedArtifactRefs.has(artifactRef)) {
+            diagnostics.push(error('loop_artifact_ref_missing', `${edgePath}.loopPolicy.selectedArtifactRefs.${artifactIndex}`, `Loop policy references missing artifact \`${artifactRef}\`.`))
+          }
+        })
       }
     }
-    validateConditionShape(edge.condition, `edges.${index}.condition`, diagnostics)
+    validateConditionSemantics(edge.condition, `${edgePath}.condition`, nodeIds, producedArtifactRefs, artifactContractByRef, loopKeys, diagnostics)
     const entries = outgoingEdges.get(edge.fromNodeId) ?? []
     entries.push(edge)
     outgoingEdges.set(edge.fromNodeId, entries)
   })
 
-  definition.nodes.forEach((node, index) => {
+  outgoingEdges.forEach((nodeEdges, nodeId) => {
+    const conditionalBuckets = new Set<string>()
+    nodeEdges.forEach((edge) => {
+      if (edge.condition.kind !== 'always') {
+        defaultEdgeBuckets(edge.type).forEach((bucket) => conditionalBuckets.add(bucket))
+      }
+    })
+    conditionalBuckets.forEach((bucket) => {
+      if (
+        !outgoingDefaults.has(`${nodeId}:all`) &&
+        !outgoingDefaults.has(`${nodeId}:${bucket}`)
+      ) {
+        diagnostics.push(error(
+          'conditional_route_fallback_missing',
+          `${pathPrefix}nodes.${nodeId}`,
+          `Node \`${nodeId}\` has conditional ${bucket} routes but no \`always\` fallback for that outcome. Route the fallback to a Human Checkpoint or Terminal node.`,
+        ))
+      }
+    })
+  })
+
+  graph.nodes.forEach((node, index) => {
+    const nodePath = `${pathPrefix}nodes.${index}`
+    if (
+      subgraphContext &&
+      node.type === 'terminal' &&
+      node.terminalStatus === 'needs_human'
+    ) {
+      diagnostics.push(error(
+        'subgraph_needs_human_terminal_unsupported',
+        `${nodePath}.terminalStatus`,
+        'Subgraphs cannot pause through a Needs Human Terminal. Route to a Human Checkpoint so the paused run has a resumable gate.',
+      ))
+    }
     if (
       node.type === 'agent' ||
       node.type === 'state_write' ||
@@ -954,98 +1008,148 @@ function validateWorkflowDefinitionGraph(
       node.type === 'subgraph'
     ) {
       node.inputBindings.forEach((binding, bindingIndex) => {
+        const bindingPath = `${nodePath}.inputBindings.${bindingIndex}`
+        if (binding.path && !binding.path.trim().startsWith('$')) {
+          diagnostics.push(error('input_binding_path_invalid', `${bindingPath}.path`, 'Input binding paths must use a JSON path that starts with `$`.'))
+        }
         if (binding.source === 'artifact' && !producedArtifactRefs.has(binding.artifactRef)) {
-          diagnostics.push(error('artifact_ref_missing', `nodes.${index}.inputBindings.${bindingIndex}.artifactRef`, `Artifact reference \`${binding.artifactRef}\` is not produced by any agent node.`))
+          diagnostics.push(error('artifact_ref_missing', `${bindingPath}.artifactRef`, `Artifact reference \`${binding.artifactRef}\` is not produced by any agent node.`))
         }
         if (binding.source === 'state' && !producedArtifactRefs.has(binding.stateRef)) {
-          diagnostics.push(error('state_ref_missing', `nodes.${index}.inputBindings.${bindingIndex}.stateRef`, `State reference \`${binding.stateRef}\` is not produced by any state-capable node.`))
+          diagnostics.push(error('state_ref_missing', `${bindingPath}.stateRef`, `State reference \`${binding.stateRef}\` is not produced by any state-capable node.`))
         }
       })
     }
     if (node.type === 'state_read' || node.type === 'state_query') {
-      validateStateQuery(node.query, `nodes.${index}.query`, diagnostics)
+      validateStateQuery(node.query, `${nodePath}.query`, diagnostics)
     }
     if (node.type === 'state_write' || node.type === 'state_patch') {
-      validateStateWriteOperation(node.operation, `nodes.${index}.operation`, diagnostics, true)
+      validateStateWriteOperation(node.operation, `${nodePath}.operation`, diagnostics, true)
     }
     if (node.type === 'collection_loop') {
-      validateStateQuery(node.collection, `nodes.${index}.collection`, diagnostics)
+      validateStateQuery(node.collection, `${nodePath}.collection`, diagnostics)
       if (node.maxItemCount <= 0) {
-        diagnostics.push(error('collection_loop_max_item_count_invalid', `nodes.${index}.maxItemCount`, 'Collection loops must allow at least one item.'))
+        diagnostics.push(error('collection_loop_max_item_count_invalid', `${nodePath}.maxItemCount`, 'Collection loops must allow at least one item.'))
       }
       if (node.sortKey && !node.sortKey.trim().startsWith('$')) {
-        diagnostics.push(error('collection_loop_sort_path_invalid', `nodes.${index}.sortKey`, 'Collection loop sort keys must use a JSON path that starts with `$`.'))
+        diagnostics.push(error('collection_loop_sort_path_invalid', `${nodePath}.sortKey`, 'Collection loop sort keys must use a JSON path that starts with `$`.'))
       }
     }
     if (node.type === 'subgraph' && !subgraphIds.has(node.subgraphId)) {
-      diagnostics.push(error('subgraph_ref_missing', `nodes.${index}.subgraphId`, `Subgraph node references missing subgraph \`${node.subgraphId}\`.`))
+      diagnostics.push(error('subgraph_ref_missing', `${nodePath}.subgraphId`, `Subgraph node references missing subgraph \`${node.subgraphId}\`.`))
     }
     if (node.type === 'command') {
       if (!node.command.trim()) {
-        diagnostics.push(error('command_empty', `nodes.${index}.command`, 'Command nodes must declare a command.'))
+        diagnostics.push(error('command_empty', `${nodePath}.command`, 'Command nodes must declare a command.'))
       }
       if (node.timeoutSeconds <= 0) {
-        diagnostics.push(error('command_timeout_invalid', `nodes.${index}.timeoutSeconds`, 'Command node timeout must be at least one second.'))
+        diagnostics.push(error('command_timeout_invalid', `${nodePath}.timeoutSeconds`, 'Command node timeout must be at least one second.'))
       }
       if (node.allowedCommands.length === 0) {
-        diagnostics.push(error('command_allowlist_empty', `nodes.${index}.allowedCommands`, 'Command nodes must declare an allowlist.'))
+        diagnostics.push(error('command_allowlist_empty', `${nodePath}.allowedCommands`, 'Command nodes must declare an allowlist.'))
       } else if (!node.allowedCommands.includes(node.command)) {
-        diagnostics.push(error('command_not_in_allowlist', `nodes.${index}.allowedCommands`, `Command \`${node.command}\` must appear in the command node allowlist.`))
+        diagnostics.push(error('command_not_in_allowlist', `${nodePath}.allowedCommands`, `Command \`${node.command}\` must appear in the command node allowlist.`))
       }
+      validateWorkflowCommandPolicy(node, nodePath, diagnostics)
     }
     if (node.type === 'human_checkpoint') {
       const seen = new Set<string>()
       node.decisionOptions.forEach((option, optionIndex) => {
         const trimmed = option.trim()
         if (!trimmed) {
-          diagnostics.push(error('checkpoint_decision_empty', `nodes.${index}.decisionOptions.${optionIndex}`, 'Human checkpoint decision options cannot be blank.'))
+          diagnostics.push(error('checkpoint_decision_empty', `${nodePath}.decisionOptions.${optionIndex}`, 'Human checkpoint decision options cannot be blank.'))
         } else if (seen.has(trimmed)) {
-          diagnostics.push(error('checkpoint_decision_duplicate', `nodes.${index}.decisionOptions.${optionIndex}`, `Human checkpoint decision \`${trimmed}\` is duplicated.`))
+          diagnostics.push(error('checkpoint_decision_duplicate', `${nodePath}.decisionOptions.${optionIndex}`, `Human checkpoint decision \`${trimmed}\` is duplicated.`))
         }
         seen.add(trimmed)
       })
       if (node.resumePayloadSchema !== null && node.resumePayloadSchema !== undefined && !isRecord(node.resumePayloadSchema)) {
-        diagnostics.push(error('checkpoint_payload_schema_invalid', `nodes.${index}.resumePayloadSchema`, 'Human checkpoint resume payload schemas must be JSON Schema objects.'))
+        diagnostics.push(error('checkpoint_payload_schema_invalid', `${nodePath}.resumePayloadSchema`, 'Human checkpoint resume payload schemas must be JSON Schema objects.'))
       }
       node.stateUpdates.forEach((operation, operationIndex) => {
-        validateStateWriteOperation(operation, `nodes.${index}.stateUpdates.${operationIndex}`, diagnostics, false)
+        validateStateWriteOperation(operation, `${nodePath}.stateUpdates.${operationIndex}`, diagnostics, false)
       })
     }
     if (node.type === 'merge' && node.waitPolicy === 'quorum' && !node.quorum) {
-      diagnostics.push(error('merge_quorum_missing', `nodes.${index}.quorum`, 'Quorum merge nodes must declare a quorum.'))
+      diagnostics.push(error('merge_quorum_missing', `${nodePath}.quorum`, 'Quorum merge nodes must declare a quorum.'))
+    }
+    if (node.type === 'gate' || node.type === 'state_checkpoint') {
+      node.requiredChecks.forEach((condition, checkIndex) => {
+        validateConditionSemantics(condition, `${nodePath}.requiredChecks.${checkIndex}`, nodeIds, producedArtifactRefs, artifactContractByRef, loopKeys, diagnostics)
+      })
     }
   })
 
-  definition.edges.forEach((edge, index) => {
-    collectConditionArtifactRefs(edge.condition).forEach((artifactRef) => {
-      if (!producedArtifactRefs.has(artifactRef)) {
-        diagnostics.push(error('condition_artifact_ref_missing', `edges.${index}.condition`, `Condition references missing artifact \`${artifactRef}\`.`))
-      }
-    })
-    collectConditionArtifactFieldRefs(edge.condition).forEach(({ artifactRef, path }) => {
-      const contract = artifactContractByRef.get(artifactRef)
-      if (contract?.jsonSchema && !jsonSchemaAllowsPath(contract.jsonSchema, path)) {
-        diagnostics.push(error(
-          'condition_artifact_path_not_in_schema',
-          `edges.${index}.condition`,
-          `Condition references \`${artifactRef}${path}\`, but that field is not allowed by the artifact schema.`,
-        ))
-      }
-    })
-    collectConditionNodeRefs(edge.condition).forEach((nodeId) => {
-      if (!nodeIds.has(nodeId)) {
-        diagnostics.push(error('condition_node_ref_missing', `edges.${index}.condition`, `Condition references missing node \`${nodeId}\`.`))
-      }
-    })
-    collectConditionStateRefs(edge.condition).forEach((stateRef) => {
-      if (!producedArtifactRefs.has(stateRef)) {
-        diagnostics.push(error('condition_state_ref_missing', `edges.${index}.condition`, `Condition references missing state value \`${stateRef}\`.`))
-      }
-    })
-  })
-
-  diagnostics.push(...detectUnboundedCycles(definition, outgoingEdges))
+  diagnostics.push(...detectUnboundedCycles(graph.nodes, graph.startNodeId, outgoingEdges, `${pathPrefix}edges`))
+  if (!subgraphContext) validateSubgraphInvocationCycles(definition, diagnostics)
   return diagnostics
+}
+
+const approvedGitStatusOptions = new Set([
+  '--short', '-s', '--porcelain', '--porcelain=v1', '--untracked-files=no',
+  '--untracked-files=normal', '--untracked-files=all', '-uno', '-unormal', '-uall', '-z',
+  '--null',
+])
+
+function validateWorkflowCommandPolicy(
+  node: Extract<WorkflowNodeDto, { type: 'command' }>,
+  nodePath: string,
+  diagnostics: WorkflowValidationDiagnosticDto[],
+): void {
+  if (!node.command.trim()) return
+  if (node.command !== 'git') {
+    diagnostics.push(error(
+      'workflow_command_not_allowed_by_app_policy',
+      `${nodePath}.command`,
+      `Workflow command \`${node.command}\` is not approved by Xero's command policy. Command nodes currently support only a constrained \`git status\` operation.`,
+    ))
+    return
+  }
+  if (node.args[0] !== 'status') {
+    diagnostics.push(error(
+      'workflow_command_arguments_not_allowed_by_app_policy',
+      `${nodePath}.args`,
+      'Workflow command nodes currently support only the `git status` subcommand.',
+    ))
+    return
+  }
+
+  let afterPathSeparator = false
+  for (const argument of node.args.slice(1)) {
+    if (afterPathSeparator) {
+      const pathSegments = argument.split('/')
+      const invalidPath = !argument
+        || argument.includes('\0')
+        || argument.startsWith(':')
+        || argument.startsWith('/')
+        || argument.startsWith('\\')
+        || argument.includes('\\')
+        || /^[A-Za-z]:/.test(argument)
+        || pathSegments.includes('..')
+      if (invalidPath) {
+        diagnostics.push(error(
+          'workflow_command_arguments_not_allowed_by_app_policy',
+          `${nodePath}.args`,
+          `Workflow command pathspec \`${argument}\` must be a plain repo-relative path.`,
+        ))
+        return
+      }
+      continue
+    }
+    if (argument === '--') {
+      afterPathSeparator = true
+      continue
+    }
+    if (approvedGitStatusOptions.has(argument)) {
+      continue
+    }
+    diagnostics.push(error(
+      'workflow_command_arguments_not_allowed_by_app_policy',
+      `${nodePath}.args`,
+      `Workflow \`git status\` argument \`${argument}\` is outside Xero's read-only command policy. Put repo-relative pathspecs after \`--\`.`,
+    ))
+    return
+  }
 }
 
 function producedArtifactTypeForNode(node: WorkflowNodeDto): string | null {
@@ -1141,6 +1245,48 @@ function validateConditionShape(
   }
 }
 
+function validateConditionSemantics(
+  condition: WorkflowConditionDto,
+  path: string,
+  nodeIds: Set<string>,
+  producedArtifactRefs: Set<string>,
+  artifactContractByRef: Map<string, WorkflowArtifactContractDto>,
+  loopKeys: Set<string>,
+  diagnostics: WorkflowValidationDiagnosticDto[],
+): void {
+  validateConditionShape(condition, path, diagnostics)
+  collectConditionArtifactRefs(condition).forEach((artifactRef) => {
+    if (!producedArtifactRefs.has(artifactRef)) {
+      diagnostics.push(error('condition_artifact_ref_missing', path, `Condition references missing artifact \`${artifactRef}\`.`))
+    }
+  })
+  collectConditionArtifactFieldRefs(condition).forEach(({ artifactRef, path: jsonPath }) => {
+    const contract = artifactContractByRef.get(artifactRef)
+    if (contract?.jsonSchema && !jsonSchemaAllowsPath(contract.jsonSchema, jsonPath)) {
+      diagnostics.push(error(
+        'condition_artifact_path_not_in_schema',
+        path,
+        `Condition references \`${artifactRef}${jsonPath}\`, but that field is not allowed by the artifact schema.`,
+      ))
+    }
+  })
+  collectConditionNodeRefs(condition).forEach((nodeId) => {
+    if (!nodeIds.has(nodeId)) {
+      diagnostics.push(error('condition_node_ref_missing', path, `Condition references missing node \`${nodeId}\`.`))
+    }
+  })
+  collectConditionStateRefs(condition).forEach((stateRef) => {
+    if (!producedArtifactRefs.has(stateRef)) {
+      diagnostics.push(error('condition_state_ref_missing', path, `Condition references missing state value \`${stateRef}\`.`))
+    }
+  })
+  collectConditionLoopKeys(condition).forEach((loopKey) => {
+    if (!loopKeys.has(loopKey)) {
+      diagnostics.push(error('condition_loop_key_missing', path, `Condition references missing loop key \`${loopKey}\`.`))
+    }
+  })
+}
+
 function collectConditionArtifactFieldRefs(
   condition: WorkflowConditionDto,
 ): Array<{ artifactRef: string; path: string }> {
@@ -1192,8 +1338,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 function detectUnboundedCycles(
-  definition: WorkflowDefinitionDto,
+  nodes: WorkflowNodeDto[],
+  startNodeId: string,
   outgoingEdges: Map<string, WorkflowEdgeDto[]>,
+  edgesPath: string,
 ): WorkflowValidationDiagnosticDto[] {
   const diagnostics: WorkflowValidationDiagnosticDto[] = []
   const visiting = new Set<string>()
@@ -1206,7 +1354,7 @@ function detectUnboundedCycles(
       const cycle = cycleStart >= 0 ? edgeStack.slice(cycleStart) : edgeStack
       const hasBoundedLoop = cycle.some((edge) => edge.type === 'loop' && edge.loopPolicy)
       if (!hasBoundedLoop) {
-        diagnostics.push(error('cycle_without_loop_policy', 'edges', `Cycle \`${cycle.map((edge) => edge.id).join(' -> ')}\` must include an explicit bounded loop edge.`))
+        diagnostics.push(error('cycle_without_loop_policy', edgesPath, `Cycle \`${cycle.map((edge) => edge.id).join(' -> ')}\` must include an explicit bounded loop edge.`))
       }
       return
     }
@@ -1221,8 +1369,8 @@ function detectUnboundedCycles(
     visited.add(nodeId)
   }
 
-  if (definition.nodes.some((node) => node.id === definition.startNodeId)) {
-    visit(definition.startNodeId)
+  if (nodes.some((node) => node.id === startNodeId)) {
+    visit(startNodeId)
   }
   return diagnostics
 }
@@ -1275,6 +1423,56 @@ function collectConditionNodeRefs(condition: WorkflowConditionDto): string[] {
     default:
       return []
   }
+}
+
+function collectConditionLoopKeys(condition: WorkflowConditionDto): string[] {
+  switch (condition.kind) {
+    case 'loop_attempt_lt':
+    case 'loop_attempt_gte':
+      return [condition.loopKey]
+    case 'all':
+    case 'any':
+      return condition.conditions.flatMap(collectConditionLoopKeys)
+    case 'not':
+      return collectConditionLoopKeys(condition.condition)
+    default:
+      return []
+  }
+}
+
+function validateSubgraphInvocationCycles(
+  definition: WorkflowDefinitionDto,
+  diagnostics: WorkflowValidationDiagnosticDto[],
+): void {
+  definition.subgraphs.forEach((subgraph, subgraphIndex) => {
+    subgraph.nodes.forEach((node, nodeIndex) => {
+      if (node.type !== 'subgraph') return
+      if (!definition.subgraphs.some((candidate) => candidate.id === node.subgraphId)) return
+      if (subgraphInvokesTarget(definition, node.subgraphId, subgraph.id, new Set())) {
+        diagnostics.push(error(
+          'recursive_subgraph_invocation',
+          `subgraphs.${subgraphIndex}.nodes.${nodeIndex}.subgraphId`,
+          `Subgraph \`${subgraph.id}\` recursively invokes \`${node.subgraphId}\`; recursive subgraph invocation is unsupported.`,
+        ))
+      }
+    })
+  })
+}
+
+function subgraphInvokesTarget(
+  definition: WorkflowDefinitionDto,
+  currentId: string,
+  targetId: string,
+  visiting: Set<string>,
+): boolean {
+  if (currentId === targetId) return true
+  if (visiting.has(currentId)) return false
+  visiting.add(currentId)
+  const subgraph = definition.subgraphs.find((candidate) => candidate.id === currentId)
+  const reachesTarget = subgraph?.nodes.some((node) =>
+    node.type === 'subgraph' && subgraphInvokesTarget(definition, node.subgraphId, targetId, visiting)) ?? false
+  visiting.delete(currentId)
+  return reachesTarget
 }
 
 function error(

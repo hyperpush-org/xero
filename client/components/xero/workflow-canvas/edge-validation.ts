@@ -200,7 +200,7 @@ export function validateStructure({ nodes }: ValidateStructureInput): Structural
       if (!advanced.workflowContract.trim()) {
         diagnostics.push({
           code: 'workflow_contract_required',
-          message: 'Workflow contract (Advanced) must be non-empty.',
+          message: 'Run contract (Advanced) must be non-empty.',
           path: 'advanced.workflowContract',
         })
       }

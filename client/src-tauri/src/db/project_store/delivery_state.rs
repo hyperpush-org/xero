@@ -35,7 +35,15 @@ pub fn query_delivery_state(
     let connection = open_runtime_database(repo_root, &database_path)?;
     read_project_row(&connection, &database_path, repo_root, project_id)?;
 
-    let mut records = read_records(&connection, project_id, query.entity_type)?;
+    query_delivery_state_with_connection(&connection, project_id, query)
+}
+
+pub(super) fn query_delivery_state_with_connection(
+    connection: &Connection,
+    project_id: &str,
+    query: &WorkflowStateQueryDto,
+) -> Result<JsonValue, CommandError> {
+    let mut records = read_records(connection, project_id, query.entity_type)?;
     if !query.include_archived {
         records.retain(|record| {
             json_path_lookup(record, "$.status")
@@ -80,6 +88,15 @@ pub fn write_delivery_state(
     let connection = open_runtime_database(repo_root, &database_path)?;
     read_project_row(&connection, &database_path, repo_root, project_id)?;
 
+    write_delivery_state_with_connection(&connection, project_id, context, operation)
+}
+
+pub(super) fn write_delivery_state_with_connection(
+    connection: &Connection,
+    project_id: &str,
+    context: DeliveryStateWriteContext<'_>,
+    operation: &WorkflowStateWriteOperationDto,
+) -> Result<JsonValue, CommandError> {
     let payload = JsonValue::Object(operation.payload.clone());
     let entity_id = resolve_entity_id(operation, &payload);
     let before = read_record_by_id(&connection, project_id, operation.entity_type, &entity_id)?;

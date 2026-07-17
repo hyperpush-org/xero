@@ -182,6 +182,7 @@ import type {
   UpsertMcpServerRequestDto,
 } from '@/src/lib/xero-model'
 import type {
+  AgentAuthoringCatalogDto,
   AgentRefDto,
   WorkflowAgentDetailDto,
   WorkflowAgentSummaryDto,
@@ -202,6 +203,69 @@ function makeProjectSummary(id: string, name: string): ListProjectsResponseDto['
     activePhase: 0,
     branch: null,
     runtime: null,
+  }
+}
+
+function makeAgentAuthoringCatalog(): AgentAuthoringCatalogDto {
+  return {
+    contractVersion: 1,
+    tools: [],
+    toolCategories: [],
+    dbTables: [],
+    upstreamArtifacts: [],
+    attachableSkills: [],
+    policyControls: [],
+    templates: [],
+    creationFlows: [],
+    profileAvailability: [],
+    constraintExplanations: [],
+    diagnostics: [],
+  }
+}
+
+function makeWorkflowAgentDetail(
+  ref: AgentRefDto,
+  displayName: string,
+): WorkflowAgentDetailDto {
+  return {
+    ref,
+    header: {
+      displayName,
+      shortLabel: displayName,
+      description: `${displayName} description`,
+      taskPurpose: `${displayName} task purpose`,
+      scope: ref.kind === 'built_in' ? 'built_in' : 'global_custom',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'engineering',
+      defaultApprovalMode: 'suggest',
+      allowedApprovalModes: ['suggest'],
+      allowPlanGate: true,
+      allowVerificationGate: true,
+      allowAutoCompact: true,
+    },
+    promptPolicy: 'engineer',
+    toolPolicy: 'engineering',
+    prompts: [],
+    tools: [],
+    dbTouchpoints: {
+      reads: [],
+      writes: [],
+      encouraged: [],
+    },
+    output: {
+      contract: 'engineering_summary',
+      label: 'Engineering Summary',
+      description: 'Summary text.',
+      sections: [],
+    },
+    consumes: [],
+    attachedSkills: [],
+    graphProjection: {
+      schema: 'xero.workflow_agent_graph_projection.v1',
+      nodes: [],
+      edges: [],
+      groups: [],
+    },
   }
 }
 
@@ -3193,6 +3257,127 @@ describe('XeroApp current UI', () => {
     expect(await screen.findByLabelText('Agent authoring canvas')).toBeVisible()
     const dock = await screen.findByLabelText('Agent dock')
     await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
+  })
+
+  it('clears project-bound agent authoring and reloads its catalog after a project switch', async () => {
+    let resolveProjectOneCatalog!: (catalog: AgentAuthoringCatalogDto) => void
+    const projectOneCatalog = new Promise<AgentAuthoringCatalogDto>((resolve) => {
+      resolveProjectOneCatalog = resolve
+    })
+    const { adapter } = createAdapter({
+      projects: [
+        makeProjectSummary('project-1', 'Xero'),
+        makeProjectSummary('project-2', 'Orchestra'),
+      ],
+    })
+    adapter.getProjectSnapshot = vi.fn(async (projectId: string) =>
+      projectId === 'project-2'
+        ? makeSnapshot('project-2', 'Orchestra')
+        : makeSnapshot('project-1', 'Xero'),
+    )
+    const getAgentAuthoringCatalog = vi.fn(
+      async ({ projectId }: { projectId: string }) =>
+        projectId === 'project-1' ? projectOneCatalog : makeAgentAuthoringCatalog(),
+    )
+    adapter.getAgentAuthoringCatalog = getAgentAuthoringCatalog
+
+    render(<XeroApp adapter={adapter} />)
+
+    expect(await screen.findByRole('button', { name: 'Create' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create agent' }))
+    fireEvent.click(await screen.findByRole('button', { name: /New agent/ }))
+
+    expect(await screen.findByLabelText('Agent authoring canvas')).toBeVisible()
+    await waitFor(() =>
+      expect(getAgentAuthoringCatalog).toHaveBeenCalledWith({ projectId: 'project-1' }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Orchestra' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Open Orchestra (active)' })).toBeVisible(),
+    )
+    expect(screen.queryByLabelText('Agent authoring canvas')).not.toBeInTheDocument()
+
+    resolveProjectOneCatalog(makeAgentAuthoringCatalog())
+    await projectOneCatalog
+    await Promise.resolve()
+    expect(screen.queryByLabelText('Agent authoring canvas')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Create agent' }))
+    fireEvent.click(await screen.findByRole('button', { name: /New agent/ }))
+
+    expect(await screen.findByLabelText('Agent authoring canvas')).toBeVisible()
+    await waitFor(() =>
+      expect(getAgentAuthoringCatalog).toHaveBeenCalledWith({ projectId: 'project-2' }),
+    )
+  })
+
+  it('ignores agent detail loaded for a project that is no longer active', async () => {
+    const agentRef = {
+      kind: 'built_in',
+      runtimeAgentId: 'engineer',
+      version: 1,
+    } satisfies AgentRefDto
+    const agentSummary: WorkflowAgentSummaryDto = {
+      ref: agentRef,
+      displayName: 'Engineer',
+      shortLabel: 'Build',
+      description: 'Implements repository changes.',
+      scope: 'built_in',
+      lifecycleState: 'active',
+      baseCapabilityProfile: 'engineering',
+      lastUsedAt: null,
+      useCount: 0,
+    }
+    let resolveProjectOneDetail!: (detail: WorkflowAgentDetailDto) => void
+    const projectOneDetail = new Promise<WorkflowAgentDetailDto>((resolve) => {
+      resolveProjectOneDetail = resolve
+    })
+    const { adapter } = createAdapter({
+      projects: [
+        makeProjectSummary('project-1', 'Xero'),
+        makeProjectSummary('project-2', 'Orchestra'),
+      ],
+    })
+    adapter.getProjectSnapshot = vi.fn(async (projectId: string) =>
+      projectId === 'project-2'
+        ? makeSnapshot('project-2', 'Orchestra')
+        : makeSnapshot('project-1', 'Xero'),
+    )
+    adapter.listWorkflowAgents = vi.fn(async ({ projectId }) => ({
+      agents: projectId === 'project-1' ? [agentSummary] : [],
+    }))
+    const getWorkflowAgentDetail = vi.fn(async () => projectOneDetail)
+    const saveAgentDefinition = vi.fn(adapter.saveAgentDefinition)
+    adapter.getWorkflowAgentDetail = getWorkflowAgentDetail
+    adapter.saveAgentDefinition = saveAgentDefinition
+
+    render(<XeroApp adapter={adapter} />)
+
+    expect(await screen.findByRole('button', { name: 'Create' })).toBeVisible()
+    fireEvent.click(screen.getByRole('button', { name: 'Create' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Create agent' }))
+    fireEvent.click(await screen.findByRole('button', { name: /From template/ }))
+    fireEvent.click(await screen.findByRole('button', { name: /Engineer/ }))
+    await waitFor(() =>
+      expect(getWorkflowAgentDetail).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        ref: agentRef,
+      }),
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Orchestra' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Open Orchestra (active)' })).toBeVisible(),
+    )
+
+    resolveProjectOneDetail(makeWorkflowAgentDetail(agentRef, 'Engineer'))
+    await projectOneDetail
+    await Promise.resolve()
+
+    expect(screen.queryByLabelText('Agent authoring canvas')).not.toBeInTheDocument()
+    expect(saveAgentDefinition).not.toHaveBeenCalled()
   })
 
   it('opens the add-project dialog from the project rail', async () => {

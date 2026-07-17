@@ -129,6 +129,8 @@ pub struct RuntimeRunPendingControlSnapshotRecord {
     pub queued_prompt: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub queued_prompt_at: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub queued_prompt_continuation_request_id: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub queued_attachments: Vec<RuntimeRunQueuedAttachmentRecord>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -196,6 +198,16 @@ pub struct RuntimeRunUpsertRecord {
     pub run: RuntimeRunRecord,
     pub checkpoint: Option<RuntimeRunCheckpointRecord>,
     pub control_state: Option<RuntimeRunControlStateRecord>,
+    pub expected_snapshot: Option<RuntimeRunWriteExpectationRecord>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RuntimeRunWriteExpectationRecord {
+    pub run_id: String,
+    pub status: RuntimeRunStatus,
+    pub last_checkpoint_sequence: u32,
+    pub control_state: RuntimeRunControlStateRecord,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -238,9 +250,11 @@ pub(crate) struct StoredRuntimeRunRow {
     pub(crate) run_id: String,
     pub(crate) runtime_kind: String,
     pub(crate) provider_id: String,
+    pub(crate) status: String,
     pub(crate) last_checkpoint_sequence: u32,
     pub(crate) last_checkpoint_at: Option<String>,
     pub(crate) control_state_json: Option<String>,
+    pub(crate) updated_at: String,
 }
 
 #[derive(Debug)]
@@ -447,6 +461,78 @@ pub fn load_runtime_run(
     Ok(snapshot)
 }
 
+pub fn list_runtime_runs_for_project(
+    repo_root: &Path,
+    expected_project_id: &str,
+) -> Result<Vec<RuntimeRunSnapshotRecord>, CommandError> {
+    let database_path = database_path_for_repo(repo_root);
+    let connection = open_runtime_database(repo_root, &database_path)?;
+    read_project_row(
+        &connection,
+        &database_path,
+        repo_root,
+        expected_project_id,
+    )?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT agent_session_id
+            FROM runtime_runs
+            WHERE project_id = ?1
+            ORDER BY updated_at ASC, agent_session_id ASC
+            "#,
+        )
+        .map_err(|error| {
+            CommandError::system_fault(
+                "runtime_run_list_prepare_failed",
+                format!(
+                    "Xero could not prepare the durable runtime-run recovery query against {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+    let agent_session_ids = statement
+        .query_map(params![expected_project_id], |row| row.get::<_, String>(0))
+        .map_err(|error| {
+            CommandError::system_fault(
+                "runtime_run_list_query_failed",
+                format!(
+                    "Xero could not query durable runtime runs from {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| {
+            CommandError::system_fault(
+                "runtime_run_list_decode_failed",
+                format!(
+                    "Xero could not decode durable runtime runs from {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+    drop(statement);
+
+    agent_session_ids
+        .into_iter()
+        .map(|agent_session_id| {
+            read_runtime_run_snapshot(
+                &connection,
+                &database_path,
+                expected_project_id,
+                &agent_session_id,
+            )?
+            .ok_or_else(|| {
+                CommandError::retryable(
+                    "runtime_run_recovery_race",
+                    "A runtime run changed while Xero was preparing queued-prompt recovery.",
+                )
+            })
+        })
+        .collect()
+}
+
 pub fn upsert_runtime_run(
     repo_root: &Path,
     payload: &RuntimeRunUpsertRecord,
@@ -498,6 +584,26 @@ pub fn upsert_runtime_run(
     let existing_control_state_json = existing
         .as_ref()
         .and_then(|row| row.control_state_json.clone());
+
+    if let Some(expected) = payload.expected_snapshot.as_ref() {
+        let expected_control_state_json = serialize_runtime_run_control_state(&expected.control_state)?;
+        let matches = existing.as_ref().is_some_and(|row| {
+            row.run_id == expected.run_id
+                && row.status == runtime_run_status_sql_value(&expected.status)
+                && row.last_checkpoint_sequence == expected.last_checkpoint_sequence
+                && row.control_state_json.as_deref() == Some(expected_control_state_json.as_str())
+                && row.updated_at == expected.updated_at
+        });
+        if !matches {
+            return Err(CommandError::retryable(
+                "runtime_run_write_conflict",
+                format!(
+                    "Xero did not overwrite runtime run `{}` because a newer durable update won the race. Refresh and retry.",
+                    payload.run.run_id
+                ),
+            ));
+        }
+    }
 
     if let Some(run_id) = existing_run_id.filter(|run_id| *run_id != payload.run.run_id.as_str()) {
         transaction
@@ -1220,9 +1326,11 @@ pub(crate) fn read_runtime_run_row(
                 run_id,
                 runtime_kind,
                 provider_id,
+                status,
                 last_checkpoint_sequence,
                 last_checkpoint_at,
-                control_state_json
+                control_state_json,
+                updated_at
             FROM runtime_runs
             WHERE project_id = ?1
               AND agent_session_id = ?2
@@ -1233,9 +1341,11 @@ pub(crate) fn read_runtime_run_row(
                 row.get::<_, String>(0)?,
                 row.get::<_, String>(1)?,
                 row.get::<_, String>(2)?,
-                row.get::<_, i64>(3)?,
-                row.get::<_, Option<String>>(4)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i64>(4)?,
                 row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, String>(7)?,
             ))
         },
     );
@@ -1245,9 +1355,11 @@ pub(crate) fn read_runtime_run_row(
             run_id,
             runtime_kind,
             provider_id,
+            status,
             last_checkpoint_sequence,
             last_checkpoint_at,
             control_state_json,
+            updated_at,
         )) => {
             let run_id = require_runtime_run_non_empty_owned(run_id, "run_id", database_path)?;
             let runtime_kind =
@@ -1268,6 +1380,7 @@ pub(crate) fn read_runtime_run_row(
                 run_id,
                 runtime_kind,
                 provider_id,
+                status: require_runtime_run_non_empty_owned(status, "status", database_path)?,
                 last_checkpoint_sequence: decode_runtime_run_checkpoint_sequence(
                     last_checkpoint_sequence,
                     "last_checkpoint_sequence",
@@ -1279,6 +1392,11 @@ pub(crate) fn read_runtime_run_row(
                     database_path,
                 )?,
                 control_state_json,
+                updated_at: require_runtime_run_non_empty_owned(
+                    updated_at,
+                    "updated_at",
+                    database_path,
+                )?,
             }))
         }
         Err(SqlError::QueryReturnedNoRows) => Ok(None),
@@ -1930,6 +2048,21 @@ fn validate_runtime_run_pending_control_snapshot(
         }
     }
 
+    match (
+        pending.queued_prompt.as_ref(),
+        pending.queued_prompt_continuation_request_id.as_ref(),
+    ) {
+        (None, None) => {}
+        (Some(_), Some(request_id))
+            if !request_id.trim().is_empty() && request_id.len() <= 200 => {}
+        _ => {
+            return Err(CommandError::system_fault(
+                "runtime_run_request_invalid",
+                "Xero requires queuedPrompt and a valid continuationRequestId to be populated together.",
+            ));
+        }
+    }
+
     for attachment in &pending.queued_attachments {
         validate_non_empty_text(
             &attachment.absolute_path,
@@ -2108,6 +2241,7 @@ pub fn build_runtime_run_control_state_with_profile(
             queued_at: timestamp.to_owned(),
             queued_prompt: Some(prompt.to_owned()),
             queued_prompt_at: Some(timestamp.to_owned()),
+            queued_prompt_continuation_request_id: Some("runtime-start-pending".into()),
             queued_attachments: Vec::new(),
             queued_linked_paths: Vec::new(),
         }),
@@ -2629,4 +2763,160 @@ pub(crate) fn map_runtime_run_checkpoint_decode_error(
             database_path.display()
         ),
     )
+}
+
+#[cfg(test)]
+mod queued_prompt_identity_tests {
+    use super::*;
+    use std::fs;
+
+    use crate::db::{
+        configure_connection, migrations::migrations, register_project_database_path_for_tests,
+    };
+
+    fn create_project_database(repo_root: &Path, project_id: &str) {
+        let database_path = repo_root.join("state.db");
+        register_project_database_path_for_tests(repo_root, database_path.clone());
+        let mut connection = Connection::open(&database_path).expect("open project database");
+        configure_connection(&connection).expect("configure project database");
+        migrations()
+            .to_latest(&mut connection)
+            .expect("migrate project database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params![project_id],
+            )
+            .expect("insert project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
+                VALUES ('repo-1', ?1, ?2, 'Project', 'main', 'abc123', 1)
+                "#,
+                params![project_id, repo_root.to_string_lossy().as_ref()],
+            )
+            .expect("insert repository");
+        connection
+            .execute(
+                "INSERT INTO agent_sessions (project_id, agent_session_id, title, status, selected) VALUES (?1, 'session-1', 'Default', 'active', 1)",
+                params![project_id],
+            )
+            .expect("insert agent session");
+    }
+
+    #[test]
+    fn queued_prompt_requires_a_persisted_continuation_request_id() {
+        let mut controls = build_runtime_run_control_state_with_profile(
+            RuntimeAgentIdDto::Engineer,
+            Some("engineer"),
+            Some(1),
+            Some("profile-1"),
+            "model-1",
+            None,
+            RuntimeRunApprovalModeDto::Suggest,
+            false,
+            "2026-07-15T12:00:00Z",
+            Some("Continue the work."),
+        )
+        .expect("build valid queued prompt");
+        controls
+            .pending
+            .as_mut()
+            .expect("pending controls")
+            .queued_prompt_continuation_request_id = None;
+
+        let error = validate_runtime_run_control_state(&controls)
+            .expect_err("queued prompt without identity must be rejected");
+        assert_eq!(error.code, "runtime_run_request_invalid");
+    }
+
+    #[test]
+    fn stale_writer_cannot_overwrite_a_status_only_runtime_update() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "runtime-status-cas";
+        create_project_database(&repo_root, project_id);
+        let controls = build_runtime_run_control_state_with_profile(
+            RuntimeAgentIdDto::Engineer,
+            Some("engineer"),
+            Some(1),
+            Some("openai_codex-default"),
+            "gpt-5.5",
+            None,
+            RuntimeRunApprovalModeDto::Suggest,
+            false,
+            "2026-07-15T12:00:00Z",
+            None,
+        )
+        .expect("build controls");
+        let initial = upsert_runtime_run(
+            &repo_root,
+            &RuntimeRunUpsertRecord {
+                run: RuntimeRunRecord {
+                    project_id: project_id.into(),
+                    agent_session_id: "session-1".into(),
+                    run_id: "run-status-cas".into(),
+                    runtime_kind: crate::runtime::OWNED_AGENT_RUNTIME_KIND.into(),
+                    provider_id: crate::runtime::OPENAI_CODEX_PROVIDER_ID.into(),
+                    supervisor_kind: crate::runtime::OWNED_AGENT_SUPERVISOR_KIND.into(),
+                    status: RuntimeRunStatus::Running,
+                    transport: RuntimeRunTransportRecord {
+                        kind: "internal".into(),
+                        endpoint: "xero://owned-agent".into(),
+                        liveness: RuntimeRunTransportLiveness::Reachable,
+                    },
+                    started_at: "2026-07-15T12:00:00Z".into(),
+                    last_heartbeat_at: Some("2026-07-15T12:00:00Z".into()),
+                    stopped_at: None,
+                    last_error: None,
+                    updated_at: "2026-07-15T12:00:00Z".into(),
+                },
+                checkpoint: None,
+                control_state: Some(controls.clone()),
+                expected_snapshot: None,
+            },
+        )
+        .expect("persist initial runtime run");
+        let expectation = RuntimeRunWriteExpectationRecord {
+            run_id: initial.run.run_id.clone(),
+            status: initial.run.status.clone(),
+            last_checkpoint_sequence: initial.last_checkpoint_sequence,
+            control_state: initial.controls.clone(),
+            updated_at: initial.run.updated_at.clone(),
+        };
+        let mut failed_run = initial.run.clone();
+        failed_run.status = RuntimeRunStatus::Failed;
+        failed_run.stopped_at = Some("2026-07-15T12:01:00Z".into());
+        failed_run.last_error = Some(RuntimeRunDiagnosticRecord {
+            code: "provider_failed".into(),
+            message: "Provider failed.".into(),
+        });
+        failed_run.updated_at = "2026-07-15T12:01:00Z".into();
+        upsert_runtime_run(
+            &repo_root,
+            &RuntimeRunUpsertRecord {
+                run: failed_run,
+                checkpoint: None,
+                control_state: Some(initial.controls.clone()),
+                expected_snapshot: Some(expectation.clone()),
+            },
+        )
+        .expect("persist status-only winner");
+
+        let mut stale_run = initial.run.clone();
+        stale_run.updated_at = "2026-07-15T12:02:00Z".into();
+        let error = upsert_runtime_run(
+            &repo_root,
+            &RuntimeRunUpsertRecord {
+                run: stale_run,
+                checkpoint: None,
+                control_state: Some(initial.controls),
+                expected_snapshot: Some(expectation),
+            },
+        )
+        .expect_err("stale status writer must lose");
+        assert_eq!(error.code, "runtime_run_write_conflict");
+    }
 }

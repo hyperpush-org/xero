@@ -4679,6 +4679,12 @@ impl DesktopSidecarManager {
         let mut child = command
             .spawn()
             .map_err(|error| format!("Xero could not start the desktop sidecar: {error}"))?;
+        if let Err(error) = crate::runtime::process_tree::register_process_tree_root(&child) {
+            let _ = crate::runtime::process_tree::terminate_process_tree(&mut child);
+            return Err(format!(
+                "Xero could not establish desktop sidecar process-tree containment: {error}"
+            ));
+        }
         let mut stdin = child
             .stdin
             .take()

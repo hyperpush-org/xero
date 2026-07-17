@@ -513,14 +513,16 @@ pub(crate) fn evaluate_completion_gate(
         };
     }
 
-    if final_message_declares_unable_to_verify(final_message) {
-        return VerificationGateDecision {
-            status: VerificationGateStatus::UnableToVerify,
-            message: "The final response explicitly declared that verification could not be run."
-                .into(),
-            evidence: Some(trim_gate_evidence(final_message)),
-            latest_file_change_event_id,
-        };
+    if let Some(reason) = final_message_unable_to_verify_reason(final_message) {
+        if failed_or_unavailable_verification_after(snapshot, after_event_id) {
+            return VerificationGateDecision {
+                status: VerificationGateStatus::UnableToVerify,
+                message: "The final response supplied a specific reason and the run recorded a failed or unavailable verification attempt."
+                    .into(),
+                evidence: Some(trim_gate_evidence(reason)),
+                latest_file_change_event_id,
+            };
+        }
     }
 
     VerificationGateDecision {
@@ -694,66 +696,107 @@ fn is_execution_tool(tool_name: &str) -> bool {
     )
 }
 
-fn verification_evidence_after(
+enum VerificationAttempt {
+    Succeeded(String),
+    Failed,
+}
+
+fn latest_verification_attempt_after(
     snapshot: &AgentRunSnapshotRecord,
     after_event_id: i64,
-) -> Option<String> {
+) -> Option<VerificationAttempt> {
+    let mut latest_verification: Option<(i64, VerificationAttempt)> = None;
     for event in snapshot
         .events
         .iter()
         .filter(|event| event.id > after_event_id)
     {
-        if event.event_kind != AgentRunEventKind::CommandOutput {
-            continue;
-        }
         let Ok(payload) = serde_json::from_str::<JsonValue>(&event.payload_json) else {
             continue;
         };
-        if !payload
-            .get("spawned")
-            .and_then(JsonValue::as_bool)
-            .unwrap_or(false)
+        if payload.get("toolName").and_then(JsonValue::as_str)
+            != Some(AUTONOMOUS_TOOL_COMMAND_VERIFY)
         {
             continue;
         }
-        if payload.get("exitCode").is_none() {
-            continue;
+
+        let attempt = match event.event_kind {
+            AgentRunEventKind::CommandOutput
+                if payload.get("partial").and_then(JsonValue::as_bool) != Some(true) =>
+            {
+                let spawned = payload
+                    .get("spawned")
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false);
+                let timed_out = payload
+                    .get("timedOut")
+                    .and_then(JsonValue::as_bool)
+                    .unwrap_or(false);
+                let exit_code = payload.get("exitCode").and_then(JsonValue::as_i64);
+                if spawned && !timed_out && exit_code == Some(0) {
+                    let argv = payload
+                        .get("argv")
+                        .and_then(JsonValue::as_array)
+                        .map(|argv| {
+                            argv.iter()
+                                .filter_map(JsonValue::as_str)
+                                .collect::<Vec<_>>()
+                                .join(" ")
+                        })
+                        .filter(|argv| !argv.trim().is_empty())
+                        .unwrap_or_else(|| "command output".into());
+                    VerificationAttempt::Succeeded(argv)
+                } else {
+                    VerificationAttempt::Failed
+                }
+            }
+            AgentRunEventKind::ToolCompleted
+                if payload.get("ok").and_then(JsonValue::as_bool) == Some(false) =>
+            {
+                VerificationAttempt::Failed
+            }
+            _ => continue,
+        };
+        if latest_verification
+            .as_ref()
+            .is_none_or(|(latest_id, _)| event.id > *latest_id)
+        {
+            latest_verification = Some((event.id, attempt));
         }
-        let argv = payload
-            .get("argv")
-            .and_then(JsonValue::as_array)
-            .map(|argv| {
-                argv.iter()
-                    .filter_map(JsonValue::as_str)
-                    .collect::<Vec<_>>()
-                    .join(" ")
-            })
-            .filter(|argv| !argv.trim().is_empty())
-            .unwrap_or_else(|| "command output".into());
-        let exit_code = payload
-            .get("exitCode")
-            .and_then(JsonValue::as_i64)
-            .map(|code| code.to_string())
-            .unwrap_or_else(|| "unknown".into());
-        return Some(format!("{argv} exited with code {exit_code}."));
     }
-    None
+    latest_verification.map(|(_, attempt)| attempt)
 }
 
-fn final_message_declares_unable_to_verify(message: &str) -> bool {
-    let normalized = message.to_ascii_lowercase();
-    normalized.contains("unable to verify")
-        || normalized.contains("could not verify")
-        || normalized.contains("couldn't verify")
-        || (normalized.contains("verification")
-            && (normalized.contains("could not be run")
-                || normalized.contains("couldn't be run")
-                || normalized.contains("not run")
-                || normalized.contains("was not run"))
-            && (normalized.contains("because")
-                || normalized.contains("blocked")
-                || normalized.contains("unavailable")
-                || normalized.contains("missing")))
+fn verification_evidence_after(
+    snapshot: &AgentRunSnapshotRecord,
+    after_event_id: i64,
+) -> Option<String> {
+    match latest_verification_attempt_after(snapshot, after_event_id) {
+        Some(VerificationAttempt::Succeeded(argv)) => Some(format!("{argv} exited with code 0.")),
+        Some(VerificationAttempt::Failed) | None => None,
+    }
+}
+
+fn failed_or_unavailable_verification_after(
+    snapshot: &AgentRunSnapshotRecord,
+    after_event_id: i64,
+) -> bool {
+    matches!(
+        latest_verification_attempt_after(snapshot, after_event_id),
+        Some(VerificationAttempt::Failed)
+    )
+}
+
+fn final_message_unable_to_verify_reason(message: &str) -> Option<&str> {
+    message.lines().find_map(|line| {
+        let line = line.trim();
+        let (prefix, reason) = line.split_once(':')?;
+        if !prefix.trim().eq_ignore_ascii_case("unable to verify") {
+            return None;
+        }
+        let reason = reason.trim();
+        (reason.chars().count() >= 8).then_some(reason)
+    })
 }
 
 fn trim_gate_evidence(message: &str) -> String {
@@ -978,7 +1021,7 @@ mod tests {
             project_id: "project-1".into(),
             run_id: "run-1".into(),
             event_kind: AgentRunEventKind::CommandOutput,
-            payload_json: r#"{"argv":["cargo","test"],"spawned":true,"exitCode":0}"#.into(),
+            payload_json: r#"{"toolName":"command_verify","argv":["cargo","test"],"spawned":true,"exitCode":0,"timedOut":false}"#.into(),
             created_at: "2026-04-30T00:00:02Z".into(),
         });
 
@@ -989,6 +1032,49 @@ mod tests {
             decision.evidence.as_deref(),
             Some("cargo test exited with code 0.")
         );
+    }
+
+    #[test]
+    fn completion_gate_rejects_failed_command_as_verification_evidence() {
+        let mut snapshot = empty_snapshot();
+        snapshot
+            .file_changes
+            .push(project_store::AgentFileChangeRecord {
+                id: 1,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                top_level_run_id: "run-1".into(),
+                subagent_id: None,
+                subagent_role: None,
+                change_group_id: None,
+                path: "src/lib.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: None,
+                created_at: "2026-04-30T00:00:01Z".into(),
+            });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::FileChanged,
+            payload_json: "{}".into(),
+            created_at: "2026-04-30T00:00:01Z".into(),
+        });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 2,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::CommandOutput,
+            payload_json: r#"{"toolName":"command_verify","argv":["cargo","test"],"spawned":true,"exitCode":101,"timedOut":false}"#.into(),
+            created_at: "2026-04-30T00:00:02Z".into(),
+        });
+
+        let decision = evaluate_completion_gate(&snapshot, "Done.");
+
+        assert_eq!(decision.status, VerificationGateStatus::Required);
+        assert!(decision.evidence.is_none());
     }
 
     #[test]
@@ -1019,6 +1105,14 @@ mod tests {
             payload_json: "{}".into(),
             created_at: "2026-04-30T00:00:01Z".into(),
         });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 2,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::CommandOutput,
+            payload_json: r#"{"toolName":"command_verify","argv":["protoc","--version"],"spawned":true,"exitCode":127,"timedOut":false}"#.into(),
+            created_at: "2026-04-30T00:00:02Z".into(),
+        });
 
         let decision = evaluate_completion_gate(
             &snapshot,
@@ -1026,5 +1120,195 @@ mod tests {
         );
 
         assert_eq!(decision.status, VerificationGateStatus::UnableToVerify);
+    }
+
+    #[test]
+    fn completion_gate_accepts_failed_verification_dispatch_after_latest_change() {
+        let mut snapshot = empty_snapshot();
+        snapshot
+            .file_changes
+            .push(project_store::AgentFileChangeRecord {
+                id: 1,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                top_level_run_id: "run-1".into(),
+                subagent_id: None,
+                subagent_role: None,
+                change_group_id: None,
+                path: "src/lib.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: None,
+                created_at: "2026-04-30T00:00:01Z".into(),
+            });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::FileChanged,
+            payload_json: "{}".into(),
+            created_at: "2026-04-30T00:00:01Z".into(),
+        });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 2,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::CommandOutput,
+            payload_json: r#"{"toolName":"command_verify","argv":["cargo","test"],"spawned":true,"exitCode":0,"timedOut":false}"#.into(),
+            created_at: "2026-04-30T00:00:02Z".into(),
+        });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 3,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::ToolCompleted,
+            payload_json: r#"{"toolCallId":"verify-2","toolName":"command_verify","ok":false,"code":"agent_tool_spawn_failed","message":"compiler binary is unavailable"}"#.into(),
+            created_at: "2026-04-30T00:00:03Z".into(),
+        });
+
+        assert_eq!(
+            evaluate_completion_gate(&snapshot, "Done.").status,
+            VerificationGateStatus::Required
+        );
+        assert_eq!(
+            evaluate_completion_gate(
+                &snapshot,
+                "Unable to verify: compiler binary is unavailable."
+            )
+            .status,
+            VerificationGateStatus::UnableToVerify
+        );
+    }
+
+    #[test]
+    fn completion_gate_rejects_unrelated_command_and_unsupported_unable_claims() {
+        let mut snapshot = empty_snapshot();
+        snapshot
+            .file_changes
+            .push(project_store::AgentFileChangeRecord {
+                id: 1,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                top_level_run_id: "run-1".into(),
+                subagent_id: None,
+                subagent_role: None,
+                change_group_id: None,
+                path: "src/lib.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: None,
+                created_at: "2026-04-30T00:00:01Z".into(),
+            });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::FileChanged,
+            payload_json: "{}".into(),
+            created_at: "2026-04-30T00:00:01Z".into(),
+        });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 2,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::CommandOutput,
+            payload_json: r#"{"toolName":"command_run","argv":["echo","unable to verify"],"spawned":true,"exitCode":0,"timedOut":false}"#.into(),
+            created_at: "2026-04-30T00:00:02Z".into(),
+        });
+
+        assert_eq!(
+            evaluate_completion_gate(&snapshot, "Unable to verify").status,
+            VerificationGateStatus::Required
+        );
+        assert_eq!(
+            evaluate_completion_gate(
+                &snapshot,
+                "The notes mention unable to verify, but no verification was attempted."
+            )
+            .status,
+            VerificationGateStatus::Required
+        );
+        assert_eq!(
+            evaluate_completion_gate(
+                &snapshot,
+                "Unable to verify: the required compiler is unavailable."
+            )
+            .status,
+            VerificationGateStatus::Required
+        );
+    }
+
+    #[test]
+    fn completion_gate_uses_the_latest_verification_attempt() {
+        let mut snapshot = empty_snapshot();
+        snapshot
+            .file_changes
+            .push(project_store::AgentFileChangeRecord {
+                id: 1,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                trace_id: "0123456789abcdef0123456789abcdef".into(),
+                top_level_run_id: "run-1".into(),
+                subagent_id: None,
+                subagent_role: None,
+                change_group_id: None,
+                path: "src/lib.rs".into(),
+                operation: "edit".into(),
+                old_hash: None,
+                new_hash: None,
+                created_at: "2026-04-30T00:00:01Z".into(),
+            });
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::FileChanged,
+            payload_json: "{}".into(),
+            created_at: "2026-04-30T00:00:01Z".into(),
+        });
+        for (id, exit_code) in [(2, 0), (3, 1)] {
+            snapshot.events.push(project_store::AgentEventRecord {
+                id,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                event_kind: AgentRunEventKind::CommandOutput,
+                payload_json: json!({
+                    "toolName": AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                    "argv": ["cargo", "test"],
+                    "spawned": true,
+                    "exitCode": exit_code,
+                    "timedOut": false,
+                })
+                .to_string(),
+                created_at: format!("2026-04-30T00:00:0{id}Z"),
+            });
+        }
+
+        assert_eq!(
+            evaluate_completion_gate(&snapshot, "Done.").status,
+            VerificationGateStatus::Required
+        );
+
+        snapshot.events.push(project_store::AgentEventRecord {
+            id: 4,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::CommandOutput,
+            payload_json: json!({
+                "toolName": AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                "argv": ["cargo", "test"],
+                "spawned": true,
+                "exitCode": 0,
+                "timedOut": false,
+            })
+            .to_string(),
+            created_at: "2026-04-30T00:00:04Z".into(),
+        });
+        assert_eq!(
+            evaluate_completion_gate(&snapshot, "Done.").status,
+            VerificationGateStatus::Satisfied
+        );
     }
 }

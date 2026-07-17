@@ -10,8 +10,9 @@ use crate::{
         contracts::{
             workflow_agents::AgentRefDto,
             workflows::{
-                WorkflowConditionDto, WorkflowDefinitionDto, WorkflowEdgeDto, WorkflowEdgeTypeDto,
-                WorkflowInputBindingDto, WorkflowNodeDto, WorkflowValidationDiagnosticDto,
+                WorkflowArtifactContractDto, WorkflowConditionDto, WorkflowDefinitionDto,
+                WorkflowEdgeDto, WorkflowEdgeTypeDto, WorkflowInputBindingDto, WorkflowNodeDto,
+                WorkflowSubgraphDto, WorkflowTerminalStatusDto, WorkflowValidationDiagnosticDto,
                 WorkflowValidationReportDto, WorkflowValidationSeverityDto,
                 WorkflowValidationStatusDto,
             },
@@ -21,67 +22,13 @@ use crate::{
     db::project_store,
 };
 
+use super::command_policy::validate_workflow_command_policy;
+
 pub fn validate_workflow_definition(
     definition: &WorkflowDefinitionDto,
 ) -> WorkflowValidationReportDto {
     let mut diagnostics = Vec::new();
     validate_required_fields(definition, &mut diagnostics);
-
-    let mut node_ids = BTreeSet::new();
-    let mut produced_artifacts = BTreeSet::new();
-    let mut artifact_contracts_by_ref = BTreeMap::new();
-    for (index, node) in definition.nodes.iter().enumerate() {
-        let id = node.id();
-        if !node_ids.insert(id.to_string()) {
-            diagnostics.push(error(
-                "duplicate_node_id",
-                format!("nodes.{index}.id"),
-                format!("Node id `{id}` is duplicated."),
-            ));
-        }
-        if let Some(artifact_type) = node.produced_artifact_type() {
-            let artifact_ref = format!("{id}.{artifact_type}");
-            produced_artifacts.insert(artifact_ref.clone());
-            if let Some(contract) = node.output_contract() {
-                let artifact_contract = definition.artifact_contracts.iter().find(|candidate| {
-                    candidate.artifact_type == contract.artifact_type
-                        && candidate.schema_version == contract.schema_version
-                });
-                if artifact_contract.is_none()
-                    && contract.extraction
-                        != crate::commands::contracts::workflows::WorkflowOutputExtractionDto::GenericText
-                {
-                    diagnostics.push(error(
-                        "artifact_contract_missing",
-                        format!("nodes.{index}.outputContract"),
-                        format!(
-                            "JSON artifact `{}` v{} must declare an artifact contract.",
-                            contract.artifact_type, contract.schema_version
-                        ),
-                    ));
-                }
-                if let Some(artifact_contract) = artifact_contract {
-                    artifact_contracts_by_ref.insert(artifact_ref, artifact_contract);
-                    if let (Some(render_text_path), Some(json_schema)) = (
-                        contract.render_text_path.as_deref(),
-                        artifact_contract.json_schema.as_ref(),
-                    ) {
-                        if !json_schema_allows_path(json_schema, render_text_path) {
-                            diagnostics.push(error(
-                                "render_text_path_not_in_schema",
-                                format!("nodes.{index}.outputContract.renderTextPath"),
-                                format!(
-                                    "Render path `{render_text_path}` is not allowed by the `{}` artifact schema.",
-                                    contract.artifact_type
-                                ),
-                            ));
-                        }
-                    }
-                }
-            }
-        }
-    }
-
     let mut subgraph_ids = BTreeSet::new();
     for (index, subgraph) in definition.subgraphs.iter().enumerate() {
         if !subgraph_ids.insert(subgraph.id.clone()) {
@@ -91,6 +38,20 @@ pub fn validate_workflow_definition(
                 format!("Subgraph id `{}` is duplicated.", subgraph.id),
             ));
         }
+    }
+
+    validate_graph(
+        definition,
+        &definition.nodes,
+        &definition.edges,
+        &definition.start_node_id,
+        "",
+        None,
+        &subgraph_ids,
+        &mut diagnostics,
+    );
+
+    for (index, subgraph) in definition.subgraphs.iter().enumerate() {
         if subgraph.nodes.is_empty() {
             diagnostics.push(error(
                 "subgraph_nodes_empty",
@@ -99,100 +60,173 @@ pub fn validate_workflow_definition(
             ));
             continue;
         }
-        let subgraph_node_ids = subgraph
-            .nodes
-            .iter()
-            .map(|node| node.id().to_string())
-            .collect::<BTreeSet<_>>();
-        if !subgraph_node_ids.contains(&subgraph.start_node_id) {
+        validate_graph(
+            definition,
+            &subgraph.nodes,
+            &subgraph.edges,
+            &subgraph.start_node_id,
+            &format!("subgraphs.{index}."),
+            Some(subgraph),
+            &subgraph_ids,
+            &mut diagnostics,
+        );
+    }
+
+    validate_subgraph_invocation_cycles(definition, &mut diagnostics);
+    report_from_diagnostics(diagnostics)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn validate_graph<'a>(
+    definition: &'a WorkflowDefinitionDto,
+    nodes: &'a [WorkflowNodeDto],
+    edges: &'a [WorkflowEdgeDto],
+    start_node_id: &str,
+    path_prefix: &str,
+    subgraph: Option<&WorkflowSubgraphDto>,
+    subgraph_ids: &BTreeSet<String>,
+    diagnostics: &mut Vec<WorkflowValidationDiagnosticDto>,
+) {
+    let mut node_ids = BTreeSet::new();
+    let mut produced_artifacts = BTreeSet::new();
+    let mut artifact_contracts_by_ref: BTreeMap<String, &WorkflowArtifactContractDto> =
+        BTreeMap::new();
+
+    for (index, node) in nodes.iter().enumerate() {
+        let id = node.id();
+        if !node_ids.insert(id.to_string()) {
             diagnostics.push(error(
+                "duplicate_node_id",
+                format!("{path_prefix}nodes.{index}.id"),
+                format!("Node id `{id}` is duplicated."),
+            ));
+        }
+        let Some(artifact_type) = node.produced_artifact_type() else {
+            continue;
+        };
+        let artifact_ref = format!("{id}.{artifact_type}");
+        produced_artifacts.insert(artifact_ref.clone());
+        let schema_version = node
+            .output_contract()
+            .map_or(1, |contract| contract.schema_version);
+        let artifact_contract = definition.artifact_contracts.iter().find(|candidate| {
+            candidate.artifact_type == artifact_type && candidate.schema_version == schema_version
+        });
+        if let Some(contract) = node.output_contract() {
+            let contract_path = format!("{path_prefix}nodes.{index}.outputContract");
+            if contract.artifact_type.trim().is_empty() {
+                diagnostics.push(error(
+                    "output_artifact_type_empty",
+                    format!("{contract_path}.artifactType"),
+                    "Workflow outputs must name their artifact type.",
+                ));
+            }
+            if artifact_contract.is_none()
+                && contract.extraction
+                    != crate::commands::contracts::workflows::WorkflowOutputExtractionDto::GenericText
+            {
+                diagnostics.push(error(
+                    "artifact_contract_missing",
+                    &contract_path,
+                    format!(
+                        "JSON artifact `{}` v{} must declare an artifact contract.",
+                        contract.artifact_type, contract.schema_version
+                    ),
+                ));
+            }
+            if let Some(render_text_path) = contract.render_text_path.as_deref() {
+                if !render_text_path.trim().starts_with('$') {
+                    diagnostics.push(error(
+                        "render_text_path_invalid",
+                        format!("{contract_path}.renderTextPath"),
+                        "Render paths must use a JSON path that starts with `$`.",
+                    ));
+                } else if artifact_contract
+                    .and_then(|candidate| candidate.json_schema.as_ref())
+                    .is_some_and(|schema| !json_schema_allows_path(schema, render_text_path))
+                {
+                    diagnostics.push(error(
+                        "render_text_path_not_in_schema",
+                        format!("{contract_path}.renderTextPath"),
+                        format!(
+                            "Render path `{render_text_path}` is not allowed by the `{}` artifact schema.",
+                            contract.artifact_type
+                        ),
+                    ));
+                }
+            }
+        }
+        if let Some(artifact_contract) = artifact_contract {
+            artifact_contracts_by_ref.insert(artifact_ref, artifact_contract);
+        }
+    }
+
+    if !node_ids.contains(start_node_id) {
+        let (code, message) = match subgraph {
+            Some(subgraph) => (
                 "subgraph_start_node_missing",
-                format!("subgraphs.{index}.startNodeId"),
                 format!(
                     "Subgraph `{}` references a missing start node.",
                     subgraph.id
                 ),
-            ));
-        }
-        for (edge_index, edge) in subgraph.edges.iter().enumerate() {
-            if !subgraph_node_ids.contains(&edge.from_node_id) {
-                diagnostics.push(error(
-                    "subgraph_edge_source_missing",
-                    format!("subgraphs.{index}.edges.{edge_index}.fromNodeId"),
-                    format!(
-                        "Subgraph edge `{}` references a missing source node.",
-                        edge.id
-                    ),
-                ));
-            }
-            if !subgraph_node_ids.contains(&edge.to_node_id) {
-                diagnostics.push(error(
-                    "subgraph_edge_target_missing",
-                    format!("subgraphs.{index}.edges.{edge_index}.toNodeId"),
-                    format!(
-                        "Subgraph edge `{}` references a missing target node.",
-                        edge.id
-                    ),
-                ));
-            }
-            validate_condition_shape(
-                &edge.condition,
-                format!("subgraphs.{index}.edges.{edge_index}.condition"),
-                &mut diagnostics,
-            );
-        }
-    }
-
-    if !node_ids.contains(&definition.start_node_id) {
-        diagnostics.push(error(
-            "start_node_missing",
-            "startNodeId",
-            "The start node must exist.",
-        ));
+            ),
+            None => (
+                "start_node_missing",
+                "The start node must exist.".to_string(),
+            ),
+        };
+        diagnostics.push(error(code, format!("{path_prefix}startNodeId"), message));
     }
 
     let mut edge_ids = BTreeSet::new();
     let mut outgoing_defaults: BTreeMap<String, &str> = BTreeMap::new();
     let mut outgoing_edges: BTreeMap<&str, Vec<&WorkflowEdgeDto>> = BTreeMap::new();
-    for (index, edge) in definition.edges.iter().enumerate() {
+    let loop_keys = edges
+        .iter()
+        .filter_map(|edge| edge.loop_policy.as_ref())
+        .map(|policy| policy.loop_key.as_str())
+        .collect::<BTreeSet<_>>();
+    for (index, edge) in edges.iter().enumerate() {
         if !edge_ids.insert(edge.id.clone()) {
             diagnostics.push(error(
                 "duplicate_edge_id",
-                format!("edges.{index}.id"),
+                format!("{path_prefix}edges.{index}.id"),
                 format!("Edge id `{}` is duplicated.", edge.id),
             ));
         }
         if !node_ids.contains(&edge.from_node_id) {
+            let code = if subgraph.is_some() {
+                "subgraph_edge_source_missing"
+            } else {
+                "edge_source_missing"
+            };
             diagnostics.push(error(
-                "edge_source_missing",
-                format!("edges.{index}.fromNodeId"),
+                code,
+                format!("{path_prefix}edges.{index}.fromNodeId"),
                 format!("Edge `{}` references a missing source node.", edge.id),
             ));
         }
         if !node_ids.contains(&edge.to_node_id) {
+            let code = if subgraph.is_some() {
+                "subgraph_edge_target_missing"
+            } else {
+                "edge_target_missing"
+            };
             diagnostics.push(error(
-                "edge_target_missing",
-                format!("edges.{index}.toNodeId"),
+                code,
+                format!("{path_prefix}edges.{index}.toNodeId"),
                 format!("Edge `{}` references a missing target node.", edge.id),
             ));
         }
         if matches!(edge.condition, WorkflowConditionDto::Always) {
             let buckets = default_edge_buckets(edge.r#type);
             let conflicts = buckets.iter().any(|bucket| {
-                if *bucket == "all" {
-                    outgoing_defaults
-                        .keys()
-                        .any(|key| key.starts_with(&format!("{}:", edge.from_node_id)))
-                } else {
-                    outgoing_defaults.contains_key(&format!("{}:all", edge.from_node_id))
-                        || outgoing_defaults
-                            .contains_key(&format!("{}:{bucket}", edge.from_node_id))
-                }
+                outgoing_defaults.contains_key(&format!("{}:{bucket}", edge.from_node_id))
             });
             if conflicts {
                 diagnostics.push(error(
                     "duplicate_default_edge",
-                    format!("edges.{index}.condition"),
+                    format!("{path_prefix}edges.{index}.condition"),
                     format!(
                         "Node `{}` has more than one default else edge.",
                         edge.from_node_id
@@ -211,75 +245,59 @@ pub fn validate_workflow_definition(
                     if policy.max_attempts == 0 {
                         diagnostics.push(error(
                             "loop_max_attempts_invalid",
-                            format!("edges.{index}.loopPolicy.maxAttempts"),
+                            format!("{path_prefix}edges.{index}.loopPolicy.maxAttempts"),
                             format!("Loop edge `{}` must allow at least one attempt.", edge.id),
                         ));
                     }
                     if !node_ids.contains(&policy.on_exhausted) {
                         diagnostics.push(error(
                             "loop_exhaustion_target_missing",
-                            format!("edges.{index}.loopPolicy.onExhausted"),
+                            format!("{path_prefix}edges.{index}.loopPolicy.onExhausted"),
                             format!(
                                 "Loop edge `{}` must route exhaustion to an existing node.",
                                 edge.id
                             ),
                         ));
                     }
+                    if policy.loop_key.trim().is_empty() {
+                        diagnostics.push(error(
+                            "loop_key_empty",
+                            format!("{path_prefix}edges.{index}.loopPolicy.loopKey"),
+                            "Loop policies must declare a loop key.",
+                        ));
+                    }
+                    for (artifact_index, artifact_ref) in
+                        policy.selected_artifact_refs.iter().enumerate()
+                    {
+                        if !produced_artifacts.contains(artifact_ref) {
+                            diagnostics.push(error(
+                                "loop_artifact_ref_missing",
+                                format!(
+                                    "{path_prefix}edges.{index}.loopPolicy.selectedArtifactRefs.{artifact_index}"
+                                ),
+                                format!(
+                                    "Loop policy references missing artifact `{artifact_ref}`."
+                                ),
+                            ));
+                        }
+                    }
                 }
                 None => diagnostics.push(error(
                     "loop_policy_missing",
-                    format!("edges.{index}.loopPolicy"),
+                    format!("{path_prefix}edges.{index}.loopPolicy"),
                     format!("Loop edge `{}` must declare a loop policy.", edge.id),
                 )),
             }
         }
-        validate_condition_shape(
+        validate_condition_semantics(
             &edge.condition,
-            format!("edges.{index}.condition"),
-            &mut diagnostics,
+            format!("{path_prefix}edges.{index}.condition"),
+            &node_ids,
+            &produced_artifacts,
+            &artifact_contracts_by_ref,
+            &loop_keys,
+            diagnostics,
         );
-        for artifact_ref in condition_artifact_refs(&edge.condition) {
-            if !produced_artifacts.contains(&artifact_ref) {
-                diagnostics.push(error(
-                    "condition_artifact_ref_missing",
-                    format!("edges.{index}.condition"),
-                    format!("Condition references missing artifact `{artifact_ref}`."),
-                ));
-            }
-        }
-        for (artifact_ref, json_path) in condition_artifact_field_refs(&edge.condition) {
-            if let Some(contract) = artifact_contracts_by_ref.get(&artifact_ref) {
-                if let Some(json_schema) = contract.json_schema.as_ref() {
-                    if !json_schema_allows_path(json_schema, &json_path) {
-                        diagnostics.push(error(
-                            "condition_artifact_path_not_in_schema",
-                            format!("edges.{index}.condition"),
-                            format!(
-                                "Condition references `{artifact_ref}{json_path}`, but that field is not allowed by the artifact schema."
-                            ),
-                        ));
-                    }
-                }
-            }
-        }
-        for state_ref in condition_state_refs(&edge.condition) {
-            if !produced_artifacts.contains(&state_ref) {
-                diagnostics.push(error(
-                    "condition_state_ref_missing",
-                    format!("edges.{index}.condition"),
-                    format!("Condition references missing state value `{state_ref}`."),
-                ));
-            }
-        }
-        for node_ref in condition_node_refs(&edge.condition) {
-            if !node_ids.contains(&node_ref) {
-                diagnostics.push(error(
-                    "condition_node_ref_missing",
-                    format!("edges.{index}.condition"),
-                    format!("Condition references missing node `{node_ref}`."),
-                ));
-            }
-        }
 
         outgoing_edges
             .entry(edge.from_node_id.as_str())
@@ -287,14 +305,68 @@ pub fn validate_workflow_definition(
             .push(edge);
     }
 
-    for (index, node) in definition.nodes.iter().enumerate() {
+    for (node_id, node_edges) in &outgoing_edges {
+        let mut conditional_buckets = BTreeSet::new();
+        for edge in node_edges {
+            if !matches!(edge.condition, WorkflowConditionDto::Always) {
+                conditional_buckets.extend(default_edge_buckets(edge.r#type));
+            }
+        }
+        for bucket in conditional_buckets {
+            if !outgoing_defaults.contains_key(&format!("{node_id}:all"))
+                && !outgoing_defaults.contains_key(&format!("{node_id}:{bucket}"))
+            {
+                diagnostics.push(error(
+                    "conditional_route_fallback_missing",
+                    format!("{path_prefix}nodes.{node_id}"),
+                    format!(
+                        "Node `{node_id}` has conditional {bucket} routes but no `always` fallback for that outcome. Route the fallback to a Human Checkpoint or Terminal node."
+                    ),
+                ));
+            }
+        }
+    }
+
+    for (index, node) in nodes.iter().enumerate() {
+        let node_path = format!("{path_prefix}nodes.{index}");
+        if subgraph.is_some()
+            && matches!(
+                node,
+                WorkflowNodeDto::Terminal {
+                    terminal_status: WorkflowTerminalStatusDto::NeedsHuman,
+                    ..
+                }
+            )
+        {
+            diagnostics.push(error(
+                "subgraph_needs_human_terminal_unsupported",
+                format!("{node_path}.terminalStatus"),
+                "Subgraphs cannot pause through a Needs Human Terminal. Route to a Human Checkpoint so the paused run has a resumable gate.",
+            ));
+        }
         if let Some(input_bindings) = node_input_bindings(node) {
             for (binding_index, binding) in input_bindings.iter().enumerate() {
+                let binding_path = format!("{node_path}.inputBindings.{binding_index}");
+                let path = match binding {
+                    WorkflowInputBindingDto::RunInput { path, .. }
+                    | WorkflowInputBindingDto::Artifact { path, .. }
+                    | WorkflowInputBindingDto::State { path, .. } => path,
+                };
+                if path
+                    .as_deref()
+                    .is_some_and(|value| !value.trim().starts_with('$'))
+                {
+                    diagnostics.push(error(
+                        "input_binding_path_invalid",
+                        format!("{binding_path}.path"),
+                        "Input binding paths must use a JSON path that starts with `$`.",
+                    ));
+                }
                 if let WorkflowInputBindingDto::Artifact { artifact_ref, .. } = binding {
                     if !produced_artifacts.contains(artifact_ref) {
                         diagnostics.push(error(
                             "artifact_ref_missing",
-                            format!("nodes.{index}.inputBindings.{binding_index}.artifactRef"),
+                            format!("{binding_path}.artifactRef"),
                             format!(
                                 "Artifact reference `{artifact_ref}` is not produced by any agent node."
                             ),
@@ -305,7 +377,7 @@ pub fn validate_workflow_definition(
                     if !produced_artifacts.contains(state_ref) {
                         diagnostics.push(error(
                             "state_ref_missing",
-                            format!("nodes.{index}.inputBindings.{binding_index}.stateRef"),
+                            format!("{binding_path}.stateRef"),
                             format!(
                                 "State reference `{state_ref}` is not produced by any state-capable node."
                             ),
@@ -317,14 +389,14 @@ pub fn validate_workflow_definition(
         match node {
             WorkflowNodeDto::StateRead { query, .. }
             | WorkflowNodeDto::StateQuery { query, .. } => {
-                validate_state_query(query, format!("nodes.{index}.query"), &mut diagnostics);
+                validate_state_query(query, format!("{node_path}.query"), diagnostics);
             }
             WorkflowNodeDto::StateWrite { operation, .. }
             | WorkflowNodeDto::StatePatch { operation, .. } => {
                 validate_state_write_operation(
                     operation,
-                    format!("nodes.{index}.operation"),
-                    &mut diagnostics,
+                    format!("{node_path}.operation"),
+                    diagnostics,
                     true,
                 );
             }
@@ -334,15 +406,11 @@ pub fn validate_workflow_definition(
                 max_item_count,
                 ..
             } => {
-                validate_state_query(
-                    collection,
-                    format!("nodes.{index}.collection"),
-                    &mut diagnostics,
-                );
+                validate_state_query(collection, format!("{node_path}.collection"), diagnostics);
                 if *max_item_count == 0 {
                     diagnostics.push(error(
                         "collection_loop_max_item_count_invalid",
-                        format!("nodes.{index}.maxItemCount"),
+                        format!("{node_path}.maxItemCount"),
                         "Collection loops must allow at least one item.",
                     ));
                 }
@@ -352,7 +420,7 @@ pub fn validate_workflow_definition(
                 {
                     diagnostics.push(error(
                         "collection_loop_sort_path_invalid",
-                        format!("nodes.{index}.sortKey"),
+                        format!("{node_path}.sortKey"),
                         "Collection loop sort keys must use a JSON path that starts with `$`.",
                     ));
                 }
@@ -361,13 +429,14 @@ pub fn validate_workflow_definition(
                 if !subgraph_ids.contains(subgraph_id) {
                     diagnostics.push(error(
                         "subgraph_ref_missing",
-                        format!("nodes.{index}.subgraphId"),
+                        format!("{node_path}.subgraphId"),
                         format!("Subgraph node references missing subgraph `{subgraph_id}`."),
                     ));
                 }
             }
             WorkflowNodeDto::Command {
                 command,
+                args,
                 allowed_commands,
                 timeout_seconds,
                 ..
@@ -375,29 +444,44 @@ pub fn validate_workflow_definition(
                 if command.trim().is_empty() {
                     diagnostics.push(error(
                         "command_empty",
-                        format!("nodes.{index}.command"),
+                        format!("{node_path}.command"),
                         "Command nodes must declare a command.",
                     ));
                 }
                 if *timeout_seconds == 0 {
                     diagnostics.push(error(
                         "command_timeout_invalid",
-                        format!("nodes.{index}.timeoutSeconds"),
+                        format!("{node_path}.timeoutSeconds"),
                         "Command node timeout must be at least one second.",
                     ));
                 }
                 if allowed_commands.is_empty() {
                     diagnostics.push(error(
                         "command_allowlist_empty",
-                        format!("nodes.{index}.allowedCommands"),
+                        format!("{node_path}.allowedCommands"),
                         "Command nodes must declare an allowlist.",
                     ));
                 } else if !allowed_commands.iter().any(|allowed| allowed == command) {
                     diagnostics.push(error(
                         "command_not_in_allowlist",
-                        format!("nodes.{index}.allowedCommands"),
+                        format!("{node_path}.allowedCommands"),
                         format!("Command `{command}` must appear in the command node allowlist."),
                     ));
+                }
+                if !command.trim().is_empty() {
+                    if let Err(violation) = validate_workflow_command_policy(command, args) {
+                        diagnostics.push(error(
+                            violation.code,
+                            if violation.code
+                                == "workflow_command_arguments_not_allowed_by_app_policy"
+                            {
+                                format!("{node_path}.args")
+                            } else {
+                                format!("{node_path}.command")
+                            },
+                            violation.message,
+                        ));
+                    }
                 }
             }
             WorkflowNodeDto::HumanCheckpoint {
@@ -412,13 +496,13 @@ pub fn validate_workflow_definition(
                     if option.is_empty() {
                         diagnostics.push(error(
                             "checkpoint_decision_empty",
-                            format!("nodes.{index}.decisionOptions.{option_index}"),
+                            format!("{node_path}.decisionOptions.{option_index}"),
                             "Human checkpoint decision options cannot be blank.",
                         ));
                     } else if !seen.insert(option.to_string()) {
                         diagnostics.push(error(
                             "checkpoint_decision_duplicate",
-                            format!("nodes.{index}.decisionOptions.{option_index}"),
+                            format!("{node_path}.decisionOptions.{option_index}"),
                             format!("Human checkpoint decision `{option}` is duplicated."),
                         ));
                     }
@@ -429,15 +513,15 @@ pub fn validate_workflow_definition(
                 {
                     diagnostics.push(error(
                         "checkpoint_payload_schema_invalid",
-                        format!("nodes.{index}.resumePayloadSchema"),
+                        format!("{node_path}.resumePayloadSchema"),
                         "Human checkpoint resume payload schemas must be JSON Schema objects.",
                     ));
                 }
                 for (update_index, operation) in state_updates.iter().enumerate() {
                     validate_state_write_operation(
                         operation,
-                        format!("nodes.{index}.stateUpdates.{update_index}"),
-                        &mut diagnostics,
+                        format!("{node_path}.stateUpdates.{update_index}"),
+                        diagnostics,
                         false,
                     );
                 }
@@ -453,17 +537,50 @@ pub fn validate_workflow_definition(
                 {
                     diagnostics.push(error(
                         "merge_quorum_missing",
-                        format!("nodes.{index}.quorum"),
+                        format!("{node_path}.quorum"),
                         "Quorum merge nodes must declare a quorum.",
                     ));
+                }
+            }
+            WorkflowNodeDto::Gate {
+                required_checks,
+                on_blocked,
+                ..
+            }
+            | WorkflowNodeDto::StateCheckpoint {
+                required_checks,
+                on_blocked,
+                ..
+            } => {
+                if !matches!(on_blocked.as_str(), "pause" | "fail") {
+                    diagnostics.push(error(
+                        "gate_on_blocked_invalid",
+                        format!("{node_path}.onBlocked"),
+                        "Gate onBlocked behavior must be `pause` or `fail`.",
+                    ));
+                }
+                for (check_index, condition) in required_checks.iter().enumerate() {
+                    validate_condition_semantics(
+                        condition,
+                        format!("{node_path}.requiredChecks.{check_index}"),
+                        &node_ids,
+                        &produced_artifacts,
+                        &artifact_contracts_by_ref,
+                        &loop_keys,
+                        diagnostics,
+                    );
                 }
             }
             _ => {}
         }
     }
 
-    diagnostics.extend(detect_unbounded_cycles(definition, &outgoing_edges));
-    report_from_diagnostics(diagnostics)
+    diagnostics.extend(detect_unbounded_cycles(
+        nodes,
+        start_node_id,
+        &outgoing_edges,
+        format!("{path_prefix}edges"),
+    ));
 }
 
 pub fn validate_workflow_definition_with_registry(
@@ -475,14 +592,32 @@ pub fn validate_workflow_definition_with_registry(
         let WorkflowNodeDto::Agent { agent_ref, .. } = node else {
             continue;
         };
-        validate_agent_ref(repo_root, index, agent_ref, &mut report.diagnostics);
+        validate_agent_ref(
+            repo_root,
+            &format!("nodes[{index}].agentRef"),
+            agent_ref,
+            &mut report.diagnostics,
+        );
+    }
+    for (subgraph_index, subgraph) in definition.subgraphs.iter().enumerate() {
+        for (node_index, node) in subgraph.nodes.iter().enumerate() {
+            let WorkflowNodeDto::Agent { agent_ref, .. } = node else {
+                continue;
+            };
+            validate_agent_ref(
+                repo_root,
+                &format!("subgraphs[{subgraph_index}].nodes[{node_index}].agentRef"),
+                agent_ref,
+                &mut report.diagnostics,
+            );
+        }
     }
     report_from_diagnostics(report.diagnostics)
 }
 
 fn validate_agent_ref(
     repo_root: &Path,
-    node_index: usize,
+    path: &str,
     agent_ref: &AgentRefDto,
     diagnostics: &mut Vec<WorkflowValidationDiagnosticDto>,
 ) {
@@ -495,13 +630,13 @@ fn validate_agent_ref(
             if *version == 0 {
                 diagnostics.push(error(
                     "agent_ref_builtin_version_required",
-                    agent_ref_version_path(node_index),
+                    format!("{path}.version"),
                     "Built-in agent refs must declare a supported version.",
                 ));
             } else if *version != descriptor.version {
                 diagnostics.push(error(
                     "agent_ref_builtin_version_unsupported",
-                    agent_ref_version_path(node_index),
+                    format!("{path}.version"),
                     format!(
                         "Built-in agent `{}` supports version {}, but the Workflow requested version {}.",
                         runtime_agent_id.as_str(),
@@ -518,7 +653,7 @@ fn validate_agent_ref(
             if definition_id.trim().is_empty() {
                 diagnostics.push(error(
                     "agent_ref_custom_definition_required",
-                    agent_ref_definition_id_path(node_index),
+                    format!("{path}.definitionId"),
                     "Custom agent refs must declare definitionId.",
                 ));
                 return;
@@ -526,7 +661,7 @@ fn validate_agent_ref(
             if *version == 0 {
                 diagnostics.push(error(
                     "agent_ref_custom_version_required",
-                    agent_ref_version_path(node_index),
+                    format!("{path}.version"),
                     "Custom agent refs must declare a requested version.",
                 ));
                 return;
@@ -540,41 +675,33 @@ fn validate_agent_ref(
                 let (code, path) = match err.code.as_str() {
                     "agent_definition_not_found" => (
                         "agent_ref_custom_definition_missing",
-                        agent_ref_definition_id_path(node_index),
+                        format!("{path}.definitionId"),
                     ),
                     "agent_definition_inactive" => (
                         "agent_ref_custom_definition_inactive",
-                        agent_ref_definition_id_path(node_index),
+                        format!("{path}.definitionId"),
                     ),
                     "agent_definition_version_required" => (
                         "agent_ref_custom_version_required",
-                        agent_ref_version_path(node_index),
+                        format!("{path}.version"),
                     ),
                     "agent_definition_version_missing" => (
                         "agent_ref_custom_version_missing",
-                        agent_ref_version_path(node_index),
+                        format!("{path}.version"),
                     ),
                     "agent_definition_activation_preflight_failed" => (
                         "agent_ref_custom_activation_preflight_failed",
-                        agent_ref_version_path(node_index),
+                        format!("{path}.version"),
                     ),
                     _ => (
                         "agent_ref_custom_unavailable",
-                        agent_ref_definition_id_path(node_index),
+                        format!("{path}.definitionId"),
                     ),
                 };
                 diagnostics.push(error(code, path, err.message));
             }
         }
     }
-}
-
-fn agent_ref_definition_id_path(node_index: usize) -> String {
-    format!("nodes[{node_index}].agentRef.definitionId")
-}
-
-fn agent_ref_version_path(node_index: usize) -> String {
-    format!("nodes[{node_index}].agentRef.version")
 }
 
 fn report_from_diagnostics(
@@ -655,6 +782,128 @@ fn validate_state_write_operation(
             "State write target ids cannot be blank.",
         ));
     }
+}
+
+fn validate_condition_semantics(
+    condition: &WorkflowConditionDto,
+    path: String,
+    node_ids: &BTreeSet<String>,
+    produced_artifacts: &BTreeSet<String>,
+    artifact_contracts_by_ref: &BTreeMap<String, &WorkflowArtifactContractDto>,
+    loop_keys: &BTreeSet<&str>,
+    diagnostics: &mut Vec<WorkflowValidationDiagnosticDto>,
+) {
+    validate_condition_shape(condition, path.clone(), diagnostics);
+    for artifact_ref in condition_artifact_refs(condition) {
+        if !produced_artifacts.contains(&artifact_ref) {
+            diagnostics.push(error(
+                "condition_artifact_ref_missing",
+                &path,
+                format!("Condition references missing artifact `{artifact_ref}`."),
+            ));
+        }
+    }
+    for (artifact_ref, json_path) in condition_artifact_field_refs(condition) {
+        if artifact_contracts_by_ref
+            .get(&artifact_ref)
+            .and_then(|contract| contract.json_schema.as_ref())
+            .is_some_and(|schema| !json_schema_allows_path(schema, &json_path))
+        {
+            diagnostics.push(error(
+                "condition_artifact_path_not_in_schema",
+                &path,
+                format!(
+                    "Condition references `{artifact_ref}{json_path}`, but that field is not allowed by the artifact schema."
+                ),
+            ));
+        }
+    }
+    for state_ref in condition_state_refs(condition) {
+        if !produced_artifacts.contains(&state_ref) {
+            diagnostics.push(error(
+                "condition_state_ref_missing",
+                &path,
+                format!("Condition references missing state value `{state_ref}`."),
+            ));
+        }
+    }
+    for node_ref in condition_node_refs(condition) {
+        if !node_ids.contains(&node_ref) {
+            diagnostics.push(error(
+                "condition_node_ref_missing",
+                &path,
+                format!("Condition references missing node `{node_ref}`."),
+            ));
+        }
+    }
+    for loop_key in condition_loop_keys(condition) {
+        if !loop_keys.contains(loop_key.as_str()) {
+            diagnostics.push(error(
+                "condition_loop_key_missing",
+                &path,
+                format!("Condition references missing loop key `{loop_key}`."),
+            ));
+        }
+    }
+}
+
+fn validate_subgraph_invocation_cycles(
+    definition: &WorkflowDefinitionDto,
+    diagnostics: &mut Vec<WorkflowValidationDiagnosticDto>,
+) {
+    for (subgraph_index, subgraph) in definition.subgraphs.iter().enumerate() {
+        for (node_index, node) in subgraph.nodes.iter().enumerate() {
+            let WorkflowNodeDto::Subgraph { subgraph_id, .. } = node else {
+                continue;
+            };
+            if !definition
+                .subgraphs
+                .iter()
+                .any(|candidate| candidate.id == *subgraph_id)
+            {
+                continue;
+            }
+            let mut visiting = BTreeSet::new();
+            if subgraph_invokes_target(definition, subgraph_id, &subgraph.id, &mut visiting) {
+                diagnostics.push(error(
+                    "recursive_subgraph_invocation",
+                    format!("subgraphs.{subgraph_index}.nodes.{node_index}.subgraphId"),
+                    format!(
+                        "Subgraph `{}` recursively invokes `{subgraph_id}`; recursive subgraph invocation is unsupported.",
+                        subgraph.id
+                    ),
+                ));
+            }
+        }
+    }
+}
+
+fn subgraph_invokes_target(
+    definition: &WorkflowDefinitionDto,
+    current_id: &str,
+    target_id: &str,
+    visiting: &mut BTreeSet<String>,
+) -> bool {
+    if current_id == target_id {
+        return true;
+    }
+    if !visiting.insert(current_id.to_string()) {
+        return false;
+    }
+    let reaches_target = definition
+        .subgraphs
+        .iter()
+        .find(|subgraph| subgraph.id == current_id)
+        .is_some_and(|subgraph| {
+            subgraph.nodes.iter().any(|node| {
+                let WorkflowNodeDto::Subgraph { subgraph_id, .. } = node else {
+                    return false;
+                };
+                subgraph_invokes_target(definition, subgraph_id, target_id, visiting)
+            })
+        });
+    visiting.remove(current_id);
+    reaches_target
 }
 
 fn node_input_bindings(node: &WorkflowNodeDto) -> Option<&Vec<WorkflowInputBindingDto>> {
@@ -844,29 +1093,29 @@ fn validate_condition_shape(
 }
 
 fn detect_unbounded_cycles(
-    definition: &WorkflowDefinitionDto,
+    nodes: &[WorkflowNodeDto],
+    start_node_id: &str,
     outgoing_edges: &BTreeMap<&str, Vec<&WorkflowEdgeDto>>,
+    edges_path: String,
 ) -> Vec<WorkflowValidationDiagnosticDto> {
     let mut detector = CycleDetector {
         outgoing_edges,
+        edges_path,
         visiting: BTreeSet::new(),
         visited: BTreeSet::new(),
         stack: Vec::new(),
         reported_cycles: BTreeSet::new(),
         diagnostics: Vec::new(),
     };
-    if definition
-        .nodes
-        .iter()
-        .any(|node| node.id() == definition.start_node_id)
-    {
-        detector.visit(&definition.start_node_id);
+    if nodes.iter().any(|node| node.id() == start_node_id) {
+        detector.visit(start_node_id);
     }
     detector.diagnostics
 }
 
 struct CycleDetector<'a> {
     outgoing_edges: &'a BTreeMap<&'a str, Vec<&'a WorkflowEdgeDto>>,
+    edges_path: String,
     visiting: BTreeSet<String>,
     visited: BTreeSet<String>,
     stack: Vec<&'a WorkflowEdgeDto>,
@@ -894,7 +1143,7 @@ impl<'a> CycleDetector<'a> {
             {
                 self.diagnostics.push(error(
                     "cycle_without_loop_policy",
-                    "edges",
+                    &self.edges_path,
                     format!("Cycle `{cycle_key}` must include an explicit bounded loop edge."),
                 ));
             }
@@ -964,6 +1213,18 @@ fn condition_node_refs(condition: &WorkflowConditionDto) -> Vec<String> {
             conditions.iter().flat_map(condition_node_refs).collect()
         }
         WorkflowConditionDto::Not { condition } => condition_node_refs(condition),
+        _ => Vec::new(),
+    }
+}
+
+fn condition_loop_keys(condition: &WorkflowConditionDto) -> Vec<String> {
+    match condition {
+        WorkflowConditionDto::LoopAttemptLt { loop_key, .. }
+        | WorkflowConditionDto::LoopAttemptGte { loop_key, .. } => vec![loop_key.clone()],
+        WorkflowConditionDto::All { conditions } | WorkflowConditionDto::Any { conditions } => {
+            conditions.iter().flat_map(condition_loop_keys).collect()
+        }
+        WorkflowConditionDto::Not { condition } => condition_loop_keys(condition),
         _ => Vec::new(),
     }
 }
@@ -1071,10 +1332,7 @@ mod tests {
                     r#type: WorkflowEdgeTypeDto::Success,
                     label: String::new(),
                     priority: 10,
-                    condition: WorkflowConditionDto::NodeStatus {
-                        node_id: "agent-a".into(),
-                        status: crate::commands::contracts::workflows::WorkflowNodeRunStatusDto::Succeeded,
-                    },
+                    condition: WorkflowConditionDto::Always,
                     loop_policy: None,
                 },
                 WorkflowEdgeDto {
@@ -1258,6 +1516,129 @@ mod tests {
     }
 
     #[test]
+    fn validator_requires_an_always_fallback_for_conditional_routes() {
+        let mut definition = linear_definition();
+        definition.edges[0].condition = WorkflowConditionDto::NodeStatus {
+            node_id: "agent-a".into(),
+            status: crate::commands::contracts::workflows::WorkflowNodeRunStatusDto::Succeeded,
+        };
+
+        let report = validate_workflow_definition(&definition);
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(diagnostic_codes(&report).contains(&"conditional_route_fallback_missing"));
+    }
+
+    #[test]
+    fn validator_allows_global_and_status_specific_fallbacks_together() {
+        let mut definition = linear_definition();
+        definition.edges[0].condition = WorkflowConditionDto::NodeStatus {
+            node_id: "agent-a".into(),
+            status: crate::commands::contracts::workflows::WorkflowNodeRunStatusDto::Succeeded,
+        };
+        definition.edges.extend([
+            WorkflowEdgeDto {
+                id: "edge-a-success-fallback".into(),
+                from_node_id: "agent-a".into(),
+                to_node_id: "agent-b".into(),
+                r#type: WorkflowEdgeTypeDto::Success,
+                label: "success fallback".into(),
+                priority: 80,
+                condition: WorkflowConditionDto::Always,
+                loop_policy: None,
+            },
+            WorkflowEdgeDto {
+                id: "edge-a-global-fallback".into(),
+                from_node_id: "agent-a".into(),
+                to_node_id: "done".into(),
+                r#type: WorkflowEdgeTypeDto::Conditional,
+                label: "global fallback".into(),
+                priority: 90,
+                condition: WorkflowConditionDto::Always,
+                loop_policy: None,
+            },
+        ]);
+
+        let report = validate_workflow_definition(&definition);
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Valid);
+        assert!(!diagnostic_codes(&report).contains(&"duplicate_default_edge"));
+    }
+
+    #[test]
+    fn validator_rejects_unresumable_needs_human_terminal_inside_subgraph() {
+        let mut definition = linear_definition();
+        definition.subgraphs.push(WorkflowSubgraphDto {
+            id: "review-subgraph".into(),
+            title: "Review".into(),
+            description: String::new(),
+            start_node_id: "needs-human".into(),
+            nodes: vec![WorkflowNodeDto::Terminal {
+                id: "needs-human".into(),
+                title: "Needs human".into(),
+                description: String::new(),
+                position: Default::default(),
+                terminal_status: WorkflowTerminalStatusDto::NeedsHuman,
+            }],
+            edges: Vec::new(),
+            input_bindings: Vec::new(),
+            output_contract: WorkflowOutputContractDto::default(),
+        });
+
+        let report = validate_workflow_definition(&definition);
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(diagnostic_codes(&report).contains(&"subgraph_needs_human_terminal_unsupported"));
+    }
+
+    #[test]
+    fn validator_enforces_the_app_owned_git_status_policy() {
+        let command_node = |command: &str, args: Vec<&str>| {
+            serde_json::from_value::<WorkflowNodeDto>(json!({
+                "id": "agent-b",
+                "type": "command",
+                "title": "Repository status",
+                "description": "",
+                "position": { "x": 0, "y": 0 },
+                "command": command,
+                "args": args,
+                "allowedCommands": [command],
+                "timeoutSeconds": 30,
+                "successExitCodes": [0],
+                "outputContract": {
+                    "artifactType": "implementation_summary",
+                    "schemaVersion": 1,
+                    "extraction": "generic_text",
+                    "required": true
+                },
+                "parser": { "extraction": "generic_text" }
+            }))
+            .expect("command node")
+        };
+
+        let mut definition = linear_definition();
+        definition.nodes[1] = command_node("git", vec!["status", "--short"]);
+        assert_eq!(
+            validate_workflow_definition(&definition).status,
+            WorkflowValidationStatusDto::Valid
+        );
+
+        definition.nodes[1] = command_node("pnpm", vec!["test"]);
+        let report = validate_workflow_definition(&definition);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "workflow_command_not_allowed_by_app_policy"
+                && diagnostic.path == "nodes.1.command"
+        }));
+
+        definition.nodes[1] = command_node("git", vec!["push"]);
+        let report = validate_workflow_definition(&definition);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "workflow_command_arguments_not_allowed_by_app_policy"
+                && diagnostic.path == "nodes.1.args"
+        }));
+    }
+
+    #[test]
     fn registry_validator_rejects_missing_custom_agent() {
         let (_tempdir, repo_root) = repo_with_database("project-1");
 
@@ -1436,10 +1817,348 @@ mod tests {
                 },
             ),
         });
+        definition.edges.push(WorkflowEdgeDto {
+            id: "edge-b-human-fallback".into(),
+            from_node_id: "agent-b".into(),
+            to_node_id: "human".into(),
+            r#type: WorkflowEdgeTypeDto::Conditional,
+            label: "fallback".into(),
+            priority: 90,
+            condition: WorkflowConditionDto::Always,
+            loop_policy: None,
+        });
 
         let report = validate_workflow_definition(&definition);
 
         assert_eq!(report.status, WorkflowValidationStatusDto::Valid);
+    }
+
+    #[test]
+    fn validator_applies_full_semantics_inside_subgraphs() {
+        let mut definition = linear_definition();
+        definition.subgraphs.push(
+            serde_json::from_value(json!({
+                "id": "local-flow",
+                "title": "Local flow",
+                "description": "",
+                "startNodeId": "source",
+                "nodes": [
+                    {
+                        "id": "source",
+                        "type": "agent",
+                        "title": "Source",
+                        "description": "",
+                        "position": { "x": 0, "y": 0 },
+                        "agentRef": {
+                            "kind": "built_in",
+                            "runtimeAgentId": "engineer",
+                            "version": 2
+                        },
+                        "inputBindings": [],
+                        "outputContract": {
+                            "artifactType": "text_output",
+                            "schemaVersion": 1,
+                            "extraction": "generic_text",
+                            "required": true
+                        }
+                    },
+                    {
+                        "id": "sink",
+                        "type": "agent",
+                        "title": "Sink",
+                        "description": "",
+                        "position": { "x": 0, "y": 0 },
+                        "agentRef": {
+                            "kind": "built_in",
+                            "runtimeAgentId": "engineer",
+                            "version": 2
+                        },
+                        "inputBindings": [{
+                            "source": "artifact",
+                            "name": "missing",
+                            "required": true,
+                            "artifactRef": "ghost.text_output"
+                        }],
+                        "outputContract": {
+                            "artifactType": "text_output",
+                            "schemaVersion": 1,
+                            "extraction": "generic_text",
+                            "required": true
+                        }
+                    },
+                    {
+                        "id": "state",
+                        "type": "state_read",
+                        "title": "Read state",
+                        "description": "",
+                        "position": { "x": 0, "y": 0 },
+                        "query": {
+                            "entityType": "milestone",
+                            "filters": [{
+                                "path": "invalid",
+                                "operator": "eq",
+                                "value": "open",
+                                "values": []
+                            }],
+                            "includeArchived": false
+                        },
+                        "outputArtifactType": "state_result"
+                    },
+                    {
+                        "id": "command",
+                        "type": "command",
+                        "title": "Command",
+                        "description": "",
+                        "position": { "x": 0, "y": 0 },
+                        "command": "pnpm",
+                        "args": [],
+                        "allowedCommands": ["npm"],
+                        "timeoutSeconds": 30,
+                        "successExitCodes": [0],
+                        "outputContract": {
+                            "artifactType": "command_result",
+                            "schemaVersion": 1,
+                            "extraction": "generic_text",
+                            "required": true
+                        },
+                        "parser": { "extraction": "generic_text" }
+                    }
+                ],
+                "edges": [
+                    {
+                        "id": "source-to-sink",
+                        "fromNodeId": "source",
+                        "toNodeId": "sink",
+                        "type": "success",
+                        "priority": 10,
+                        "condition": {
+                            "kind": "node_status",
+                            "nodeId": "ghost",
+                            "status": "succeeded"
+                        }
+                    },
+                    {
+                        "id": "sink-to-source",
+                        "fromNodeId": "sink",
+                        "toNodeId": "source",
+                        "type": "loop",
+                        "priority": 20,
+                        "condition": {
+                            "kind": "loop_attempt_lt",
+                            "loopKey": "missing-loop",
+                            "value": 2
+                        },
+                        "loopPolicy": {
+                            "loopKey": "local-loop",
+                            "maxAttempts": 2,
+                            "attemptScope": "run",
+                            "carryoverPolicy": "selected",
+                            "selectedArtifactRefs": ["ghost.text_output"],
+                            "resetPolicy": "never",
+                            "onExhausted": "ghost"
+                        }
+                    }
+                ],
+                "inputBindings": [],
+                "outputContract": {
+                    "artifactType": "subgraph_result",
+                    "schemaVersion": 1,
+                    "extraction": "generic_text",
+                    "required": true
+                }
+            }))
+            .expect("subgraph fixture"),
+        );
+
+        let report = validate_workflow_definition(&definition);
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        for (code, path) in [
+            (
+                "artifact_ref_missing",
+                "subgraphs.0.nodes.1.inputBindings.0.artifactRef",
+            ),
+            (
+                "state_query_filter_path_invalid",
+                "subgraphs.0.nodes.2.query.filters.0.path",
+            ),
+            (
+                "command_not_in_allowlist",
+                "subgraphs.0.nodes.3.allowedCommands",
+            ),
+            (
+                "condition_node_ref_missing",
+                "subgraphs.0.edges.0.condition",
+            ),
+            (
+                "condition_loop_key_missing",
+                "subgraphs.0.edges.1.condition",
+            ),
+            (
+                "loop_exhaustion_target_missing",
+                "subgraphs.0.edges.1.loopPolicy.onExhausted",
+            ),
+            (
+                "loop_artifact_ref_missing",
+                "subgraphs.0.edges.1.loopPolicy.selectedArtifactRefs.0",
+            ),
+        ] {
+            assert!(report
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.code == code && diagnostic.path == path));
+        }
+    }
+
+    #[test]
+    fn validator_accepts_acyclic_nested_subgraphs_and_rejects_recursion() {
+        let mut definition = linear_definition();
+        definition.subgraphs = serde_json::from_value(json!([
+            {
+                "id": "inner",
+                "title": "Inner",
+                "description": "",
+                "startNodeId": "done",
+                "nodes": [{
+                    "id": "done",
+                    "type": "terminal",
+                    "title": "Done",
+                    "description": "",
+                    "position": { "x": 0, "y": 0 },
+                    "terminalStatus": "success"
+                }],
+                "edges": [],
+                "inputBindings": [],
+                "outputContract": {
+                    "artifactType": "subgraph_result",
+                    "schemaVersion": 1,
+                    "extraction": "generic_text",
+                    "required": true
+                }
+            },
+            {
+                "id": "outer",
+                "title": "Outer",
+                "description": "",
+                "startNodeId": "invoke-inner",
+                "nodes": [
+                    {
+                        "id": "invoke-inner",
+                        "type": "subgraph",
+                        "title": "Invoke inner",
+                        "description": "",
+                        "position": { "x": 0, "y": 0 },
+                        "subgraphId": "inner",
+                        "inputBindings": [],
+                        "outputContract": {
+                            "artifactType": "subgraph_result",
+                            "schemaVersion": 1,
+                            "extraction": "generic_text",
+                            "required": true
+                        }
+                    },
+                    {
+                        "id": "outer-done",
+                        "type": "terminal",
+                        "title": "Done",
+                        "description": "",
+                        "position": { "x": 0, "y": 0 },
+                        "terminalStatus": "success"
+                    }
+                ],
+                "edges": [{
+                    "id": "inner-to-done",
+                    "fromNodeId": "invoke-inner",
+                    "toNodeId": "outer-done",
+                    "type": "success",
+                    "priority": 10,
+                    "condition": { "kind": "always" }
+                }],
+                "inputBindings": [],
+                "outputContract": {
+                    "artifactType": "subgraph_result",
+                    "schemaVersion": 1,
+                    "extraction": "generic_text",
+                    "required": true
+                }
+            }
+        ]))
+        .expect("subgraph fixtures");
+
+        assert_eq!(
+            validate_workflow_definition(&definition).status,
+            WorkflowValidationStatusDto::Valid
+        );
+
+        let WorkflowNodeDto::Subgraph { subgraph_id, .. } = &mut definition.subgraphs[1].nodes[0]
+        else {
+            panic!("expected subgraph node");
+        };
+        *subgraph_id = "outer".into();
+        let report = validate_workflow_definition(&definition);
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "recursive_subgraph_invocation"
+                && diagnostic.path == "subgraphs.1.nodes.0.subgraphId"
+        }));
+    }
+
+    #[test]
+    fn registry_validator_checks_agent_refs_inside_subgraphs() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        let mut definition = linear_definition();
+        set_second_agent_ref(
+            &mut definition,
+            AgentRefDto::BuiltIn {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                version: 2,
+            },
+        );
+        definition.subgraphs.push(
+            serde_json::from_value(json!({
+                "id": "local-flow",
+                "title": "Local flow",
+                "description": "",
+                "startNodeId": "local-agent",
+                "nodes": [{
+                    "id": "local-agent",
+                    "type": "agent",
+                    "title": "Local agent",
+                    "description": "",
+                    "position": { "x": 0, "y": 0 },
+                    "agentRef": {
+                        "kind": "custom",
+                        "definitionId": "missing-local-agent",
+                        "version": 1
+                    },
+                    "inputBindings": [],
+                    "outputContract": {
+                        "artifactType": "text_output",
+                        "schemaVersion": 1,
+                        "extraction": "generic_text",
+                        "required": true
+                    }
+                }],
+                "edges": [],
+                "inputBindings": [],
+                "outputContract": {
+                    "artifactType": "subgraph_result",
+                    "schemaVersion": 1,
+                    "extraction": "generic_text",
+                    "required": true
+                }
+            }))
+            .expect("subgraph fixture"),
+        );
+
+        let report = validate_workflow_definition_with_registry(&repo_root, &definition);
+
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "agent_ref_custom_definition_missing"
+                && diagnostic.path == "subgraphs[0].nodes[0].agentRef.definitionId"
+        }));
     }
 
     #[test]
@@ -1538,6 +2257,16 @@ mod tests {
             path: "$.status".into(),
             value: json!("passed"),
         };
+        definition.edges.push(WorkflowEdgeDto {
+            id: "edge-a-safe-fallback".into(),
+            from_node_id: "agent-a".into(),
+            to_node_id: "done".into(),
+            r#type: WorkflowEdgeTypeDto::Success,
+            label: "fallback".into(),
+            priority: 90,
+            condition: WorkflowConditionDto::Always,
+            loop_policy: None,
+        });
 
         let report = validate_workflow_definition(&definition);
 

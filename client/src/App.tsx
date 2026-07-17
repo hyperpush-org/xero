@@ -39,6 +39,10 @@ import { ProjectRail } from '@/components/xero/project-rail'
 import { UpdateScreen } from '@/components/xero/update-screen'
 import { createSafeTauriUnlisten } from '@/src/lib/tauri-events'
 import {
+  browserIdempotencyStorage,
+  ContinuationIdempotencyCoordinator,
+} from '@/src/features/xero/continuation-idempotency'
+import {
   XeroShell,
   detectPlatform,
   MOBILE_EMULATOR_SURFACES_ENABLED,
@@ -182,6 +186,7 @@ import type { BrowserAgentContextRequest } from '@/components/xero/browser-tool-
 import { DesktopControlBanner } from '@/components/xero/desktop-control-banner'
 import { checkAttachmentModelCompatibility } from '@/lib/agent-attachments'
 import { WORKFLOWS_ENABLED } from '@/src/features/xero/workflows-feature-flag'
+import { WorkflowStartIdempotencyCoordinator } from '@/src/features/xero/workflow-start-idempotency'
 
 export interface XeroAppProps {
   adapter?: XeroDesktopAdapter
@@ -241,6 +246,22 @@ const DEFAULT_BROWSER_SIDEBAR_PROJECT_STATE: BrowserSidebarProjectState = {
 
 function browserSidebarProjectKey(projectId: string | null): string {
   return projectId ?? GLOBAL_BROWSER_PROJECT_KEY
+}
+
+function createRuntimeContinuationRequestId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.()
+  if (!randomUuid) {
+    throw new Error('Xero cannot create a continuation request id in this runtime.')
+  }
+  return `computer-use-prompt-${randomUuid}`
+}
+
+function createWorkflowStartIdempotencyKey(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.()
+  if (!randomUuid) {
+    throw new Error('Xero cannot create a Workflow start idempotency key in this runtime.')
+  }
+  return `workflow-start-${randomUuid}`
 }
 
 function normalizePersistedActiveView(value: unknown): View | null {
@@ -1779,6 +1800,9 @@ export function XeroApp({ adapter }: XeroAppProps) {
     useState<WorkflowTemplateIdDto | null>(null)
   const [workflowActionRunning, setWorkflowActionRunning] = useState(false)
   const [workflowStartRequestToken, setWorkflowStartRequestToken] = useState(0)
+  const [workflowStartIdempotency] = useState(
+    () => new WorkflowStartIdempotencyCoordinator(createWorkflowStartIdempotencyKey),
+  )
   const workflowAgentInspector = useWorkflowAgentInspector({
     adapter: resolvedAdapter,
     projectId: activeProjectId,
@@ -1810,14 +1834,42 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const [pendingInitialRuntimeAgent, setPendingInitialRuntimeAgent] =
     useState<PendingInitialAgentSelection | null>(null)
   const [agentAuthoringSession, setAgentAuthoringSession] = useState<{
+    projectId: string
     mode: 'create' | 'edit' | 'duplicate'
     initialDetail: WorkflowAgentDetailDto | null
   } | null>(null)
   const [agentAuthoringLoading, setAgentAuthoringLoading] = useState(false)
-  const [agentAuthoringCatalog, setAgentAuthoringCatalog] =
-    useState<AgentAuthoringCatalogDto | null>(null)
-  const [agentToolPackCatalog, setAgentToolPackCatalog] =
-    useState<AgentToolPackCatalogDto | null>(null)
+  const [agentAuthoringCatalogBinding, setAgentAuthoringCatalogBinding] = useState<{
+    projectId: string
+    catalog: AgentAuthoringCatalogDto
+  } | null>(null)
+  const [agentToolPackCatalogBinding, setAgentToolPackCatalogBinding] = useState<{
+    projectId: string
+    catalog: AgentToolPackCatalogDto
+  } | null>(null)
+  const activeProjectIdRef = useRef(activeProjectId)
+  const computerUseContinuationCoordinatorRef =
+    useRef<ContinuationIdempotencyCoordinator | null>(null)
+  const computerUseContinuationCoordinator =
+    computerUseContinuationCoordinatorRef.current ??
+    new ContinuationIdempotencyCoordinator(createRuntimeContinuationRequestId, {
+      storage: browserIdempotencyStorage(),
+    })
+  computerUseContinuationCoordinatorRef.current = computerUseContinuationCoordinator
+  useLayoutEffect(() => {
+    activeProjectIdRef.current = activeProjectId
+  }, [activeProjectId])
+  const agentAuthoringDetailRequestRef = useRef(0)
+  const activeAgentAuthoringSession =
+    agentAuthoringSession?.projectId === activeProjectId ? agentAuthoringSession : null
+  const agentAuthoringCatalog =
+    agentAuthoringCatalogBinding?.projectId === activeProjectId
+      ? agentAuthoringCatalogBinding.catalog
+      : null
+  const agentToolPackCatalog =
+    agentToolPackCatalogBinding?.projectId === activeProjectId
+      ? agentToolPackCatalogBinding.catalog
+      : null
   const [environmentDiscoveryStatus, setEnvironmentDiscoveryStatus] =
     useState<EnvironmentDiscoveryStatusDto | null>(null)
   const [environmentProfileSummary, setEnvironmentProfileSummary] =
@@ -1830,6 +1882,13 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const refreshCustomAgentDefinitions = useCallback(() => {
     setCustomAgentDefinitionsRevision((current) => current + 1)
   }, [])
+  useEffect(() => {
+    agentAuthoringDetailRequestRef.current += 1
+    setAgentAuthoringSession(null)
+    setAgentAuthoringCatalogBinding(null)
+    setAgentToolPackCatalogBinding(null)
+    setAgentAuthoringLoading(false)
+  }, [activeProjectId])
   const editorAgentActivities = useMemo(
     () =>
       buildEditorAgentActivities(
@@ -3226,10 +3285,10 @@ export function XeroApp({ adapter }: XeroAppProps) {
     }
   }, [resolvedAdapter, retry])
   const workflowAgentCreateActive =
-    activeView === 'phases' && agentAuthoringSession?.mode === 'create'
+    activeView === 'phases' && activeAgentAuthoringSession?.mode === 'create'
   const agentCreateCanvasIncluded =
     activeView === 'phases' &&
-    (agentAuthoringSession?.mode === 'create' || selectedWorkflowDefinition !== null)
+    (activeAgentAuthoringSession?.mode === 'create' || selectedWorkflowDefinition !== null)
   const pendingAgentDockSelection =
     workflowAgentCreateActive && isCreatingAgentSession
       ? ({ runtimeAgentId: 'agent_create', agentDefinitionId: null } satisfies RuntimeAgentSelection)
@@ -3638,7 +3697,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
       setSelectedWorkflowTemplatePreviewId(null)
       closeSidebarsExcept('agentDock')
       setActiveView('phases')
-      setAgentAuthoringSession({ mode: 'create', initialDetail: null })
+      agentAuthoringDetailRequestRef.current += 1
+      setAgentAuthoringSession({
+        projectId: activeProjectId,
+        mode: 'create',
+        initialDetail: null,
+      })
       setAgentDockOpen(true)
       setIsCreatingAgentSession(true)
       void createAgentSession()
@@ -3671,48 +3735,50 @@ export function XeroApp({ adapter }: XeroAppProps) {
   // Lazy-load the baseline authoring catalog once a session opens. Skills can
   // be expanded later by query-scoped online search from the picker.
   useEffect(() => {
-    if (!agentAuthoringSession) return
+    if (!activeAgentAuthoringSession) return
     if (!activeProjectId) return
-    if (agentAuthoringCatalog) return
+    if (agentAuthoringCatalogBinding?.projectId === activeProjectId) return
+    const projectId = activeProjectId
     let cancelled = false
     void resolvedAdapter
-      .getAgentAuthoringCatalog({ projectId: activeProjectId })
+      .getAgentAuthoringCatalog({ projectId })
       .then((catalog) => {
-        if (cancelled) return
-        setAgentAuthoringCatalog(catalog)
+        if (cancelled || activeProjectIdRef.current !== projectId) return
+        setAgentAuthoringCatalogBinding({ projectId, catalog })
       })
       .catch((error: unknown) => {
-        if (cancelled) return
+        if (cancelled || activeProjectIdRef.current !== projectId) return
         console.error('Failed to load agent authoring catalog', error)
       })
     return () => {
       cancelled = true
     }
-  }, [agentAuthoringSession, activeProjectId, agentAuthoringCatalog, resolvedAdapter])
+  }, [activeAgentAuthoringSession, activeProjectId, agentAuthoringCatalogBinding, resolvedAdapter])
 
   // Lazy-load the tool-pack catalog the same way. The granular policy editor
   // in the canvas properties panel consumes it for the pack picker and to
   // expand `allowedToolPacks` entries into the tools they grant.
   useEffect(() => {
-    if (!agentAuthoringSession) return
+    if (!activeAgentAuthoringSession) return
     if (!activeProjectId) return
-    if (agentToolPackCatalog) return
+    if (agentToolPackCatalogBinding?.projectId === activeProjectId) return
     if (!resolvedAdapter.getAgentToolPackCatalog) return
+    const projectId = activeProjectId
     let cancelled = false
     void resolvedAdapter
-      .getAgentToolPackCatalog({ projectId: activeProjectId })
+      .getAgentToolPackCatalog({ projectId })
       .then((catalog) => {
-        if (cancelled) return
-        setAgentToolPackCatalog(catalog)
+        if (cancelled || activeProjectIdRef.current !== projectId) return
+        setAgentToolPackCatalogBinding({ projectId, catalog })
       })
       .catch((error: unknown) => {
-        if (cancelled) return
+        if (cancelled || activeProjectIdRef.current !== projectId) return
         console.error('Failed to load agent tool-pack catalog', error)
       })
     return () => {
       cancelled = true
     }
-  }, [agentAuthoringSession, activeProjectId, agentToolPackCatalog, resolvedAdapter])
+  }, [activeAgentAuthoringSession, activeProjectId, agentToolPackCatalogBinding, resolvedAdapter])
 
   const handleSearchAttachableSkills = useCallback(
     async (params: {
@@ -3743,21 +3809,26 @@ export function XeroApp({ adapter }: XeroAppProps) {
       if (!activeProjectId || !resolvedAdapter.resolveAgentAuthoringSkill) {
         throw new Error('Online skill resolution is unavailable.')
       }
+      const projectId = activeProjectId
       const skill = await resolvedAdapter.resolveAgentAuthoringSkill({
-        projectId: activeProjectId,
+        projectId,
         source: result.source,
         skillId: result.skillId,
       })
-      setAgentAuthoringCatalog((current) => {
-        if (!current) return current
+      if (activeProjectIdRef.current !== projectId) return skill
+      setAgentAuthoringCatalogBinding((current) => {
+        if (!current || current.projectId !== projectId) return current
         const bySourceId = new Map<string, AgentAuthoringAttachableSkillDto>()
-        for (const skill of current.attachableSkills) {
+        for (const skill of current.catalog.attachableSkills) {
           bySourceId.set(skill.sourceId, skill)
         }
         bySourceId.set(skill.sourceId, skill)
         return {
-          ...current,
-          attachableSkills: [...bySourceId.values()],
+          projectId,
+          catalog: {
+            ...current.catalog,
+            attachableSkills: [...bySourceId.values()],
+          },
         }
       })
       return skill
@@ -3766,11 +3837,17 @@ export function XeroApp({ adapter }: XeroAppProps) {
   )
 
   const handleStartAgentAuthoringCreate = useCallback(() => {
+    if (!activeProjectId) return
     setWorkflowsOpen(false)
     setAgentDockOpen(false)
     setActiveView('phases')
-    setAgentAuthoringSession({ mode: 'create', initialDetail: null })
-  }, [])
+    agentAuthoringDetailRequestRef.current += 1
+    setAgentAuthoringSession({
+      projectId: activeProjectId,
+      mode: 'create',
+      initialDetail: null,
+    })
+  }, [activeProjectId, setActiveView])
 
   const handleStartWorkflowAgentCreate = useCallback(() => {
     if (!activeProjectId) return
@@ -3820,20 +3897,40 @@ export function XeroApp({ adapter }: XeroAppProps) {
   const handleStartAgentAuthoringFromRef = useCallback(
     async (mode: 'edit' | 'duplicate', ref: AgentRefDto) => {
       if (!activeProjectId) return
+      const projectId = activeProjectId
+      const requestId = agentAuthoringDetailRequestRef.current + 1
+      agentAuthoringDetailRequestRef.current = requestId
       setAgentAuthoringLoading(true)
       try {
         const detail = await resolvedAdapter.getWorkflowAgentDetail({
-          projectId: activeProjectId,
+          projectId,
           ref,
         })
+        if (
+          agentAuthoringDetailRequestRef.current !== requestId ||
+          activeProjectIdRef.current !== projectId
+        ) {
+          return
+        }
         setWorkflowsOpen(false)
         setAgentDockOpen(false)
         setActiveView('phases')
-        setAgentAuthoringSession({ mode, initialDetail: detail })
+        setAgentAuthoringSession({ projectId, mode, initialDetail: detail })
       } catch (error) {
+        if (
+          agentAuthoringDetailRequestRef.current !== requestId ||
+          activeProjectIdRef.current !== projectId
+        ) {
+          return
+        }
         console.error('Failed to load agent definition for authoring', error)
       } finally {
-        setAgentAuthoringLoading(false)
+        if (
+          agentAuthoringDetailRequestRef.current === requestId &&
+          activeProjectIdRef.current === projectId
+        ) {
+          setAgentAuthoringLoading(false)
+        }
       }
     },
     [activeProjectId, resolvedAdapter],
@@ -3847,6 +3944,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
   )
 
   const handleCloseAgentAuthoring = useCallback(() => {
+    agentAuthoringDetailRequestRef.current += 1
+    setAgentAuthoringLoading(false)
     setAgentAuthoringSession(null)
   }, [])
 
@@ -3862,25 +3961,26 @@ export function XeroApp({ adapter }: XeroAppProps) {
       definitionId?: string
       dryRun?: boolean
     }) => {
-      if (!activeProjectId) {
+      const authoringProjectId = activeAgentAuthoringSession?.projectId ?? null
+      if (!activeProjectId || !authoringProjectId || authoringProjectId !== activeProjectId) {
         throw new Error('Select a project before saving an agent definition.')
       }
       const definition = canonicalCustomAgentDefinitionSchema.parse(snapshot)
       if (mode === 'edit' && definitionId) {
         return resolvedAdapter.updateAgentDefinition({
-          projectId: activeProjectId,
+          projectId: authoringProjectId,
           definitionId,
           definition,
           dryRun: dryRun ?? false,
         })
       }
       return resolvedAdapter.saveAgentDefinition({
-        projectId: activeProjectId,
+        projectId: authoringProjectId,
         definition,
         dryRun: dryRun ?? false,
       })
     },
-    [activeProjectId, resolvedAdapter],
+    [activeAgentAuthoringSession, activeProjectId, resolvedAdapter],
   )
 
   const handleAgentAuthoringSaved = useCallback(() => {
@@ -4029,6 +4129,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
           ? await resolvedAdapter.createWorkflowDefinition?.({ definition })
           : await resolvedAdapter.updateWorkflowDefinition?.({
               workflowId: definition.id,
+              expectedVersion: definition.version,
               definition,
             })
         if (!response) {
@@ -4068,11 +4169,16 @@ export function XeroApp({ adapter }: XeroAppProps) {
       }
       setWorkflowActionRunning(true)
       try {
-        const response = await resolvedAdapter.startWorkflowRun({
-          projectId: activeProjectId,
-          workflowId,
-          initialInput,
-        })
+        const response = await workflowStartIdempotency.run(
+          { projectId: activeProjectId, workflowId, initialInput },
+          (idempotencyKey) =>
+            resolvedAdapter.startWorkflowRun!({
+              projectId: activeProjectId,
+              workflowId,
+              idempotencyKey,
+              initialInput,
+            }),
+        )
         setSelectedWorkflowRun(response.run)
         setSelectedWorkflowDefinition(response.run.definitionSnapshot)
         setSelectedWorkflowIsDraft(false)
@@ -4083,7 +4189,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         setWorkflowActionRunning(false)
       }
     },
-    [activeProjectId, refreshWorkflowRuns, resolvedAdapter],
+    [activeProjectId, refreshWorkflowRuns, resolvedAdapter, workflowStartIdempotency],
   )
 
   const handleCancelWorkflowRun = useCallback(
@@ -4215,10 +4321,19 @@ export function XeroApp({ adapter }: XeroAppProps) {
       if (!activeProjectId || !resolvedAdapter.resumeWorkflowNextIncompletePhase) return
       setWorkflowActionRunning(true)
       try {
-        const response = await resolvedAdapter.resumeWorkflowNextIncompletePhase({
-          projectId: activeProjectId,
-          runId,
-        })
+        const response = await workflowStartIdempotency.run(
+          {
+            projectId: activeProjectId,
+            workflowId: `resume-next-incomplete-phase:${runId}`,
+            initialInput: { sourceRunId: runId },
+          },
+          (idempotencyKey) =>
+            resolvedAdapter.resumeWorkflowNextIncompletePhase!({
+              projectId: activeProjectId,
+              runId,
+              idempotencyKey,
+            }),
+        )
         setSelectedWorkflowRun(response.run)
         setSelectedWorkflowDefinition(response.run.definitionSnapshot)
         setSelectedWorkflowIsDraft(false)
@@ -4229,7 +4344,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         setWorkflowActionRunning(false)
       }
     },
-    [activeProjectId, refreshWorkflowRuns, resolvedAdapter],
+    [activeProjectId, refreshWorkflowRuns, resolvedAdapter, workflowStartIdempotency],
   )
 
   const handleInspectWorkflowAgent = useCallback(
@@ -4362,6 +4477,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
         await resolvedAdapter.archiveAgentDefinition({
           projectId: activeProjectId,
           definitionId: ref.definitionId,
+          expectedCurrentVersion: ref.version,
         })
         refreshCustomAgentDefinitions()
         await workflowAgentInspector.refreshAgents()
@@ -4642,15 +4758,27 @@ export function XeroApp({ adapter }: XeroAppProps) {
         if (!runId) {
           throw new Error('Xero cannot queue Computer Use controls until a run exists.')
         }
-        const response = await resolvedAdapter.updateRuntimeRunControls({
-          projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
-          agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
-          runId,
+        const payload = {
           controls: request.controls ?? null,
           prompt: request.prompt ?? null,
           attachments: request.attachments ?? [],
           linkedPaths: request.linkedPaths ?? [],
-        })
+        }
+        const response = await computerUseContinuationCoordinator.run(
+          {
+            channel: 'runtime-control',
+            targetId: runId,
+            payload,
+          },
+          (continuationRequestId) =>
+            resolvedAdapter.updateRuntimeRunControls({
+              projectId: GLOBAL_COMPUTER_USE_PROJECT_ID,
+              agentSessionId: GLOBAL_COMPUTER_USE_AGENT_SESSION_ID,
+              runId,
+              continuationRequestId,
+              ...payload,
+            }),
+        )
         const runtimeRun = mapRuntimeRun(response)
         setComputerUseRuntimeRun(runtimeRun)
         setComputerUseProject((current) => (current ? applyRuntimeRun(current, runtimeRun) : current))
@@ -4670,7 +4798,12 @@ export function XeroApp({ adapter }: XeroAppProps) {
         }
       }
     },
-    [computerUseRuntimeRun?.runId, refreshComputerUseRuntimeMetadata, resolvedAdapter],
+    [
+      computerUseContinuationCoordinator,
+      computerUseRuntimeRun?.runId,
+      refreshComputerUseRuntimeMetadata,
+      resolvedAdapter,
+    ],
   )
 
   const startComputerUseRuntimeSession = useCallback(
@@ -5037,7 +5170,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 agentDetailError={workflowAgentInspector.detailError}
                 onClearAgentSelection={handleClearWorkflowAgentSelection}
                 onReloadAgentDetail={workflowAgentInspector.reloadDetail}
-                authoringSession={agentAuthoringSession}
+                authoringSession={activeAgentAuthoringSession}
                 authoringCatalog={agentAuthoringCatalog}
                 toolPackCatalog={agentToolPackCatalog}
                 onSearchAttachableSkills={handleSearchAttachableSkills}

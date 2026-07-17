@@ -3177,7 +3177,7 @@ mod tests {
             },
         )
         .expect("record risky capability use");
-        archive_agent_definition(&repo_root, definition_id, "2026-05-09T00:08:00Z")
+        archive_agent_definition(&repo_root, definition_id, 2, "2026-05-09T00:08:00Z")
             .expect("archive custom definition");
 
         let export = export_agent_runtime_audit(&repo_root, project_id, "run-audit-lifecycle")

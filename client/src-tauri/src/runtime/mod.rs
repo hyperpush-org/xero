@@ -36,6 +36,10 @@ pub use agent_core::{
     AGENT_RUN_CANCELLED_CODE, FAKE_PROVIDER_ID, OWNED_AGENT_RUNTIME_KIND,
     OWNED_AGENT_SUPERVISOR_KIND,
 };
+pub(crate) use agent_core::{
+    decode_owned_agent_continuation_recovery_payload, decode_owned_agent_start_recovery_payload,
+    initial_owned_agent_continuation_request, register_existing_initial_agent_continuation,
+};
 pub use autonomous_skill_runtime::{
     compute_skill_directory_version_hash, decide_skill_tool_access,
     discover_bundled_skill_directory, discover_local_skill_directory, discover_plugin_roots,
@@ -96,11 +100,11 @@ pub use autonomous_tool_runtime::{
     AutonomousAgentDefinitionSummary, AutonomousAgentDefinitionValidationDiagnostic,
     AutonomousAgentDefinitionValidationReport, AutonomousAgentDefinitionValidationStatus,
     AutonomousAgentToolPolicy, AutonomousAgentWorkflowPolicy, AutonomousAgentWorkflowReplay,
-    AutonomousBundledSkillRoot, AutonomousCodeDiagnostic, AutonomousCodeIntelAction,
-    AutonomousCodeIntelOutput, AutonomousCodeIntelRequest, AutonomousCodeSymbol,
-    AutonomousCommandOutput, AutonomousCommandOutputChunk, AutonomousCommandPolicyOutcome,
-    AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace, AutonomousCommandRequest,
-    AutonomousCommandSessionChunk, AutonomousCommandSessionOperation,
+    AutonomousAgentWorkflowReplayEvent, AutonomousBundledSkillRoot, AutonomousCodeDiagnostic,
+    AutonomousCodeIntelAction, AutonomousCodeIntelOutput, AutonomousCodeIntelRequest,
+    AutonomousCodeSymbol, AutonomousCommandOutput, AutonomousCommandOutputChunk,
+    AutonomousCommandPolicyOutcome, AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
+    AutonomousCommandRequest, AutonomousCommandSessionChunk, AutonomousCommandSessionOperation,
     AutonomousCommandSessionOutput, AutonomousCommandSessionReadRequest,
     AutonomousCommandSessionStartRequest, AutonomousCommandSessionStopRequest,
     AutonomousCommandSessionStream, AutonomousCopyOmissions, AutonomousCopyOperation,

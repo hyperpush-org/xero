@@ -1,4 +1,5 @@
 use std::{
+    collections::BTreeSet,
     path::{Path, PathBuf},
     thread,
 };
@@ -88,7 +89,11 @@ impl DesktopAgentCoreRuntime {
     ) -> CommandResult<AgentRunSnapshotRecord> {
         let snapshot = create_owned_agent_run(&request)?;
         if drive_mode == DesktopRunDriveMode::Background {
-            self.spawn_owned_agent_run(request)?;
+            if let Err(error) = self.spawn_owned_agent_run(request) {
+                if error.code != "agent_run_already_active" {
+                    return Err(error);
+                }
+            }
         }
         Ok(snapshot)
     }
@@ -98,11 +103,46 @@ impl DesktopAgentCoreRuntime {
         request: ContinueOwnedAgentRunRequest,
         drive_mode: DesktopRunDriveMode,
     ) -> CommandResult<PreparedOwnedAgentContinuation> {
-        let prepared = prepare_owned_agent_continuation_for_drive(&request)?;
+        let source_run = project_store::load_agent_run_record(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        )?;
+        let source_lease = self.supervisor.begin_persisted(
+            &request.repo_root,
+            &request.project_id,
+            &source_run.agent_session_id,
+            &request.run_id,
+        )?;
+        let mut prepared = prepare_owned_agent_continuation_for_drive(&request)?;
+        if prepared.drive_required {
+            let drive_lease = if prepared.drive_request.run_id == request.run_id {
+                source_lease
+            } else {
+                let target_run = project_store::load_agent_run_record(
+                    &prepared.drive_request.repo_root,
+                    &prepared.drive_request.project_id,
+                    &prepared.drive_request.run_id,
+                )?;
+                let target_lease = self.supervisor.begin_persisted(
+                    &prepared.drive_request.repo_root,
+                    &prepared.drive_request.project_id,
+                    &target_run.agent_session_id,
+                    &prepared.drive_request.run_id,
+                )?;
+                drop(source_lease);
+                target_lease
+            };
+            prepared.drive_lease = Some(drive_lease);
+        } else {
+            drop(source_lease);
+        }
         if drive_mode == DesktopRunDriveMode::Background && prepared.drive_required {
+            let drive_lease = prepared.drive_lease.take();
             self.spawn_owned_agent_continuation(
                 prepared.snapshot.run.agent_session_id.clone(),
                 prepared.drive_request.clone(),
+                drive_lease,
             )?;
         }
         Ok(prepared)
@@ -114,8 +154,54 @@ impl DesktopAgentCoreRuntime {
         project_id: String,
         run_id: String,
     ) -> CommandResult<AgentRunSnapshotRecord> {
-        let _ = self.supervisor.cancel(&run_id)?;
-        cancel_owned_agent_run(&repo_root, &project_id, &run_id)
+        let run_id = resolve_agent_control_leaf(&repo_root, &project_id, &run_id)?;
+        let event_payload = serde_json::to_string(&json!({
+            "code": AGENT_RUN_CANCELLED_CODE,
+            "message": "Owned agent run was cancelled.",
+            "state": AgentRunState::Blocked.as_str(),
+            "stopReason": AgentRunStopReason::Cancelled.as_str(),
+        }))
+        .map_err(|error| {
+            CommandError::system_fault(
+                "agent_run_cancel_event_serialize_failed",
+                format!("Xero could not serialize the cancellation event: {error}"),
+            )
+        })?;
+        for _ in 0..4 {
+            let expected =
+                project_store::load_agent_run_drive_lease(&repo_root, &project_id, &run_id)?;
+            let defer_to_drive_owner = expected
+                .as_ref()
+                .is_some_and(|lease| self.supervisor.persisted_lease_is_foreign_and_live(lease));
+            match project_store::cancel_agent_run_with_expected_drive_lease(
+                &repo_root,
+                &project_id,
+                &run_id,
+                expected.as_ref(),
+                defer_to_drive_owner,
+                &event_payload,
+                &now_timestamp(),
+            )? {
+                project_store::AgentRunCancellationCasResult::Applied {
+                    snapshot,
+                    transitioned: _,
+                    event,
+                } => {
+                    let _ = self.supervisor.cancel(&run_id)?;
+                    if let Some(event) = event.as_ref() {
+                        publish_committed_agent_event(&repo_root, event);
+                    }
+                    return Ok(snapshot);
+                }
+                project_store::AgentRunCancellationCasResult::LeaseChanged(_) => continue,
+            }
+        }
+        Err(CommandError::retryable(
+            "agent_run_cancel_raced",
+            format!(
+                "Xero could not cancel owned-agent run `{run_id}` because its drive ownership kept changing. Retry the cancellation."
+            ),
+        ))
     }
 
     pub fn is_active(&self, run_id: &str) -> CommandResult<bool> {
@@ -137,84 +223,18 @@ impl DesktopAgentCoreRuntime {
             ));
         }
 
-        let before =
-            project_store::load_agent_run(&repo_root, &request.project_id, &request.run_id)?;
-        if matches!(
-            before.run.status,
-            AgentRunStatus::Cancelled
-                | AgentRunStatus::HandedOff
-                | AgentRunStatus::Completed
-                | AgentRunStatus::Failed
-        ) {
-            return Err(CommandError::user_fixable(
-                "agent_run_terminal",
-                format!(
-                    "Xero cannot reject action `{}` because owned-agent run `{}` is already {:?}.",
-                    request.action_id, request.run_id, before.run.status
-                ),
-            ));
-        }
-
-        let rejected = project_store::reject_pending_agent_action_request(
+        let committed = project_store::reject_agent_action_and_fail_run(
             &repo_root,
             &request.project_id,
             &request.run_id,
             &request.action_id,
             request.response.as_deref(),
-        )?;
-        append_event(
-            &repo_root,
-            &request.project_id,
-            &request.run_id,
-            AgentRunEventKind::PolicyDecision,
-            json!({
-                "kind": "approval_decision",
-                "actionId": rejected.action_id,
-                "actionType": rejected.action_type,
-                "decision": "rejected",
-                "response": rejected.response,
-                "status": rejected.status,
-            }),
-        )?;
-        record_state_transition(
-            &repo_root,
-            &request.project_id,
-            &request.run_id,
-            AgentStateTransition {
-                from: Some(AgentRunState::ApprovalWait),
-                to: AgentRunState::Blocked,
-                reason: "Operator rejected a pending owned-agent action.",
-                stop_reason: Some(AgentRunStopReason::Blocked),
-                extra: Some(json!({
-                    "actionId": request.action_id,
-                    "decision": "rejected",
-                })),
-            },
-        )?;
-        append_event(
-            &repo_root,
-            &request.project_id,
-            &request.run_id,
-            AgentRunEventKind::RunFailed,
-            json!({
-                "code": "agent_action_rejected",
-                "message": format!("Operator rejected action `{}`.", request.action_id),
-                "retryable": false,
-                "state": AgentRunState::Blocked.as_str(),
-                "stopReason": AgentRunStopReason::Blocked.as_str(),
-            }),
-        )?;
-        project_store::update_agent_run_status(
-            &repo_root,
-            &request.project_id,
-            &request.run_id,
-            AgentRunStatus::Failed,
-            Some(project_store::AgentRunDiagnosticRecord {
-                code: "agent_action_rejected".into(),
-                message: format!("Operator rejected action `{}`.", request.action_id),
-            }),
             &now_timestamp(),
-        )
+        )?;
+        for event in &committed.inserted_events {
+            publish_committed_agent_event(&repo_root, event);
+        }
+        Ok(committed.snapshot)
     }
 
     pub fn fork_session(
@@ -326,7 +346,40 @@ impl DesktopAgentCoreRuntime {
     }
 
     pub fn spawn_owned_agent_run(&self, request: OwnedAgentRunRequest) -> CommandResult<()> {
-        let lease = self.supervisor.begin(
+        let snapshot = project_store::load_agent_run(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        )?;
+        if snapshot.run.status != AgentRunStatus::Running {
+            return Ok(());
+        }
+        let continuation = initial_owned_agent_continuation_request(&request);
+        let registration = register_existing_initial_agent_continuation(&continuation, &snapshot)?;
+        let durable_request = if registration.request.state
+            == project_store::AgentContinuationRequestState::Driving
+        {
+            project_store::reconcile_completed_agent_continuation(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+                &continuation.continuation_request_id,
+                &now_timestamp(),
+            )?
+            .ok_or_else(|| {
+                CommandError::system_fault(
+                    "agent_continuation_request_missing",
+                    "The initial agent-start request disappeared during recovery.",
+                )
+            })?
+        } else {
+            registration.request
+        };
+        if durable_request.state != project_store::AgentContinuationRequestState::Prepared {
+            return Ok(());
+        }
+        let lease = self.supervisor.begin_persisted(
+            &request.repo_root,
             &request.project_id,
             &request.agent_session_id,
             &request.run_id,
@@ -334,7 +387,7 @@ impl DesktopAgentCoreRuntime {
         let supervisor = self.supervisor.clone();
         thread::spawn(move || {
             let token = lease.token();
-            let _ = drive_owned_agent_run(request, token, Some(supervisor));
+            let _ = drive_owned_agent_continuation(continuation, token, Some(supervisor));
             drop(lease);
         });
         Ok(())
@@ -344,10 +397,27 @@ impl DesktopAgentCoreRuntime {
         &self,
         agent_session_id: String,
         request: ContinueOwnedAgentRunRequest,
+        drive_lease: Option<AgentRunLease>,
     ) -> CommandResult<()> {
-        let lease =
-            self.supervisor
-                .begin(&request.project_id, &agent_session_id, &request.run_id)?;
+        let lease = match drive_lease {
+            Some(lease)
+                if lease.matches(&request.project_id, &agent_session_id, &request.run_id) =>
+            {
+                lease
+            }
+            Some(_) => {
+                return Err(CommandError::system_fault(
+                    "agent_run_drive_lease_mismatch",
+                    "Xero could not start the owned-agent continuation because its prepared drive lease does not match the target run.",
+                ));
+            }
+            None => {
+                return Err(CommandError::system_fault(
+                    "agent_run_drive_lease_missing",
+                    "Xero could not start the owned-agent continuation because its prepared drive lease is missing.",
+                ));
+            }
+        };
         let supervisor = self.supervisor.clone();
         thread::spawn(move || {
             let token = lease.token();
@@ -355,6 +425,32 @@ impl DesktopAgentCoreRuntime {
             drop(lease);
         });
         Ok(())
+    }
+
+    pub fn recover_prepared_continuation(
+        &self,
+        request: ContinueOwnedAgentRunRequest,
+    ) -> CommandResult<bool> {
+        let prepared = recover_prepared_owned_agent_continuation(&request)?;
+        if !prepared.drive_required {
+            return Ok(false);
+        }
+        let lease = match self.supervisor.begin_persisted(
+            &request.repo_root,
+            &request.project_id,
+            &prepared.snapshot.run.agent_session_id,
+            &request.run_id,
+        ) {
+            Ok(lease) => lease,
+            Err(error) if error.code == "agent_run_already_active" => return Ok(false),
+            Err(error) => return Err(error),
+        };
+        self.spawn_owned_agent_continuation(
+            prepared.snapshot.run.agent_session_id,
+            request,
+            Some(lease),
+        )?;
+        Ok(true)
     }
 
     pub fn export_trace(
@@ -377,6 +473,51 @@ impl DesktopAgentCoreRuntime {
                 )
             })
     }
+}
+
+fn resolve_agent_control_leaf(
+    repo_root: &Path,
+    project_id: &str,
+    requested_run_id: &str,
+) -> CommandResult<String> {
+    const MAX_HANDOFF_DEPTH: usize = 32;
+    let mut current = requested_run_id.to_owned();
+    let mut visited = BTreeSet::new();
+    for _ in 0..MAX_HANDOFF_DEPTH {
+        if !visited.insert(current.clone()) {
+            return Err(CommandError::system_fault(
+                "agent_handoff_cycle_detected",
+                format!("Xero found a cycle while resolving handed-off run `{requested_run_id}`."),
+            ));
+        }
+        let snapshot = project_store::load_agent_run(repo_root, project_id, &current)?;
+        if snapshot.run.status != AgentRunStatus::HandedOff {
+            return Ok(current);
+        }
+        let target =
+            project_store::list_agent_handoff_lineage_for_source(repo_root, project_id, &current)?
+                .into_iter()
+                .find(|lineage| {
+                    lineage.status == project_store::AgentHandoffLineageStatus::Completed
+                        && lineage.target_run_id.is_some()
+                })
+                .and_then(|lineage| lineage.target_run_id)
+                .ok_or_else(|| {
+                    CommandError::system_fault(
+                        "agent_handoff_leaf_missing",
+                        format!(
+                    "Owned-agent run `{current}` is handed off without completed target lineage."
+                ),
+                    )
+                })?;
+        current = target;
+    }
+    Err(CommandError::system_fault(
+        "agent_handoff_depth_exceeded",
+        format!(
+            "Xero refused to follow more than {MAX_HANDOFF_DEPTH} handoffs from run `{requested_run_id}`."
+        ),
+    ))
 }
 
 impl AgentRuntimeFacade for DesktopAgentCoreRuntime {

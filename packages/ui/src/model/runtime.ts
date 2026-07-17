@@ -957,6 +957,7 @@ export const updateRuntimeRunControlsRequestSchema = z
     projectId: z.string().trim().min(1),
     agentSessionId: z.string().trim().min(1),
     runId: z.string().trim().min(1),
+    continuationRequestId: z.string().trim().min(1).max(200),
     controls: runtimeRunControlInputSchema.nullable().optional(),
     prompt: z.string().trim().min(1).nullable().optional(),
     attachments: z.array(stagedAgentAttachmentSchema).default([]),

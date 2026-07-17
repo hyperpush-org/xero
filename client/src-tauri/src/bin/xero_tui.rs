@@ -2135,6 +2135,8 @@ struct AgentDefinitionCommandOptions {
     project_id: Option<String>,
     definition_id: Option<String>,
     source_definition_id: Option<String>,
+    expected_current_version: Option<u32>,
+    source_version: Option<u32>,
     include_archived: bool,
     apply: bool,
     definition: Option<JsonValue>,
@@ -2147,6 +2149,14 @@ impl AgentDefinitionCommandOptions {
             definition_id: option_value(args, "--definition-id"),
             source_definition_id: option_value(args, "--source-definition-id")
                 .or_else(|| option_value(args, "--source-id")),
+            expected_current_version: option_u64(args, "--expected-current-version")?
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| CommandError::invalid_request("expectedCurrentVersion"))?,
+            source_version: option_u64(args, "--source-version")?
+                .map(u32::try_from)
+                .transpose()
+                .map_err(|_| CommandError::invalid_request("sourceVersion"))?,
             include_archived: option_present(args, "--include-archived"),
             apply: option_present(args, "--apply")
                 || option_present(args, "--operator-approved")
@@ -2172,6 +2182,8 @@ fn run_agent_definition_runtime(
         action,
         definition_id: options.definition_id,
         source_definition_id: options.source_definition_id,
+        expected_current_version: options.expected_current_version,
+        source_version: options.source_version,
         include_archived: options.include_archived,
         definition: options.definition,
     };

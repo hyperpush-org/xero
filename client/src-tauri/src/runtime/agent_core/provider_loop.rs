@@ -54,6 +54,41 @@ impl ModelVisibleProjection {
 )]
 pub(crate) fn drive_provider_loop(
     provider: &dyn ProviderAdapter,
+    messages: Vec<ProviderMessage>,
+    controls: RuntimeRunControlStateDto,
+    tool_registry: ToolRegistry,
+    tool_runtime: &AutonomousToolRuntime,
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    agent_session_id: &str,
+    provider_preflight: Option<&xero_agent_core::ProviderPreflightSnapshot>,
+    auto_compact: Option<&AgentAutoCompactPreference>,
+    cancellation: &AgentRunCancellationToken,
+) -> CommandResult<()> {
+    drive_provider_loop_with_dispatch_observer(
+        provider,
+        messages,
+        controls,
+        tool_registry,
+        tool_runtime,
+        repo_root,
+        project_id,
+        run_id,
+        agent_session_id,
+        provider_preflight,
+        auto_compact,
+        cancellation,
+        &|| Ok(()),
+    )
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Continuation recovery observes the exact provider-dispatch boundary in addition to the normal orchestration inputs."
+)]
+pub(crate) fn drive_provider_loop_with_dispatch_observer(
+    provider: &dyn ProviderAdapter,
     mut messages: Vec<ProviderMessage>,
     controls: RuntimeRunControlStateDto,
     mut tool_registry: ToolRegistry,
@@ -65,6 +100,7 @@ pub(crate) fn drive_provider_loop(
     provider_preflight: Option<&xero_agent_core::ProviderPreflightSnapshot>,
     auto_compact: Option<&AgentAutoCompactPreference>,
     cancellation: &AgentRunCancellationToken,
+    on_provider_dispatch: &dyn Fn() -> CommandResult<()>,
 ) -> CommandResult<()> {
     let mut workspace_guard =
         AgentWorkspaceGuard::new(tool_runtime.subagent_write_scope().cloned());
@@ -265,6 +301,7 @@ pub(crate) fn drive_provider_loop(
                 .field("runId", run_id.to_owned())
                 .field("provider", provider.provider_id().to_owned())
                 .field("model", provider.model_id().to_owned());
+            on_provider_dispatch()?;
             provider.stream_turn(&turn, cancellation, &mut |event| {
                 cancellation.check_cancelled()?;
                 stream_recorder.record(event)
@@ -334,26 +371,58 @@ pub(crate) fn drive_provider_loop(
                         continue;
                     }
                 }
-                if custom_output_contract_prompt_count == 0 {
-                    if let Some(reprompt) =
-                        custom_output_contract_gate_prompt(&agent_definition_snapshot, &message)
-                    {
-                        stream_recorder.supersede(
-                            &message,
-                            reasoning_content.as_deref(),
-                            reasoning_details.as_ref(),
-                            AssistantCandidateDisposition::CustomOutputContractGate,
+                if let Some(reprompt) = tool_runtime.agent_stage_completion_gate_prompt()? {
+                    stream_recorder.supersede(
+                        &message,
+                        reasoning_content.as_deref(),
+                        reasoning_details.as_ref(),
+                        AssistantCandidateDisposition::StageGate,
+                    )?;
+                    if provider_usage_has_tokens(&usage_total) {
+                        persist_provider_usage(
+                            repo_root,
+                            project_id,
+                            run_id,
+                            provider.provider_id(),
+                            provider.model_id(),
+                            &usage_total,
                         )?;
-                        if provider_usage_has_tokens(&usage_total) {
-                            persist_provider_usage(
-                                repo_root,
-                                project_id,
-                                run_id,
-                                provider.provider_id(),
-                                provider.model_id(),
-                                &usage_total,
-                            )?;
-                        }
+                    }
+                    append_message(
+                        repo_root,
+                        project_id,
+                        run_id,
+                        AgentMessageRole::Developer,
+                        reprompt.clone(),
+                    )?;
+                    messages.push(provider_candidate_revision_message(
+                        &message,
+                        reasoning_content.as_deref(),
+                        reasoning_details.as_ref(),
+                    ));
+                    messages.push(ProviderMessage::Developer { content: reprompt });
+                    continue;
+                }
+                if let Some(reprompt) =
+                    custom_output_contract_gate_prompt(&agent_definition_snapshot, &message)
+                {
+                    stream_recorder.supersede(
+                        &message,
+                        reasoning_content.as_deref(),
+                        reasoning_details.as_ref(),
+                        AssistantCandidateDisposition::CustomOutputContractGate,
+                    )?;
+                    if provider_usage_has_tokens(&usage_total) {
+                        persist_provider_usage(
+                            repo_root,
+                            project_id,
+                            run_id,
+                            provider.provider_id(),
+                            provider.model_id(),
+                            &usage_total,
+                        )?;
+                    }
+                    if custom_output_contract_prompt_count == 0 {
                         custom_output_contract_prompt_count =
                             custom_output_contract_prompt_count.saturating_add(1);
                         append_message(
@@ -371,6 +440,10 @@ pub(crate) fn drive_provider_loop(
                         messages.push(ProviderMessage::Developer { content: reprompt });
                         continue;
                     }
+                    return Err(CommandError::user_fixable(
+                        "agent_output_contract_invalid",
+                        "The provider returned a second final response that still omitted required custom-agent output sections.",
+                    ));
                 }
                 if let Some(reprompt) =
                     unresolved_subagent_completion_prompt(repo_root, project_id, run_id)?
@@ -512,6 +585,42 @@ pub(crate) fn drive_provider_loop(
                     return Err(record_verification_action_required(
                         repo_root, project_id, run_id, &gate,
                     )?);
+                }
+                if let Err(error) = validate_required_final_response(
+                    controls.active.runtime_agent_id,
+                    project_id,
+                    &message,
+                ) {
+                    stream_recorder.supersede(
+                        &message,
+                        reasoning_content.as_deref(),
+                        reasoning_details.as_ref(),
+                        AssistantCandidateDisposition::StructuredReportGate,
+                    )?;
+                    if provider_usage_has_tokens(&usage_total) {
+                        persist_provider_usage(
+                            repo_root,
+                            project_id,
+                            run_id,
+                            provider.provider_id(),
+                            provider.model_id(),
+                            &usage_total,
+                        )?;
+                    }
+                    append_event(
+                        repo_root,
+                        project_id,
+                        run_id,
+                        AgentRunEventKind::ValidationCompleted,
+                        json!({
+                            "label": "required_final_response",
+                            "outcome": "failed",
+                            "runtimeAgentId": controls.active.runtime_agent_id.as_str(),
+                            "code": &error.code,
+                            "message": &error.message,
+                        }),
+                    )?;
+                    return Err(error);
                 }
                 if !message.trim().is_empty()
                     || reasoning_content.is_some()
@@ -1726,14 +1835,8 @@ fn custom_output_contract_missing_core_sections(
         .get("output")
         .and_then(|output| output.get("sections"))
         .and_then(JsonValue::as_array)?;
-    let required_sections = sections
+    let declared_sections = sections
         .iter()
-        .filter(|section| {
-            section
-                .get("emphasis")
-                .and_then(JsonValue::as_str)
-                .is_some_and(|emphasis| emphasis == "core")
-        })
         .filter_map(|section| {
             let id = section
                 .get("id")
@@ -1746,32 +1849,203 @@ fn custom_output_contract_missing_core_sections(
                 .map(str::trim)
                 .filter(|label| !label.is_empty())
                 .unwrap_or(id);
-            Some(CustomOutputSectionRequirement {
-                id: id.into(),
-                label: label.into(),
-            })
+            Some((
+                CustomOutputSectionRequirement {
+                    id: id.into(),
+                    label: label.into(),
+                },
+                section
+                    .get("emphasis")
+                    .and_then(JsonValue::as_str)
+                    .is_some_and(|emphasis| emphasis == "core"),
+            ))
         })
+        .collect::<Vec<_>>();
+    let required_sections = declared_sections
+        .iter()
+        .filter(|(_, core)| *core)
+        .map(|(section, _)| section.clone())
         .collect::<Vec<_>>();
     if required_sections.is_empty() {
         return None;
     }
-    let normalized_message = normalize_output_contract_marker(final_message);
+    let known_sections = declared_sections
+        .iter()
+        .map(|(section, _)| section.clone())
+        .collect::<Vec<_>>();
     let missing = required_sections
         .into_iter()
-        .filter(|section| !final_message_mentions_output_section(&normalized_message, section))
+        .filter(|section| {
+            !final_message_has_output_section(final_message, section, &known_sections)
+        })
         .collect::<Vec<_>>();
     Some(missing)
 }
 
-fn final_message_mentions_output_section(
-    normalized_message: &str,
+fn final_message_has_output_section(
+    final_message: &str,
     section: &CustomOutputSectionRequirement,
+    declared_sections: &[CustomOutputSectionRequirement],
 ) -> bool {
+    let lines = output_contract_document_lines(final_message);
+    for (index, line) in lines.iter().enumerate() {
+        let Some(inline_content) = output_section_heading_content(line, section) else {
+            continue;
+        };
+        if output_section_content_is_concrete(inline_content) {
+            return true;
+        }
+        for candidate in lines.iter().skip(index.saturating_add(1)) {
+            if output_contract_structural_heading(candidate, declared_sections) {
+                break;
+            }
+            if output_section_content_is_concrete(candidate) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn output_contract_document_lines(final_message: &str) -> Vec<&str> {
+    let mut active_fence: Option<(char, usize)> = None;
+    let mut lines = Vec::new();
+    for line in final_message.lines() {
+        let trimmed = line.trim_start();
+        let marker = trimmed.chars().next();
+        let marker_count = marker
+            .filter(|marker| matches!(*marker, '`' | '~'))
+            .map(|marker| {
+                trimmed
+                    .chars()
+                    .take_while(|candidate| *candidate == marker)
+                    .count()
+            })
+            .unwrap_or_default();
+        if marker_count >= 3 {
+            match active_fence {
+                Some((active_marker, active_count))
+                    if marker == Some(active_marker)
+                        && marker_count >= active_count
+                        && trimmed[marker_count..].trim().is_empty() =>
+                {
+                    active_fence = None;
+                }
+                None => {
+                    active_fence = marker.map(|marker| (marker, marker_count));
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if active_fence.is_none() {
+            lines.push(line);
+        }
+    }
+    lines
+}
+
+fn output_section_heading_content<'a>(
+    line: &'a str,
+    section: &CustomOutputSectionRequirement,
+) -> Option<&'a str> {
+    let line = line.trim();
+    if line.is_empty() {
+        return None;
+    }
+    let line = strip_markdown_heading_prefix(line);
+    if line.starts_with('>') {
+        return None;
+    }
+    let line = ["- ", "+ ", "* "]
+        .into_iter()
+        .find_map(|prefix| line.strip_prefix(prefix))
+        .unwrap_or(line);
+    let (heading, inline_content) = split_output_section_heading(line);
+    output_section_heading_matches(heading, section).then_some(inline_content)
+}
+
+fn strip_markdown_heading_prefix(line: &str) -> &str {
+    let marker_count = line
+        .chars()
+        .take_while(|character| *character == '#')
+        .count();
+    if !(1..=6).contains(&marker_count) {
+        return line;
+    }
+    line.get(marker_count..)
+        .filter(|remainder| remainder.chars().next().is_some_and(char::is_whitespace))
+        .map(str::trim_start)
+        .unwrap_or(line)
+}
+
+fn split_output_section_heading(line: &str) -> (&str, &str) {
+    for marker in ["**", "__"] {
+        if let Some(remainder) = line.strip_prefix(marker) {
+            if let Some(end) = remainder.find(marker) {
+                let heading = remainder[..end].trim().trim_end_matches(':').trim();
+                let suffix = remainder[end + marker.len()..].trim();
+                let content = suffix.strip_prefix(':').unwrap_or(suffix).trim();
+                return (heading, content);
+            }
+        }
+    }
+
+    let line = line.trim_end_matches('#').trim_end();
+    if let Some((heading, content)) = line.split_once(':') {
+        return (heading.trim(), content.trim());
+    }
+    (line, "")
+}
+
+fn output_section_heading_matches(heading: &str, section: &CustomOutputSectionRequirement) -> bool {
+    let normalized_heading = normalize_output_contract_marker(heading);
     [section.label.as_str(), section.id.as_str()]
         .into_iter()
         .map(normalize_output_contract_marker)
         .filter(|marker| !marker.is_empty())
-        .any(|marker| normalized_message.contains(marker.as_str()))
+        .any(|marker| normalized_heading == marker)
+}
+
+fn output_contract_structural_heading(
+    line: &str,
+    declared_sections: &[CustomOutputSectionRequirement],
+) -> bool {
+    let trimmed = line.trim();
+    if trimmed.is_empty() {
+        return false;
+    }
+    let markdown_heading = {
+        let marker_count = trimmed
+            .chars()
+            .take_while(|character| *character == '#')
+            .count();
+        (1..=6).contains(&marker_count)
+            && trimmed
+                .get(marker_count..)
+                .is_some_and(|remainder| remainder.chars().next().is_some_and(char::is_whitespace))
+    };
+    let emphasized_heading = ["**", "__"].into_iter().any(|marker| {
+        trimmed
+            .strip_prefix(marker)
+            .and_then(|remainder| {
+                remainder
+                    .find(marker)
+                    .map(|end| &remainder[end + marker.len()..])
+            })
+            .is_some_and(|suffix| suffix.trim().trim_start_matches(':').trim().is_empty())
+    });
+    if markdown_heading || emphasized_heading {
+        return true;
+    }
+    declared_sections
+        .iter()
+        .any(|section| output_section_heading_content(trimmed, section).is_some())
+}
+
+fn output_section_content_is_concrete(value: &str) -> bool {
+    let value = value.trim();
+    !value.is_empty() && !matches!(value, "```" | "~~~") && value.chars().any(char::is_alphanumeric)
 }
 
 fn normalize_output_contract_marker(value: &str) -> String {
@@ -5751,9 +6025,11 @@ enum AssistantCandidateState {
 #[serde(rename_all = "snake_case")]
 enum AssistantCandidateDisposition {
     HarnessOrderGate,
+    StageGate,
     CustomOutputContractGate,
     UnresolvedSubagentGate,
     VerificationGate,
+    StructuredReportGate,
     ScopedRepositoryInstructionGate,
     ToolCallTurn,
 }
@@ -7507,6 +7783,14 @@ mod tests {
         assert_completion_gate_supersedes_candidate(
             "candidate-verification-gate",
             AssistantCandidateDisposition::VerificationGate,
+        );
+    }
+
+    #[test]
+    fn structured_report_gate_rejection_supersedes_candidate() {
+        assert_completion_gate_supersedes_candidate(
+            "candidate-structured-report-gate",
+            AssistantCandidateDisposition::StructuredReportGate,
         );
     }
 
@@ -10970,6 +11254,147 @@ mod tests {
     }
 
     #[test]
+    fn custom_output_contract_gate_rejects_substrings_and_prose_mentions() {
+        let snapshot = json!({
+            "id": "reviewer",
+            "scope": "project_custom",
+            "output": {
+                "contract": "review_summary",
+                "sections": [
+                    {
+                        "id": "risk",
+                        "label": "Risk",
+                        "emphasis": "core"
+                    },
+                    {
+                        "id": "plan",
+                        "label": "Plan",
+                        "emphasis": "core"
+                    }
+                ]
+            }
+        });
+
+        for final_message in [
+            "A brisk explanation is not a structured report.",
+            "The response mentions risk and plan requirements only in prose.",
+        ] {
+            let missing = custom_output_contract_missing_core_sections(&snapshot, final_message)
+                .expect("custom contract should be evaluated");
+
+            assert_eq!(
+                missing
+                    .iter()
+                    .map(|section| section.id.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["risk", "plan"]
+            );
+        }
+    }
+
+    #[test]
+    fn custom_output_contract_gate_rejects_empty_structured_headings() {
+        let snapshot = json!({
+            "id": "reviewer",
+            "scope": "project_custom",
+            "output": {
+                "contract": "review_summary",
+                "sections": [
+                    {
+                        "id": "risk",
+                        "label": "Risk",
+                        "emphasis": "core"
+                    },
+                    {
+                        "id": "plan",
+                        "label": "Plan",
+                        "emphasis": "core"
+                    }
+                ]
+            }
+        });
+
+        let missing =
+            custom_output_contract_missing_core_sections(&snapshot, "## Risk\n\n## Plan\n\n")
+                .expect("custom contract should be evaluated");
+
+        assert_eq!(
+            missing
+                .iter()
+                .map(|section| section.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["risk", "plan"]
+        );
+    }
+
+    #[test]
+    fn custom_output_contract_gate_accepts_supported_structured_heading_formats() {
+        let snapshot = json!({
+            "id": "reviewer",
+            "scope": "project_custom",
+            "output": {
+                "contract": "review_summary",
+                "sections": [
+                    {
+                        "id": "risk",
+                        "label": "Risk",
+                        "emphasis": "core"
+                    },
+                    {
+                        "id": "plan",
+                        "label": "Plan",
+                        "emphasis": "core"
+                    }
+                ]
+            }
+        });
+
+        for final_message in [
+            "**Risk**\n- The migration can fail closed.\n\nPlan: Roll out behind the saved gate.",
+            "- **Risk:** The migration can fail closed.\n- Plan: Roll out behind the saved gate.",
+        ] {
+            assert!(custom_output_contract_gate_prompt(&snapshot, final_message).is_none());
+        }
+    }
+
+    #[test]
+    fn custom_output_contract_gate_ignores_quoted_and_fenced_heading_examples() {
+        let snapshot = json!({
+            "id": "reviewer",
+            "scope": "project_custom",
+            "output": {
+                "contract": "review_summary",
+                "sections": [
+                    {
+                        "id": "risk",
+                        "label": "Risk",
+                        "emphasis": "core"
+                    },
+                    {
+                        "id": "plan",
+                        "label": "Plan",
+                        "emphasis": "core"
+                    }
+                ]
+            }
+        });
+
+        let missing = custom_output_contract_missing_core_sections(
+            &snapshot,
+            "> ## Risk\n> Example only.\n\n```markdown\n## Plan\nExample only.\n```",
+        )
+        .expect("custom contract should be evaluated");
+
+        assert_eq!(
+            missing
+                .iter()
+                .map(|section| section.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["risk", "plan"]
+        );
+    }
+
+    #[test]
     fn s14_custom_output_contract_gate_ignores_builtin_definitions() {
         let snapshot = json!({
             "id": "engineer",
@@ -11251,6 +11676,113 @@ mod tests {
             tool_runtime,
             messages,
         )
+    }
+
+    #[test]
+    fn custom_output_contract_rejects_a_second_invalid_final_candidate() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let run_id = "custom-output-contract-second-invalid";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        let current_engineer = project_store::load_agent_definition(&repo_root, "engineer")
+            .expect("load engineer definition")
+            .expect("engineer definition exists");
+        let mut snapshot = project_store::load_effective_agent_definition_version_snapshot(
+            &repo_root,
+            "engineer",
+            current_engineer.current_version,
+        )
+        .expect("load engineer snapshot");
+        snapshot["id"] = json!("strict_output_agent");
+        snapshot["version"] = json!(1);
+        snapshot["scope"] = json!("project_custom");
+        snapshot["displayName"] = json!("Strict Output Agent");
+        snapshot["output"] = json!({
+            "contract": "strict_test_contract",
+            "sections": [{
+                "id": "unique_contract_section",
+                "label": "Unique Contract Section",
+                "emphasis": "core"
+            }]
+        });
+        snapshot
+            .as_object_mut()
+            .expect("definition object")
+            .remove("workflowStructure");
+        project_store::insert_agent_definition(
+            &repo_root,
+            &project_store::NewAgentDefinitionRecord {
+                definition_id: "strict_output_agent".into(),
+                version: 1,
+                display_name: "Strict Output Agent".into(),
+                short_label: "Strict".into(),
+                description: "Requires a unique final response section.".into(),
+                scope: "project_custom".into(),
+                lifecycle_state: "active".into(),
+                base_capability_profile: "engineering".into(),
+                snapshot,
+                validation_report: Some(json!({ "status": "valid" })),
+                created_at: "2026-05-01T12:00:01Z".into(),
+                updated_at: "2026-05-01T12:00:01Z".into(),
+            },
+        )
+        .expect("insert strict custom definition");
+        Connection::open(database_path_for_repo(&repo_root))
+            .expect("open project database")
+            .execute(
+                r#"
+                UPDATE agent_runs
+                SET agent_definition_id = 'strict_output_agent',
+                    agent_definition_version = 1
+                WHERE project_id = ?1 AND run_id = ?2
+                "#,
+                params![project_id, run_id],
+            )
+            .expect("pin run to strict custom definition");
+        let provider = ScriptedProvider::new(vec![
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+        ]);
+
+        let error = drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry_for_test_tools(&[]),
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect_err("second invalid final candidate must fail closed");
+
+        assert_eq!(error.code, "agent_output_contract_invalid");
+        let persisted = project_store::load_agent_run(&repo_root, &project_id, run_id)
+            .expect("load run after rejection");
+        let candidates =
+            reconstruct_assistant_candidates(&persisted.events).expect("reconstruct candidates");
+        assert_eq!(candidates.len(), 2);
+        assert!(candidates.iter().all(|candidate| {
+            candidate.state == AssistantCandidateState::Superseded
+                && candidate.disposition
+                    == Some(AssistantCandidateDisposition::CustomOutputContractGate)
+        }));
     }
 
     fn registry_for_test_tools(tool_names: &[&str]) -> ToolRegistry {
@@ -11902,6 +12434,254 @@ mod tests {
         let third_turn = descriptor_name_set(&captured_tools[2]);
         assert!(third_turn.contains(AUTONOMOUS_TOOL_TOOL_ACCESS));
         assert!(third_turn.contains(AUTONOMOUS_TOOL_WRITE));
+    }
+
+    #[test]
+    fn stage_regression_provider_loop_reprompts_when_final_response_precedes_completion() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .expect("project state test lock");
+        let run_id = "stage-completion-gate";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        let workflow_policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [
+                    {
+                        "id": "inspect",
+                        "title": "Inspect",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [
+                            {"kind": "todo_completed", "todoId": "inspect_done"}
+                        ]
+                    },
+                    {
+                        "id": "summarize",
+                        "title": "Summarize",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tool_runtime = tool_runtime.with_agent_workflow_policy(Some(workflow_policy));
+        let stage_allowed_tools = [AUTONOMOUS_TOOL_TODO]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        let registry = ToolRegistry::for_tool_names_with_options(
+            stage_allowed_tools.clone(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                stage_allowed_tools: Some(stage_allowed_tools),
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let provider = ScriptedProvider::new(vec![
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::ToolCalls {
+                message: "complete the active Stage".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-complete-inspect",
+                    AUTONOMOUS_TOOL_TODO,
+                    json!({
+                        "action": "upsert",
+                        "id": "inspect_done",
+                        "title": "Inspection gate satisfied",
+                        "status": "completed",
+                        "evidence": "Inspected the requested context.",
+                        "phaseId": "inspect",
+                        "phaseTitle": "Inspect"
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+        ]);
+
+        drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry,
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect("provider loop should complete after satisfying every Stage gate");
+
+        let snapshot = candidate_test_snapshot(&repo_root, &project_id, run_id);
+        let candidates =
+            reconstruct_assistant_candidates(&snapshot.events).expect("reconstruct candidates");
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| (candidate.state, candidate.disposition))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    AssistantCandidateState::Superseded,
+                    Some(AssistantCandidateDisposition::StageGate),
+                ),
+                (
+                    AssistantCandidateState::Superseded,
+                    Some(AssistantCandidateDisposition::ToolCallTurn),
+                ),
+                (AssistantCandidateState::Accepted, None),
+            ]
+        );
+    }
+
+    #[test]
+    fn stage_regression_stale_todo_evidence_cannot_unlock_final_response() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .expect("project state test lock");
+        let run_id = "stage-scoped-final-gate";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        let workflow_policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [
+                    {
+                        "id": "inspect",
+                        "title": "Inspect",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [
+                            {"kind": "todo_completed", "todoId": "stage_done"}
+                        ]
+                    },
+                    {
+                        "id": "verify",
+                        "title": "Verify",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [
+                            {"kind": "todo_completed", "todoId": "stage_done"}
+                        ]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tool_runtime = tool_runtime.with_agent_workflow_policy(Some(workflow_policy));
+        let stage_allowed_tools = [AUTONOMOUS_TOOL_TODO]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        let registry = ToolRegistry::for_tool_names_with_options(
+            stage_allowed_tools.clone(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                stage_allowed_tools: Some(stage_allowed_tools),
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let provider = ScriptedProvider::new(vec![
+            ProviderTurnOutcome::ToolCalls {
+                message: "complete inspect Stage".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-complete-inspect-scoped",
+                    AUTONOMOUS_TOOL_TODO,
+                    json!({
+                        "action": "upsert",
+                        "id": "stage_done",
+                        "title": "Current Stage complete",
+                        "status": "completed",
+                        "phaseId": "inspect",
+                        "phaseTitle": "Inspect"
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::ToolCalls {
+                message: "record fresh verification Stage evidence".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-complete-verify-scoped",
+                    AUTONOMOUS_TOOL_TODO,
+                    json!({
+                        "action": "complete",
+                        "id": "stage_done"
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+        ]);
+
+        drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry,
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect("provider loop should require fresh evidence in each Stage");
+
+        let snapshot = candidate_test_snapshot(&repo_root, &project_id, run_id);
+        let candidates =
+            reconstruct_assistant_candidates(&snapshot.events).expect("reconstruct candidates");
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| (candidate.state, candidate.disposition))
+                .collect::<Vec<_>>(),
+            vec![
+                (
+                    AssistantCandidateState::Superseded,
+                    Some(AssistantCandidateDisposition::ToolCallTurn),
+                ),
+                (
+                    AssistantCandidateState::Superseded,
+                    Some(AssistantCandidateDisposition::StageGate),
+                ),
+                (
+                    AssistantCandidateState::Superseded,
+                    Some(AssistantCandidateDisposition::ToolCallTurn),
+                ),
+                (AssistantCandidateState::Accepted, None),
+            ]
+        );
     }
 
     fn harness_report() -> String {

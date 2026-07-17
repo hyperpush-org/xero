@@ -25,7 +25,7 @@ const LANE_TONE_BY_ID: Record<string, string> = {
 // the canvas itself rather than burying it in docs.
 const LANE_TOOLTIP_BY_ID: Record<string, string> = {
   'lane:stage':
-    'Phases the agent moves through during a single run. Each stage can allow different tools.',
+    'Stages the agent moves through during a single run. Each stage can allow different tools.',
 }
 
 export const LaneLabelNode = memo(function LaneLabelNode({

@@ -69,10 +69,14 @@ pub fn archive_agent_definition<R: Runtime>(
 ) -> CommandResult<AgentDefinitionSummaryDto> {
     validate_non_empty(&request.project_id, "projectId")?;
     validate_non_empty(&request.definition_id, "definitionId")?;
+    if request.expected_current_version == 0 {
+        return Err(CommandError::invalid_request("expectedCurrentVersion"));
+    }
     let repo_root = resolve_project_root(&app, state.inner(), &request.project_id)?;
     let archived = project_store::archive_agent_definition(
         &repo_root,
         &request.definition_id,
+        request.expected_current_version,
         &now_timestamp(),
     )?;
     Ok(agent_definition_summary_dto(archived))
@@ -125,6 +129,8 @@ pub fn save_agent_definition<R: Runtime>(
         action: AutonomousAgentDefinitionAction::Save,
         definition_id: request.definition_id,
         source_definition_id: None,
+        expected_current_version: None,
+        source_version: None,
         include_archived: false,
         definition: Some(request.definition),
     };
@@ -151,6 +157,8 @@ pub fn update_agent_definition<R: Runtime>(
         action: AutonomousAgentDefinitionAction::Update,
         definition_id: Some(request.definition_id),
         source_definition_id: None,
+        expected_current_version: None,
+        source_version: None,
         include_archived: false,
         definition: Some(request.definition),
     };
@@ -179,6 +187,8 @@ pub fn preview_agent_definition<R: Runtime>(
         action: AutonomousAgentDefinitionAction::Preview,
         definition_id: request.definition_id,
         source_definition_id: None,
+        expected_current_version: None,
+        source_version: None,
         include_archived: false,
         definition: Some(request.definition),
     };

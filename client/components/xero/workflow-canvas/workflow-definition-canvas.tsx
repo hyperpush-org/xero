@@ -60,6 +60,7 @@ import './agent-visualization.css'
 import { BaseDialog } from '@xero/ui/components/base-dialog'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import {
@@ -853,11 +854,11 @@ function WorkflowDefinitionCanvasInner({
   )
 
   const handleResumeCheckpoint = useCallback(
-    async (decision: string) => {
+    async (decision: string, payload: unknown) => {
       if (!run || !waitingCheckpoint || !onResumeCheckpoint) return
       setLocalError(null)
       try {
-        await onResumeCheckpoint(run.id, waitingCheckpoint.id, decision, { decision })
+        await onResumeCheckpoint(run.id, waitingCheckpoint.id, decision, payload)
       } catch (error) {
         setLocalError(error instanceof Error ? error.message : 'Xero could not resume the Workflow.')
       }
@@ -1185,6 +1186,7 @@ function WorkflowDefinitionCanvasInner({
           node={effectiveDefinition.nodes.find((node) => node.id === waitingCheckpoint.nodeId) ?? null}
           onResume={handleResumeCheckpoint}
           running={runningAction}
+          error={localError}
         />
       ) : null}
 
@@ -1500,6 +1502,7 @@ function NodeEditor({
       {node.type === 'agent' ? (
         <AgentNodeEditor
           agents={agents}
+          definition={definition}
           node={node}
           onUpdate={onUpdate}
           onCreateAgent={onCreateAgent}
@@ -1958,7 +1961,7 @@ function NodeEditor({
       ) : null}
       {node.type === 'command' ? (
         <>
-          <Field label="Command" hint="Only commands on the allowlist can run.">
+          <Field label="Command" hint="Xero permits only a sanitized, read-only git status command.">
             <Input
               value={node.command}
               onChange={(event) =>
@@ -1971,7 +1974,10 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Arguments">
+          <Field
+            label="Arguments"
+            hint="Use short/porcelain and untracked-file flags, or put repo-relative pathspecs after --. Status runs in-process and always ignores submodules."
+          >
             <Input
               value={node.args.join(' ')}
               onChange={(event) =>
@@ -1999,7 +2005,10 @@ function NodeEditor({
               className="h-8 text-[12px]"
             />
           </Field>
-          <Field label="Allowlist" hint="Comma-separated executable names approved for this node.">
+          <Field
+            label="Definition allowlist"
+            hint="This request cannot grant command access; Xero's built-in policy remains authoritative."
+          >
             <Input
               value={node.allowedCommands.join(', ')}
               onChange={(event) =>
@@ -2211,12 +2220,14 @@ function NodeEditor({
 
 function AgentNodeEditor({
   agents,
+  definition,
   node,
   onUpdate,
   onCreateAgent,
   onEditAgent,
 }: {
   agents: { agent: WorkflowAgentSummaryDto; key: string }[]
+  definition: WorkflowDefinitionDto
   node: Extract<WorkflowNodeDto, { type: 'agent' }>
   onUpdate: (updater: (node: WorkflowNodeDto) => WorkflowNodeDto) => void
   onCreateAgent?: () => void
@@ -2264,6 +2275,11 @@ function AgentNodeEditor({
           ) : null}
         </div>
       </Field>
+      <AgentInputBindingsEditor
+        definition={definition}
+        node={node}
+        onUpdate={onUpdate}
+      />
       <Field label="Handoff preset" hint="Choose a common result shape when later routing needs structure.">
         <Select
           value={selectedHandoffPreset}
@@ -2348,6 +2364,315 @@ function AgentNodeEditor({
         </Select>
       </Field>
     </>
+  )
+}
+
+function AgentInputBindingsEditor({
+  definition,
+  node,
+  onUpdate,
+}: {
+  definition: WorkflowDefinitionDto
+  node: Extract<WorkflowNodeDto, { type: 'agent' }>
+  onUpdate: (updater: (node: WorkflowNodeDto) => WorkflowNodeDto) => void
+}) {
+  const artifactRefs = useMemo(
+    () =>
+      definition.nodes.flatMap((candidate) => {
+        if (candidate.id === node.id) return []
+        const artifactRef = producedArtifactRefForNode(candidate)
+        return artifactRef ? [artifactRef] : []
+      }),
+    [definition.nodes, node.id],
+  )
+  const stateRefs = useMemo(
+    () =>
+      definition.nodes.flatMap((candidate) => {
+        if (candidate.id === node.id || !isStateProducingNode(candidate)) return []
+        const stateRef = producedArtifactRefForNode(candidate)
+        return stateRef ? [stateRef] : []
+      }),
+    [definition.nodes, node.id],
+  )
+  const updateBinding = useCallback(
+    (index: number, updater: (binding: WorkflowInputBindingDto) => WorkflowInputBindingDto) => {
+      onUpdate((current) => {
+        if (current.type !== 'agent') return current
+        return {
+          ...current,
+          inputBindings: current.inputBindings.map((binding, bindingIndex) =>
+            bindingIndex === index ? updater(binding) : binding,
+          ),
+        }
+      })
+    },
+    [onUpdate],
+  )
+  const removeBinding = useCallback(
+    (index: number) => {
+      onUpdate((current) =>
+        current.type === 'agent'
+          ? {
+              ...current,
+              inputBindings: current.inputBindings.filter((_, bindingIndex) => bindingIndex !== index),
+            }
+          : current,
+      )
+    },
+    [onUpdate],
+  )
+  const addBinding = useCallback(() => {
+    onUpdate((current) =>
+      current.type === 'agent'
+        ? {
+            ...current,
+            inputBindings: [
+              ...current.inputBindings,
+              defaultWorkflowInputBinding(current.inputBindings.length),
+            ],
+          }
+        : current,
+    )
+  }, [onUpdate])
+
+  return (
+    <Field
+      label="Inputs"
+      hint="Pass start input, an earlier handoff, or project state into this agent's prompt."
+    >
+      <div className="space-y-2">
+        {node.inputBindings.length === 0 ? (
+          <p className="rounded-md border border-dashed border-border/60 px-2.5 py-2 text-[10.5px] leading-relaxed text-muted-foreground">
+            No inputs yet. This agent will receive only the Workflow context.
+          </p>
+        ) : null}
+        {node.inputBindings.map((binding, index) => {
+          const inputNumber = index + 1
+          const inputId = `workflow-${node.id}-input-${inputNumber}`
+          const referenceOptions = binding.source === 'state' ? stateRefs : artifactRefs
+          return (
+            <section
+              key={`${node.id}:input:${index}`}
+              aria-label={`Input ${inputNumber}`}
+              className="space-y-2 rounded-md border border-border/55 bg-background/35 p-2"
+            >
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-[10.5px] font-semibold text-foreground">Input {inputNumber}</p>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="icon-sm"
+                  className="size-6 text-muted-foreground hover:text-destructive"
+                  aria-label={`Remove input ${inputNumber}`}
+                  onClick={() => removeBinding(index)}
+                >
+                  <Trash2 className="size-3" />
+                </Button>
+              </div>
+              <div className="space-y-1">
+                <Label className="text-[10px] text-muted-foreground">Source</Label>
+                <Select
+                  value={binding.source}
+                  onValueChange={(value) =>
+                    updateBinding(index, (current) =>
+                      workflowInputBindingWithSource(
+                        current,
+                        value as WorkflowInputBindingDto['source'],
+                        artifactRefs,
+                        stateRefs,
+                      ),
+                    )
+                  }
+                >
+                  <SelectTrigger
+                    aria-label={`Input ${inputNumber} source`}
+                    className="h-8 w-full text-[11px]"
+                  >
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="run_input">Run input</SelectItem>
+                    <SelectItem value="artifact">Artifact</SelectItem>
+                    <SelectItem value="state">State</SelectItem>
+                  </SelectContent>
+                </Select>
+              </div>
+              <div className="space-y-1">
+                <Label htmlFor={`${inputId}-name`} className="text-[10px] text-muted-foreground">
+                  Name
+                </Label>
+                <Input
+                  id={`${inputId}-name`}
+                  aria-label={`Input ${inputNumber} name`}
+                  value={binding.name}
+                  onChange={(event) =>
+                    updateBinding(index, (current) => ({ ...current, name: event.target.value }))
+                  }
+                  className="h-8 text-[11px]"
+                />
+              </div>
+              <div className="space-y-1">
+                <Label
+                  htmlFor={`${inputId}-prompt-label`}
+                  className="text-[10px] text-muted-foreground"
+                >
+                  Prompt label <span className="font-normal opacity-70">(optional)</span>
+                </Label>
+                <Input
+                  id={`${inputId}-prompt-label`}
+                  aria-label={`Input ${inputNumber} prompt label`}
+                  value={binding.promptLabel ?? ''}
+                  placeholder="Context shown to the agent"
+                  onChange={(event) =>
+                    updateBinding(index, (current) => ({
+                      ...current,
+                      promptLabel: optionalBindingText(event.target.value),
+                    }))
+                  }
+                  className="h-8 text-[11px]"
+                />
+              </div>
+              {binding.source === 'artifact' || binding.source === 'state' ? (
+                <div className="space-y-1">
+                  <Label
+                    htmlFor={`${inputId}-reference`}
+                    className="text-[10px] text-muted-foreground"
+                  >
+                    {binding.source === 'artifact' ? 'Artifact reference' : 'State reference'}
+                  </Label>
+                  <Input
+                    id={`${inputId}-reference`}
+                    aria-label={`Input ${inputNumber} ${binding.source === 'artifact' ? 'artifact reference' : 'state reference'}`}
+                    list={`${inputId}-reference-options`}
+                    value={binding.source === 'artifact' ? binding.artifactRef : binding.stateRef}
+                    placeholder={
+                      binding.source === 'artifact'
+                        ? 'upstream_node.artifact_type'
+                        : 'state_node.state_result'
+                    }
+                    onChange={(event) =>
+                      updateBinding(index, (current) => {
+                        if (current.source === 'artifact') {
+                          return { ...current, artifactRef: event.target.value }
+                        }
+                        if (current.source === 'state') {
+                          return { ...current, stateRef: event.target.value }
+                        }
+                        return current
+                      })
+                    }
+                    className="h-8 font-mono text-[10.5px]"
+                  />
+                  <datalist id={`${inputId}-reference-options`}>
+                    {referenceOptions.map((reference) => (
+                      <option key={reference} value={reference} />
+                    ))}
+                  </datalist>
+                </div>
+              ) : null}
+              <div className="space-y-1">
+                <Label htmlFor={`${inputId}-path`} className="text-[10px] text-muted-foreground">
+                  JSON path <span className="font-normal opacity-70">(optional)</span>
+                </Label>
+                <Input
+                  id={`${inputId}-path`}
+                  aria-label={`Input ${inputNumber} path`}
+                  value={binding.path ?? ''}
+                  placeholder="$ or $.summary"
+                  onChange={(event) =>
+                    updateBinding(index, (current) => ({
+                      ...current,
+                      path: optionalBindingText(event.target.value),
+                    }))
+                  }
+                  className="h-8 font-mono text-[10.5px]"
+                />
+              </div>
+              <div className="flex items-center gap-2">
+                <Checkbox
+                  id={`${inputId}-required`}
+                  aria-label={`Input ${inputNumber} required`}
+                  checked={binding.required}
+                  onCheckedChange={(value) =>
+                    updateBinding(index, (current) => ({ ...current, required: value === true }))
+                  }
+                  className="size-3.5"
+                />
+                <Label
+                  htmlFor={`${inputId}-required`}
+                  className="cursor-pointer text-[10.5px] font-normal text-foreground"
+                >
+                  Required before this agent can start
+                </Label>
+              </div>
+            </section>
+          )
+        })}
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 w-full text-[11px]"
+          onClick={addBinding}
+        >
+          <Plus className="size-3" />
+          Add input
+        </Button>
+      </div>
+    </Field>
+  )
+}
+
+function defaultWorkflowInputBinding(index: number): WorkflowInputBindingDto {
+  return {
+    source: 'run_input',
+    name: index === 0 ? 'input' : `input_${index + 1}`,
+    required: true,
+    path: null,
+    promptLabel: null,
+  }
+}
+
+function workflowInputBindingWithSource(
+  binding: WorkflowInputBindingDto,
+  source: WorkflowInputBindingDto['source'],
+  artifactRefs: readonly string[],
+  stateRefs: readonly string[],
+): WorkflowInputBindingDto {
+  const common = {
+    name: binding.name,
+    required: binding.required,
+    path: binding.path ?? null,
+    promptLabel: binding.promptLabel ?? null,
+  }
+  if (source === 'artifact') {
+    return {
+      source,
+      ...common,
+      artifactRef: binding.source === 'artifact' ? binding.artifactRef : artifactRefs[0] ?? '',
+    }
+  }
+  if (source === 'state') {
+    return {
+      source,
+      ...common,
+      stateRef: binding.source === 'state' ? binding.stateRef : stateRefs[0] ?? '',
+    }
+  }
+  return { source, ...common }
+}
+
+function optionalBindingText(value: string): string | null {
+  return value.trim().length > 0 ? value : null
+}
+
+function isStateProducingNode(node: WorkflowNodeDto): boolean {
+  return (
+    node.type === 'state_read' ||
+    node.type === 'state_query' ||
+    node.type === 'state_write' ||
+    node.type === 'state_patch' ||
+    node.type === 'collection_loop'
   )
 }
 
@@ -3393,26 +3718,120 @@ function CheckpointResumeBar({
   node,
   running,
   onResume,
+  error,
 }: {
   node: WorkflowNodeDto | null
   running: boolean
-  onResume: (decision: string) => void
+  onResume: (decision: string, payload: unknown) => void
+  error: string | null
 }) {
-  const options = node?.type === 'human_checkpoint' && node.decisionOptions.length > 0
-    ? node.decisionOptions
+  const checkpoint = node?.type === 'human_checkpoint' ? node : null
+  const options = checkpoint && checkpoint.decisionOptions.length > 0
+    ? checkpoint.decisionOptions
     : ['continue']
+  const firstOption = options[0] ?? 'continue'
+  const payloadSchema = checkpoint?.resumePayloadSchema ?? null
+  const requiresPayload = isRecord(payloadSchema) && Object.keys(payloadSchema).length > 0
+  const [decision, setDecision] = useState(firstOption)
+  const [payloadText, setPayloadText] = useState(() => checkpointPayloadText(payloadSchema))
+  const [payloadError, setPayloadError] = useState<string | null>(null)
+  const displayedError = payloadError ?? error
+
+  useEffect(() => {
+    setDecision(firstOption)
+    setPayloadText(checkpointPayloadText(payloadSchema))
+    setPayloadError(null)
+  }, [checkpoint?.id, firstOption, payloadSchema])
+
+  const resumeWithPayload = () => {
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(payloadText)
+    } catch {
+      setPayloadError('Enter a valid JSON payload before resuming.')
+      return
+    }
+    const schemaError = validateCheckpointPayload(parsed, payloadSchema)
+    if (schemaError) {
+      setPayloadError(schemaError)
+      return
+    }
+    setPayloadError(null)
+    onResume(decision, parsed)
+  }
+
+  if (requiresPayload) {
+    return (
+      <div className="pointer-events-auto absolute bottom-5 right-5 z-30 w-[min(30rem,calc(100%-2.5rem))] space-y-3 rounded-lg border border-amber-500/25 bg-card/95 px-3 py-3 text-[12px] shadow-lg backdrop-blur-md">
+        <div className="flex items-start gap-2">
+          <PauseCircle className="mt-0.5 size-4 shrink-0 text-amber-500" />
+          <p className="min-w-0 flex-1 text-muted-foreground">
+            {checkpoint?.prompt ?? 'Workflow is paused at a gate.'}
+          </p>
+        </div>
+        <div className="grid gap-3 sm:grid-cols-[9rem_minmax(0,1fr)]">
+          <div className="space-y-1.5">
+            <Label htmlFor="workflow-checkpoint-decision" className="text-[11px]">Decision</Label>
+            <Select value={decision} onValueChange={setDecision} disabled={running}>
+              <SelectTrigger id="workflow-checkpoint-decision" className="h-8 text-[12px]">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {options.map((option) => (
+                  <SelectItem key={option} value={option}>{humanize(option)}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5">
+            <Label htmlFor="workflow-checkpoint-payload" className="text-[11px]">
+              Resume payload (JSON)
+            </Label>
+            <Textarea
+              id="workflow-checkpoint-payload"
+              value={payloadText}
+              onChange={(event) => {
+                setPayloadText(event.target.value)
+                setPayloadError(null)
+              }}
+              aria-invalid={displayedError ? true : undefined}
+              aria-describedby={displayedError ? 'workflow-checkpoint-payload-error' : undefined}
+              className="min-h-24 resize-y font-mono text-[11px]"
+              disabled={running}
+              spellCheck={false}
+            />
+            {displayedError ? (
+              <p id="workflow-checkpoint-payload-error" role="alert" className="text-[11px] text-destructive">
+                {displayedError}
+              </p>
+            ) : null}
+          </div>
+        </div>
+        <div className="flex justify-end">
+          <Button type="button" size="sm" className="h-7 text-[11px]" disabled={running} onClick={resumeWithPayload}>
+            {running ? <Loader2 className="size-3 animate-spin" /> : null}
+            Resume Workflow
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
   return (
-    <div className="pointer-events-auto absolute bottom-5 right-5 z-30 flex max-w-md items-center gap-2 rounded-lg border border-amber-500/25 bg-card/95 px-3 py-2 text-[12px] shadow-lg backdrop-blur-md">
-      <PauseCircle className="size-4 shrink-0 text-amber-500" />
-      <p className="min-w-0 flex-1 truncate text-muted-foreground">
-        {node?.type === 'human_checkpoint' ? node.prompt : 'Workflow is paused at a gate.'}
-      </p>
-      {options.map((option) => (
-        <Button key={option} type="button" size="sm" className="h-7 text-[11px]" disabled={running} onClick={() => onResume(option)}>
-          {running ? <Loader2 className="size-3 animate-spin" /> : null}
-          {humanize(option)}
-        </Button>
-      ))}
+    <div className="pointer-events-auto absolute bottom-5 right-5 z-30 max-w-md space-y-1.5 rounded-lg border border-amber-500/25 bg-card/95 px-3 py-2 text-[12px] shadow-lg backdrop-blur-md">
+      <div className="flex items-center gap-2">
+        <PauseCircle className="size-4 shrink-0 text-amber-500" />
+        <p className="min-w-0 flex-1 truncate text-muted-foreground">
+          {checkpoint?.prompt ?? 'Workflow is paused at a gate.'}
+        </p>
+        {options.map((option) => (
+          <Button key={option} type="button" size="sm" className="h-7 text-[11px]" disabled={running} onClick={() => onResume(option, null)}>
+            {running ? <Loader2 className="size-3 animate-spin" /> : null}
+            {humanize(option)}
+          </Button>
+        ))}
+      </div>
+      {error ? <p role="alert" className="text-[11px] text-destructive">{error}</p> : null}
     </div>
   )
 }
@@ -5058,6 +5477,111 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value)
 }
 
+function defaultCheckpointPayload(schema: unknown): unknown {
+  if (!isRecord(schema)) return {}
+  if ('default' in schema) return schema.default
+  if (schema.type === 'array') return []
+  const payload: Record<string, unknown> = {}
+  if (isRecord(schema.properties)) {
+    for (const [key, propertySchema] of Object.entries(schema.properties)) {
+      if (isRecord(propertySchema) && 'default' in propertySchema) {
+        payload[key] = propertySchema.default
+      }
+    }
+  }
+  return payload
+}
+
+function checkpointPayloadText(schema: unknown): string {
+  return JSON.stringify(defaultCheckpointPayload(schema), null, 2) ?? '{}'
+}
+
+function validateCheckpointPayload(
+  value: unknown,
+  schema: unknown,
+  path = 'Payload',
+): string | null {
+  if (!isRecord(schema)) return null
+  if (Array.isArray(schema.enum) && !schema.enum.some((candidate) => jsonValuesEqual(candidate, value))) {
+    return `${path} must be one of the values allowed by the checkpoint schema.`
+  }
+  if ('const' in schema && !jsonValuesEqual(schema.const, value)) {
+    return `${path} must match the value required by the checkpoint schema.`
+  }
+
+  const expectedTypes = typeof schema.type === 'string'
+    ? [schema.type]
+    : Array.isArray(schema.type)
+      ? schema.type.filter((type): type is string => typeof type === 'string')
+      : []
+  if (expectedTypes.length > 0 && !expectedTypes.some((type) => checkpointPayloadMatchesType(value, type))) {
+    return `${path} must be ${expectedTypes.map(humanize).join(' or ')}.`
+  }
+
+  if (isRecord(value)) {
+    const required = Array.isArray(schema.required)
+      ? schema.required.filter((key): key is string => typeof key === 'string')
+      : []
+    const missing = required.find((key) => !Object.prototype.hasOwnProperty.call(value, key))
+    if (missing) return `${path} is missing required field "${missing}".`
+
+    if (isRecord(schema.properties)) {
+      for (const [key, propertySchema] of Object.entries(schema.properties)) {
+        if (!Object.prototype.hasOwnProperty.call(value, key)) continue
+        const error = validateCheckpointPayload(value[key], propertySchema, `${path}.${key}`)
+        if (error) return error
+      }
+      if (schema.additionalProperties === false) {
+        const unknown = Object.keys(value).find(
+          (key) => !Object.prototype.hasOwnProperty.call(schema.properties, key),
+        )
+        if (unknown) return `${path} contains unsupported field "${unknown}".`
+      }
+    }
+  }
+
+  if (Array.isArray(value) && isRecord(schema.items)) {
+    for (const [index, item] of value.entries()) {
+      const error = validateCheckpointPayload(item, schema.items, `${path}[${index}]`)
+      if (error) return error
+    }
+  }
+  if (typeof value === 'string') {
+    if (typeof schema.minLength === 'number' && value.length < schema.minLength) {
+      return `${path} must contain at least ${schema.minLength} character${schema.minLength === 1 ? '' : 's'}.`
+    }
+    if (typeof schema.maxLength === 'number' && value.length > schema.maxLength) {
+      return `${path} must contain at most ${schema.maxLength} character${schema.maxLength === 1 ? '' : 's'}.`
+    }
+  }
+  if (typeof value === 'number') {
+    if (typeof schema.minimum === 'number' && value < schema.minimum) {
+      return `${path} must be at least ${schema.minimum}.`
+    }
+    if (typeof schema.maximum === 'number' && value > schema.maximum) {
+      return `${path} must be at most ${schema.maximum}.`
+    }
+  }
+  return null
+}
+
+function checkpointPayloadMatchesType(value: unknown, type: string): boolean {
+  switch (type) {
+    case 'object': return isRecord(value)
+    case 'array': return Array.isArray(value)
+    case 'string': return typeof value === 'string'
+    case 'number': return typeof value === 'number' && Number.isFinite(value)
+    case 'integer': return typeof value === 'number' && Number.isInteger(value)
+    case 'boolean': return typeof value === 'boolean'
+    case 'null': return value === null
+    default: return true
+  }
+}
+
+function jsonValuesEqual(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right)
+}
+
 function humanize(value: string): string {
   return value
     .replace(/[_-]+/g, ' ')
@@ -5065,7 +5589,7 @@ function humanize(value: string): string {
 }
 
 function isActiveRun(status: WorkflowRunStatusDto): boolean {
-  return status === 'queued' || status === 'running' || status === 'paused'
+  return status === 'queued' || status === 'running' || status === 'paused' || status === 'cancelling'
 }
 
 function isRetryableRunNodeStatus(status: WorkflowNodeRunStatusDto): boolean {

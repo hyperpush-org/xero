@@ -3,7 +3,11 @@ use std::{
     env,
     io::{self, Read, Write},
     path::Path,
-    process::{Child, Command, ExitStatus, Stdio},
+    process::{Child, ChildStderr, ChildStdout, Command, ExitStatus, Stdio},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Condvar, Mutex,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -15,6 +19,8 @@ use crate::{
     ToolCallInput, ToolDescriptorV2, ToolEffectClass, ToolExecutionContext, ToolExecutionError,
     ToolMutability, ToolSandboxRequirement,
 };
+
+const SANDBOX_STREAM_DRAIN_TIMEOUT: Duration = Duration::from_millis(500);
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "snake_case")]
@@ -622,13 +628,23 @@ impl SandboxedProcessRunner {
             }
         };
 
-        let stdout = join_sandbox_capture(stdout_handle, process.metadata.clone())?;
-        let stderr = join_sandbox_capture(stderr_handle, process.metadata.clone())?;
+        let stream_drain_deadline = Instant::now() + SANDBOX_STREAM_DRAIN_TIMEOUT;
+        let stdout = finish_sandbox_capture(stdout_handle, stream_drain_deadline);
+        let stderr = finish_sandbox_capture(stderr_handle, stream_drain_deadline);
         if let Some(handle) = stdin_handle {
-            match handle.join() {
-                Ok(Ok(())) => {}
-                Ok(Err(_)) if timed_out || cancelled => {}
-                Ok(Err(error)) => {
+            let stdin_result = if handle.is_finished() {
+                Some(handle.join())
+            } else {
+                let deadline = stream_drain_deadline;
+                while !handle.is_finished() && Instant::now() < deadline {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                handle.is_finished().then(|| handle.join())
+            };
+            match stdin_result {
+                Some(Ok(Ok(()))) => {}
+                Some(Ok(Err(_))) | None if timed_out || cancelled => {}
+                Some(Ok(Err(error))) => {
                     return Err(SandboxedProcessError::new(
                         "sandboxed_process_stdin_write_failed",
                         format!("Sandbox runner could not write process stdin: {error}"),
@@ -637,10 +653,19 @@ impl SandboxedProcessRunner {
                         SandboxExitClassification::Unknown,
                     ));
                 }
-                Err(_) => {
+                Some(Err(_)) => {
                     return Err(SandboxedProcessError::new(
                         "sandboxed_process_stdin_writer_panicked",
                         "Sandbox runner's stdin writer panicked.",
+                        true,
+                        process.metadata,
+                        SandboxExitClassification::Unknown,
+                    ));
+                }
+                None => {
+                    return Err(SandboxedProcessError::new(
+                        "sandboxed_process_stdin_write_incomplete",
+                        "Sandbox runner stopped waiting for process stdin after the bounded drain deadline.",
                         true,
                         process.metadata,
                         SandboxExitClassification::Unknown,
@@ -669,6 +694,32 @@ impl SandboxedProcessRunner {
                 true,
                 process.metadata,
                 SandboxExitClassification::Cancelled,
+            ));
+        }
+        if stdout.drain_incomplete || stderr.drain_incomplete {
+            return Err(SandboxedProcessError::new(
+                "sandboxed_process_output_incomplete",
+                format!(
+                    "Sandbox runner stopped draining process output after the bounded deadline (stdout bytes: {}, stderr bytes: {}).",
+                    stdout.excerpt.len(),
+                    stderr.excerpt.len()
+                ),
+                true,
+                process.metadata,
+                SandboxExitClassification::Unknown,
+            ));
+        }
+        if stdout.read_error.is_some() || stderr.read_error.is_some() {
+            return Err(SandboxedProcessError::new(
+                "sandboxed_process_output_failed",
+                format!(
+                    "Sandbox runner could not completely read process output (stdout: {}; stderr: {}).",
+                    stdout.read_error.as_deref().unwrap_or("ok"),
+                    stderr.read_error.as_deref().unwrap_or("ok")
+                ),
+                true,
+                process.metadata,
+                SandboxExitClassification::Unknown,
             ));
         }
 
@@ -927,61 +978,277 @@ fn default_sandboxed_path() -> &'static str {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SandboxOutputCapture {
     excerpt: Vec<u8>,
     truncated: bool,
+    drain_incomplete: bool,
+    read_error: Option<String>,
+}
+
+#[derive(Debug)]
+struct SandboxCaptureState {
+    capture: SandboxOutputCapture,
+    completed: bool,
+}
+
+struct SandboxCaptureReader {
+    state: Arc<(Mutex<SandboxCaptureState>, Condvar)>,
+    stop: Arc<AtomicBool>,
+    thread: thread::JoinHandle<()>,
+}
+
+trait PollableSandboxStream: Read + Send + 'static {
+    fn wait_until_readable(&self, timeout: Duration) -> io::Result<bool>;
+}
+
+#[cfg(unix)]
+fn unix_sandbox_stream_readable(
+    stream: &impl std::os::fd::AsRawFd,
+    timeout: Duration,
+) -> io::Result<bool> {
+    let mut descriptor = libc::pollfd {
+        fd: stream.as_raw_fd(),
+        events: libc::POLLIN | libc::POLLHUP | libc::POLLERR,
+        revents: 0,
+    };
+    loop {
+        let result = unsafe {
+            libc::poll(
+                &mut descriptor,
+                1,
+                timeout.as_millis().min(i32::MAX as u128) as i32,
+            )
+        };
+        if result >= 0 {
+            return Ok(result > 0);
+        }
+        let error = io::Error::last_os_error();
+        if error.kind() != io::ErrorKind::Interrupted {
+            return Err(error);
+        }
+    }
+}
+
+#[cfg(windows)]
+fn windows_sandbox_stream_readable(
+    stream: &impl std::os::windows::io::AsRawHandle,
+    timeout: Duration,
+) -> io::Result<bool> {
+    use std::ffi::c_void;
+
+    #[link(name = "kernel32")]
+    unsafe extern "system" {
+        #[link_name = "PeekNamedPipe"]
+        fn peek_named_pipe(
+            pipe: *mut c_void,
+            buffer: *mut c_void,
+            buffer_size: u32,
+            bytes_read: *mut u32,
+            total_bytes_available: *mut u32,
+            bytes_left_this_message: *mut u32,
+        ) -> i32;
+    }
+
+    const ERROR_BROKEN_PIPE: i32 = 109;
+    let deadline = Instant::now() + timeout;
+    loop {
+        let mut available = 0_u32;
+        let result = unsafe {
+            peek_named_pipe(
+                stream.as_raw_handle().cast(),
+                std::ptr::null_mut(),
+                0,
+                std::ptr::null_mut(),
+                &mut available,
+                std::ptr::null_mut(),
+            )
+        };
+        if result != 0 {
+            if available > 0 {
+                return Ok(true);
+            }
+        } else {
+            let error = io::Error::last_os_error();
+            if error.raw_os_error() == Some(ERROR_BROKEN_PIPE) {
+                return Ok(true);
+            }
+            return Err(error);
+        }
+        if Instant::now() >= deadline {
+            return Ok(false);
+        }
+        thread::sleep(Duration::from_millis(5));
+    }
+}
+
+impl PollableSandboxStream for ChildStdout {
+    fn wait_until_readable(&self, timeout: Duration) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            unix_sandbox_stream_readable(self, timeout)
+        }
+        #[cfg(windows)]
+        {
+            windows_sandbox_stream_readable(self, timeout)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = timeout;
+            Ok(true)
+        }
+    }
+}
+
+impl PollableSandboxStream for ChildStderr {
+    fn wait_until_readable(&self, timeout: Duration) -> io::Result<bool> {
+        #[cfg(unix)]
+        {
+            unix_sandbox_stream_readable(self, timeout)
+        }
+        #[cfg(windows)]
+        {
+            windows_sandbox_stream_readable(self, timeout)
+        }
+        #[cfg(not(any(unix, windows)))]
+        {
+            let _ = timeout;
+            Ok(true)
+        }
+    }
 }
 
 fn spawn_sandbox_capture(
-    mut reader: impl Read + Send + 'static,
+    mut reader: impl PollableSandboxStream,
     max_capture_bytes: usize,
-) -> thread::JoinHandle<io::Result<SandboxOutputCapture>> {
-    thread::spawn(move || {
-        let mut excerpt = Vec::new();
-        let mut truncated = false;
+) -> SandboxCaptureReader {
+    let state = Arc::new((
+        Mutex::new(SandboxCaptureState {
+            capture: SandboxOutputCapture {
+                excerpt: Vec::new(),
+                truncated: false,
+                drain_incomplete: false,
+                read_error: None,
+            },
+            completed: false,
+        }),
+        Condvar::new(),
+    ));
+    let reader_state = state.clone();
+    let stop = Arc::new(AtomicBool::new(false));
+    let reader_stop = stop.clone();
+    let thread = thread::spawn(move || {
         let mut buffer = [0_u8; 4096];
         loop {
-            let read = reader.read(&mut buffer)?;
-            if read == 0 {
-                break;
+            if reader_stop.load(Ordering::Acquire) {
+                let (state, completed) = &*reader_state;
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.completed = true;
+                completed.notify_all();
+                return;
             }
-            let remaining = max_capture_bytes.saturating_sub(excerpt.len());
+            match reader.wait_until_readable(Duration::from_millis(25)) {
+                Ok(true) => {}
+                Ok(false) => continue,
+                Err(error) => {
+                    let (state, completed) = &*reader_state;
+                    let mut state = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state.capture.read_error = Some(error.to_string());
+                    state.completed = true;
+                    completed.notify_all();
+                    return;
+                }
+            }
+            let read = match reader.read(&mut buffer) {
+                Ok(read) => read,
+                Err(error) => {
+                    let (state, completed) = &*reader_state;
+                    let mut state = state
+                        .lock()
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    state.capture.read_error = Some(error.to_string());
+                    state.completed = true;
+                    completed.notify_all();
+                    return;
+                }
+            };
+            if read == 0 {
+                let (state, completed) = &*reader_state;
+                let mut state = state
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                state.completed = true;
+                completed.notify_all();
+                return;
+            }
+            let (state, _) = &*reader_state;
+            let mut state = state
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let remaining = max_capture_bytes.saturating_sub(state.capture.excerpt.len());
             if remaining > 0 {
                 let to_copy = remaining.min(read);
-                excerpt.extend_from_slice(&buffer[..to_copy]);
+                state.capture.excerpt.extend_from_slice(&buffer[..to_copy]);
                 if to_copy < read {
-                    truncated = true;
+                    state.capture.truncated = true;
                 }
             } else {
-                truncated = true;
+                state.capture.truncated = true;
             }
         }
-        Ok(SandboxOutputCapture { excerpt, truncated })
-    })
+    });
+    SandboxCaptureReader {
+        state,
+        stop,
+        thread,
+    }
 }
 
-fn join_sandbox_capture(
-    handle: thread::JoinHandle<io::Result<SandboxOutputCapture>>,
-    metadata: SandboxExecutionMetadata,
-) -> Result<SandboxOutputCapture, SandboxedProcessError> {
-    match handle.join() {
-        Ok(Ok(capture)) => Ok(capture),
-        Ok(Err(error)) => Err(SandboxedProcessError::new(
-            "sandboxed_process_output_failed",
-            format!("Sandbox runner could not capture process output: {error}"),
-            true,
-            metadata,
-            SandboxExitClassification::Unknown,
-        )),
-        Err(_) => Err(SandboxedProcessError::new(
-            "sandboxed_process_output_failed",
-            "Sandbox runner could not join the process output capture thread.",
-            true,
-            metadata,
-            SandboxExitClassification::Unknown,
-        )),
+fn finish_sandbox_capture(reader: SandboxCaptureReader, deadline: Instant) -> SandboxOutputCapture {
+    let SandboxCaptureReader {
+        state,
+        stop,
+        thread,
+    } = reader;
+    let (capture_state, completed) = &*state;
+    let mut state = capture_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    while !state.completed {
+        let now = Instant::now();
+        if now >= deadline {
+            state.capture.truncated = true;
+            state.capture.drain_incomplete = true;
+            break;
+        }
+        let (next_state, wait_result) = completed
+            .wait_timeout(state, deadline.saturating_duration_since(now))
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        state = next_state;
+        if wait_result.timed_out() && !state.completed {
+            state.capture.truncated = true;
+            state.capture.drain_incomplete = true;
+            break;
+        }
     }
+    drop(state);
+    stop.store(true, Ordering::Release);
+    let reader_panicked = thread.join().is_err();
+    let mut capture = capture_state
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .capture
+        .clone();
+    if reader_panicked {
+        capture.truncated = true;
+        capture.drain_incomplete = true;
+        capture.read_error = Some("sandbox output reader panicked".into());
+    }
+    capture
 }
 
 fn decode_optional_output(bytes: &[u8]) -> Option<String> {
@@ -1889,6 +2156,96 @@ mod tests {
             error.metadata.exit_classification,
             SandboxExitClassification::DeniedBySandbox
         );
+    }
+
+    #[test]
+    fn sandbox_capture_deadline_preserves_partial_output_without_blocking() {
+        struct StalledAfterPrefixReader {
+            prefix: Option<Vec<u8>>,
+            release: Arc<(Mutex<bool>, Condvar)>,
+            terminated: Arc<AtomicBool>,
+        }
+
+        impl Drop for StalledAfterPrefixReader {
+            fn drop(&mut self) {
+                self.terminated.store(true, Ordering::Release);
+            }
+        }
+
+        impl Read for StalledAfterPrefixReader {
+            fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+                if let Some(prefix) = self.prefix.take() {
+                    buffer[..prefix.len()].copy_from_slice(&prefix);
+                    return Ok(prefix.len());
+                }
+                let (released, wake) = &*self.release;
+                let mut released = released
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                while !*released {
+                    released = wake
+                        .wait(released)
+                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                }
+                Ok(0)
+            }
+        }
+
+        impl PollableSandboxStream for StalledAfterPrefixReader {
+            fn wait_until_readable(&self, _timeout: Duration) -> io::Result<bool> {
+                if self.prefix.is_some() {
+                    return Ok(true);
+                }
+                Ok(*self
+                    .release
+                    .0
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner()))
+            }
+        }
+
+        let release = Arc::new((Mutex::new(false), Condvar::new()));
+        let terminated = Arc::new(AtomicBool::new(false));
+        let reader = spawn_sandbox_capture(
+            StalledAfterPrefixReader {
+                prefix: Some(b"partial".to_vec()),
+                release: release.clone(),
+                terminated: terminated.clone(),
+            },
+            1024,
+        );
+        let prefix_deadline = Instant::now() + Duration::from_secs(1);
+        loop {
+            let state = reader
+                .state
+                .0
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if state.capture.excerpt == b"partial" {
+                break;
+            }
+            assert!(Instant::now() < prefix_deadline);
+            drop(state);
+            thread::sleep(Duration::from_millis(5));
+        }
+
+        let started = Instant::now();
+        let capture = finish_sandbox_capture(reader, Instant::now() + Duration::from_millis(40));
+        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(capture.excerpt, b"partial");
+        assert!(capture.truncated);
+        assert!(capture.drain_incomplete);
+        assert!(capture.read_error.is_none());
+        assert!(
+            terminated.load(Ordering::Acquire),
+            "bounded drain must join the retained-pipe reader"
+        );
+
+        let (released, wake) = &*release;
+        *released
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
+        wake.notify_all();
     }
 
     #[cfg(unix)]

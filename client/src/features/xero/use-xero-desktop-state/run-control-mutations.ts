@@ -1,4 +1,4 @@
-import { startTransition, useCallback } from 'react'
+import { startTransition, useCallback, useRef } from 'react'
 
 import { mapAutonomousRunInspection } from '@/src/lib/xero-model/autonomous'
 import {
@@ -17,6 +17,10 @@ import type {
   XeroDesktopMutationActions,
   UseXeroDesktopMutationsArgs,
 } from './mutation-support'
+import {
+  browserIdempotencyStorage,
+  ContinuationIdempotencyCoordinator,
+} from '../continuation-idempotency'
 import {
   getActiveProjectId,
   getOperatorActionError,
@@ -160,6 +164,13 @@ export function useRunControlMutations({
     restartRuntimeStream,
     applyAutonomousRunStateUpdate,
   } = operations
+  const continuationCoordinatorRef = useRef<ContinuationIdempotencyCoordinator | null>(null)
+  const continuationCoordinator =
+    continuationCoordinatorRef.current ??
+    new ContinuationIdempotencyCoordinator(createContinuationRequestId, {
+      storage: browserIdempotencyStorage(),
+    })
+  continuationCoordinatorRef.current = continuationCoordinator
 
   const refreshSessionTitleFromPrompt = useCallback(
     (
@@ -465,13 +476,23 @@ export function useRunControlMutations({
           if (!adapter.resumeAgentRun) {
             throw new Error('Xero cannot resume this owned-agent action in the current runtime.')
           }
-          await adapter.resumeAgentRun(
-            resolvedRunId,
-            request.prompt?.trim() || 'Approved.',
+          const responseText = request.prompt?.trim() || 'Approved.'
+          await continuationCoordinator.run(
             {
-              actionId,
-              autoCompact: request.autoCompact ?? null,
+              channel: 'resume',
+              targetId: resolvedRunId,
+              payload: {
+                response: responseText,
+                actionId,
+                autoCompact: request.autoCompact ?? null,
+              },
             },
+            (continuationRequestId) =>
+              adapter.resumeAgentRun!(resolvedRunId, responseText, {
+                continuationRequestId,
+                actionId,
+                autoCompact: request.autoCompact ?? null,
+              }),
           )
           restartRuntimeStream(projectId)
           const runtimeRun = await syncRuntimeRun(projectId)
@@ -479,16 +500,29 @@ export function useRunControlMutations({
           return runtimeRun
         }
 
-        const updateRequest: UpdateRuntimeRunControlsRequestDto = {
-          projectId,
-          agentSessionId,
-          runId: resolvedRunId,
+        const updatePayload = {
           controls: request.controls ?? null,
           prompt: request.prompt ?? null,
           attachments: request.attachments ?? [],
           linkedPaths: request.linkedPaths ?? [],
         }
-        const response = await adapter.updateRuntimeRunControls(updateRequest)
+        const response = await continuationCoordinator.run(
+          {
+            channel: 'runtime-control',
+            targetId: `${projectId}:${agentSessionId}:${resolvedRunId}`,
+            payload: updatePayload,
+          },
+          (continuationRequestId) => {
+            const updateRequest: UpdateRuntimeRunControlsRequestDto = {
+              projectId,
+              agentSessionId,
+              runId: resolvedRunId,
+              continuationRequestId,
+              ...updatePayload,
+            }
+            return adapter.updateRuntimeRunControls(updateRequest)
+          },
+        )
         const runtimeRun = mapRuntimeRun(response)
         scheduleRuntimeRunProjectionUpdate(() => {
           setRuntimeRunActionError(null)
@@ -532,6 +566,7 @@ export function useRunControlMutations({
       runtimeRunsRef,
       adapter,
       applyRuntimeRunUpdate,
+      continuationCoordinator,
       refreshSessionTitleFromPrompt,
       restartRuntimeStream,
       setPendingRuntimeRunAction,
@@ -602,4 +637,12 @@ export function useRunControlMutations({
     updateRuntimeRunControls,
     stopRuntimeRun,
   }
+}
+
+function createContinuationRequestId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.()
+  if (!randomUuid) {
+    throw new Error('Xero cannot create a continuation request id in this runtime.')
+  }
+  return `runtime-prompt-${randomUuid}`
 }

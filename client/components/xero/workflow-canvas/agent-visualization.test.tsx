@@ -6,6 +6,7 @@ import { act, fireEvent, render, waitFor, within } from '@testing-library/react'
 import type { Node } from '@xyflow/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { canonicalCustomAgentDefinitionSchema } from '@/src/lib/xero-model/agent-definition'
 import type { WorkflowAgentDetailDto } from '@/src/lib/xero-model/workflow-agents'
 import { WorkflowCanvasEmptyState } from '../workflow-canvas-empty-state'
 
@@ -33,6 +34,7 @@ vi.mock('@xyflow/react', async (importOriginal) => {
 
 import {
   AgentVisualization,
+  type AgentVisualizationEditingStatus,
   applyKnownNodeDimensions,
   applyLaneDragPositionChanges,
   buildSizeMap,
@@ -50,6 +52,7 @@ import {
   STAGE_GROUP_FRAME_NODE_ID,
   buildAgentGraph,
 } from './build-agent-graph'
+import { buildSnapshotFromGraph } from './build-snapshot'
 import { layoutAgentGraphByCategory } from './layout'
 
 const originalElementFromPoint = document.elementFromPoint
@@ -299,7 +302,150 @@ function detailWithAttachedSkill(): WorkflowAgentDetailDto {
   return next
 }
 
+function customDetailWithCanonicalSource(): WorkflowAgentDetailDto {
+  const sourceDetail = detail()
+  sourceDetail.ref = {
+    kind: 'custom',
+    definitionId: 'release_notes_helper',
+    version: 7,
+  }
+  sourceDetail.header = {
+    ...sourceDetail.header,
+    displayName: 'Release Notes Helper',
+    shortLabel: 'Release',
+    scope: 'global_custom',
+  }
+  sourceDetail.promptPolicy = null
+
+  const sourceGraph = buildAgentGraph(sourceDetail)
+  const canonicalGraph = canonicalCustomAgentDefinitionSchema.parse({
+    ...buildSnapshotFromGraph(sourceGraph.nodes, sourceGraph.edges, {
+      initialDefinitionId: 'release_notes_helper',
+    }).snapshot,
+    version: 7,
+    extends: 'release_notes_base',
+    promptFragments: {
+      preamble: ['Retain citations for every release-note claim.'],
+    },
+    projectDataPolicy: {
+      recordKinds: ['project_fact'],
+      structuredSchemas: ['xero.release_note.v1'],
+    },
+    memoryCandidatePolicy: {
+      memoryKinds: ['release_decision'],
+      reviewRequired: true,
+    },
+    retrievalDefaults: {
+      enabled: true,
+      recordKinds: ['project_fact'],
+      memoryKinds: ['release_decision'],
+      limit: 8,
+    },
+    defaultModel: {
+      providerId: 'openai',
+      modelId: 'gpt-5.4',
+      thinkingEffort: 'high',
+    },
+    capabilities: { citations: { required: true } },
+    safetyLimits: ['Never publish without operator approval.'],
+  })
+
+  return {
+    ...sourceDetail,
+    header: {
+      ...sourceDetail.header,
+      displayName: 'Release Notes Helper Edited',
+    },
+    authoringGraph: {
+      schema: 'xero.agent_authoring_graph.v1',
+      source: {
+        kind: 'agent_definition_version',
+        definitionId: 'release_notes_helper',
+        version: 7,
+        scope: 'global_custom',
+        lifecycleState: 'active',
+        baseCapabilityProfile: 'engineering',
+        createdAt: '2026-07-15T12:00:00.000Z',
+        generatedBy: 'saved_definition',
+        uiDeferred: true,
+      },
+      editableFields: [
+        'prompts',
+        'attachedSkills',
+        'tools',
+        'toolPolicy',
+        'output',
+        'dbTouchpoints',
+        'consumes',
+        'workflowStructure',
+        'projectDataPolicy',
+        'memoryCandidatePolicy',
+        'retrievalDefaults',
+        'handoffPolicy',
+      ],
+      canonicalGraph,
+    },
+  }
+}
+
 describe('AgentVisualization', () => {
+  it('submits visible edits on top of the exact canonical source snapshot', async () => {
+    installResizeObserverStub()
+    const initialDetail = customDetailWithCanonicalSource()
+    const canonicalSource = initialDetail.authoringGraph?.canonicalGraph
+    if (!canonicalSource) throw new Error('missing canonical authoring source')
+
+    let save: () => void = () => {
+      throw new Error('editing status was not published')
+    }
+    const onEditingStatusChange = vi.fn(
+      (status: AgentVisualizationEditingStatus | null) => {
+        if (status) save = status.save
+      },
+    )
+    const onSubmit = vi.fn(
+      async (_request: { snapshot: Record<string, unknown> }) => ({
+        applied: true,
+        message: 'Saved.',
+        validation: { status: 'valid' as const, diagnostics: [] },
+        approvalRequired: false,
+      }),
+    )
+
+    render(
+      <AgentVisualization
+        detail={null}
+        editing
+        mode="edit"
+        initialDetail={initialDetail}
+        onEditingStatusChange={onEditingStatusChange}
+        onSubmit={onSubmit}
+      />,
+    )
+
+    await waitFor(() => expect(onEditingStatusChange).toHaveBeenCalled())
+    await act(async () => {
+      save()
+      await Promise.resolve()
+    })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+
+    const submitted = onSubmit.mock.calls[0]?.[0]?.snapshot
+    expect(submitted?.displayName).toBe('Release Notes Helper Edited')
+    for (const field of [
+      'extends',
+      'promptFragments',
+      'projectDataPolicy',
+      'memoryCandidatePolicy',
+      'retrievalDefaults',
+      'defaultModel',
+      'capabilities',
+      'safetyLimits',
+    ] as const) {
+      expect(submitted?.[field]).toEqual(canonicalSource[field])
+    }
+  })
+
   it('estimates expanded card height from stable chrome plus natural body height', () => {
     expect(estimateExpandedCardHeight(48, 0, 128, true)).toBe(176)
     expect(estimateExpandedCardHeight(176, 128, 128, false)).toBe(48)

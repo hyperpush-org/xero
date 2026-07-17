@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension, Row};
+use rusqlite::{params, OptionalExtension, Row, TransactionBehavior};
 use serde_json::{json, Map as JsonMap, Value as JsonValue};
 
 use crate::{
@@ -134,18 +134,112 @@ pub fn insert_agent_definition(
     repo_root: &Path,
     record: &NewAgentDefinitionRecord,
 ) -> Result<AgentDefinitionRecord, CommandError> {
+    insert_agent_definition_internal(repo_root, record, None, None)
+}
+
+pub fn insert_agent_definition_if_current_version(
+    repo_root: &Path,
+    record: &NewAgentDefinitionRecord,
+    expected_current_version: u32,
+) -> Result<AgentDefinitionRecord, CommandError> {
+    insert_agent_definition_internal(repo_root, record, Some(expected_current_version), None)
+}
+
+pub fn insert_agent_definition_clone_if_source_current_version(
+    repo_root: &Path,
+    record: &NewAgentDefinitionRecord,
+    source_definition_id: &str,
+    expected_source_version: u32,
+) -> Result<AgentDefinitionRecord, CommandError> {
+    validate_non_empty_text(
+        source_definition_id,
+        "sourceDefinitionId",
+        "agent_definition_request_invalid",
+    )?;
+    if expected_source_version == 0 {
+        return Err(CommandError::invalid_request("sourceVersion"));
+    }
+    insert_agent_definition_internal(
+        repo_root,
+        record,
+        None,
+        Some((source_definition_id, expected_source_version)),
+    )
+}
+
+fn insert_agent_definition_internal(
+    repo_root: &Path,
+    record: &NewAgentDefinitionRecord,
+    expected_current_version: Option<u32>,
+    expected_clone_source: Option<(&str, u32)>,
+) -> Result<AgentDefinitionRecord, CommandError> {
     validate_new_agent_definition(record)?;
     let database_path = database_path_for_repo(repo_root);
-    let connection = open_runtime_database(repo_root, &database_path)?;
-    let transaction = connection.unchecked_transaction().map_err(|error| {
-        CommandError::retryable(
-            "agent_definition_transaction_failed",
-            format!(
-                "Xero could not start the agent-definition transaction in {}: {error}",
-                database_path.display()
-            ),
-        )
-    })?;
+    let mut connection = open_runtime_database(repo_root, &database_path)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            CommandError::retryable(
+                "agent_definition_transaction_failed",
+                format!(
+                    "Xero could not start the agent-definition transaction in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+    if let Some(expected_current_version) = expected_current_version {
+        let actual_current_version = transaction
+            .query_row(
+                "SELECT current_version FROM agent_definitions WHERE definition_id = ?1",
+                params![record.definition_id],
+                |row| row.get::<_, u32>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                map_agent_definition_read_error("agent_definition_version_read_failed", error)
+            })?;
+        if actual_current_version != Some(expected_current_version)
+            || record.version != expected_current_version.saturating_add(1)
+        {
+            return Err(CommandError::user_fixable(
+                "agent_definition_version_conflict",
+                format!(
+                    "Agent definition `{}` changed from version {} to {}. Reload it before saving your edits.",
+                    record.definition_id,
+                    expected_current_version,
+                    actual_current_version
+                        .map(|version| version.to_string())
+                        .unwrap_or_else(|| "missing".into())
+                ),
+            ));
+        }
+    }
+    if let Some((source_definition_id, expected_source_version)) = expected_clone_source {
+        let actual_source_version = transaction
+            .query_row(
+                "SELECT current_version FROM agent_definitions WHERE definition_id = ?1",
+                params![source_definition_id],
+                |row| row.get::<_, u32>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                map_agent_definition_read_error(
+                    "agent_definition_source_version_read_failed",
+                    error,
+                )
+            })?;
+        if actual_source_version != Some(expected_source_version) {
+            return Err(CommandError::user_fixable(
+                "agent_definition_source_version_conflict",
+                format!(
+                    "Clone source `{source_definition_id}` changed from version {expected_source_version} to {}. Reload it before cloning.",
+                    actual_source_version
+                        .map(|version| version.to_string())
+                        .unwrap_or_else(|| "missing".into())
+                ),
+            ));
+        }
+    }
     let snapshot_json = serde_json::to_string(&record.snapshot).map_err(|error| {
         CommandError::system_fault(
             "agent_definition_snapshot_serialize_failed",
@@ -732,6 +826,7 @@ pub fn list_agent_definitions(
 pub fn archive_agent_definition(
     repo_root: &Path,
     definition_id: &str,
+    expected_current_version: u32,
     updated_at: &str,
 ) -> Result<AgentDefinitionRecord, CommandError> {
     validate_non_empty_text(
@@ -740,12 +835,54 @@ pub fn archive_agent_definition(
         "agent_definition_request_invalid",
     )?;
     validate_non_empty_text(updated_at, "updatedAt", "agent_definition_request_invalid")?;
-    let definition = load_agent_definition(repo_root, definition_id)?.ok_or_else(|| {
-        CommandError::user_fixable(
-            "agent_definition_not_found",
-            format!("Xero could not find agent definition `{definition_id}`."),
+    if expected_current_version == 0 {
+        return Err(CommandError::invalid_request("expectedCurrentVersion"));
+    }
+
+    let database_path = database_path_for_repo(repo_root);
+    let mut connection = open_runtime_database(repo_root, &database_path)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            CommandError::retryable(
+                "agent_definition_transaction_failed",
+                format!(
+                    "Xero could not start the agent-definition archive transaction in {}: {error}",
+                    database_path.display()
+                ),
+            )
+        })?;
+    let definition = transaction
+        .query_row(
+            r#"
+            SELECT
+                definition_id,
+                current_version,
+                display_name,
+                short_label,
+                description,
+                scope,
+                lifecycle_state,
+                base_capability_profile,
+                created_at,
+                updated_at
+            FROM agent_definitions
+            WHERE definition_id = ?1
+            "#,
+            params![definition_id],
+            read_agent_definition_row,
         )
-    })?;
+        .optional()
+        .map_err(|error| {
+            map_agent_definition_read_error("agent_definition_archive_read_failed", error)
+        })?
+        .transpose()?
+        .ok_or_else(|| {
+            CommandError::user_fixable(
+                "agent_definition_not_found",
+                format!("Xero could not find agent definition `{definition_id}`."),
+            )
+        })?;
     if definition.scope == "built_in" {
         return Err(CommandError::user_fixable(
             "agent_definition_builtin_immutable",
@@ -755,22 +892,51 @@ pub fn archive_agent_definition(
             ),
         ));
     }
+    if definition.current_version != expected_current_version {
+        return Err(CommandError::user_fixable(
+            "agent_definition_version_conflict",
+            format!(
+                "Agent definition `{definition_id}` changed from version {expected_current_version} to {}. Reload it before archiving.",
+                definition.current_version
+            ),
+        ));
+    }
+    if definition.lifecycle_state != "active" {
+        return Err(CommandError::user_fixable(
+            "agent_definition_lifecycle_conflict",
+            format!(
+                "Agent definition `{definition_id}` is `{}` and cannot be archived. Reload the agent registry.",
+                definition.lifecycle_state
+            ),
+        ));
+    }
 
-    let database_path = database_path_for_repo(repo_root);
-    let connection = open_runtime_database(repo_root, &database_path)?;
-    connection
+    let changed = transaction
         .execute(
             r#"
             UPDATE agent_definitions
             SET lifecycle_state = 'archived',
-                updated_at = ?2
+                updated_at = ?3
             WHERE definition_id = ?1
+              AND current_version = ?2
+              AND lifecycle_state = 'active'
             "#,
-            params![definition_id, updated_at],
+            params![definition_id, expected_current_version, updated_at],
         )
         .map_err(|error| {
             map_agent_definition_write_error("agent_definition_archive_failed", error)
         })?;
+    if changed != 1 {
+        return Err(CommandError::user_fixable(
+            "agent_definition_archive_conflict",
+            format!(
+                "Agent definition `{definition_id}` changed before it could be archived. Reload the agent registry."
+            ),
+        ));
+    }
+    transaction.commit().map_err(|error| {
+        map_agent_definition_write_error("agent_definition_archive_commit_failed", error)
+    })?;
 
     let archived_version_snapshot =
         load_agent_definition_version(repo_root, definition_id, definition.current_version)
@@ -805,6 +971,8 @@ pub fn archive_agent_definition(
                 approval_action_id: None,
                 payload: serde_json::json!({
                     "definitionId": definition_id,
+                    "expectedCurrentVersion": expected_current_version,
+                    "archivedVersion": definition.current_version,
                     "previousLifecycleState": &definition.lifecycle_state,
                     "lifecycleState": "archived",
                     "attachedSkills": attached_skill_audit_summary(archived_version_snapshot.as_ref()),
@@ -957,6 +1125,50 @@ pub fn resolve_agent_definition_version_for_run(
     requested_version: Option<u32>,
     fallback_runtime_agent_id: RuntimeAgentIdDto,
 ) -> Result<AgentDefinitionRunSelection, CommandError> {
+    resolve_agent_definition_version_internal(
+        repo_root,
+        requested_definition_id,
+        requested_version,
+        fallback_runtime_agent_id,
+        true,
+    )
+}
+
+/// Resolves an exact immutable Agent version that was already pinned by a
+/// successfully-started Workflow. This is deliberately narrower than the
+/// normal run resolver: new/direct starts must continue to require an active
+/// definition, while an in-flight Workflow may finish after that definition
+/// is archived.
+pub fn resolve_pinned_agent_definition_version_for_started_workflow(
+    repo_root: &Path,
+    definition_id: &str,
+    version: u32,
+    fallback_runtime_agent_id: RuntimeAgentIdDto,
+) -> Result<AgentDefinitionRunSelection, CommandError> {
+    validate_non_empty_text(
+        definition_id,
+        "definitionId",
+        "agent_definition_request_invalid",
+    )?;
+    if version == 0 {
+        return Err(CommandError::invalid_request("version"));
+    }
+    resolve_agent_definition_version_internal(
+        repo_root,
+        Some(definition_id),
+        Some(version),
+        fallback_runtime_agent_id,
+        false,
+    )
+}
+
+fn resolve_agent_definition_version_internal(
+    repo_root: &Path,
+    requested_definition_id: Option<&str>,
+    requested_version: Option<u32>,
+    fallback_runtime_agent_id: RuntimeAgentIdDto,
+    require_active_definition: bool,
+) -> Result<AgentDefinitionRunSelection, CommandError> {
     let definition_id = requested_definition_id
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -970,7 +1182,7 @@ pub fn resolve_agent_definition_version_for_run(
             format!("Xero could not find active agent definition `{definition_id}`."),
         )
     })?;
-    if definition.lifecycle_state != "active" {
+    if require_active_definition && definition.lifecycle_state != "active" {
         return Err(CommandError::user_fixable(
             "agent_definition_inactive",
             format!(
@@ -1026,6 +1238,13 @@ pub fn resolve_agent_definition_version_for_run(
         .and_then(JsonValue::as_str)
         .unwrap_or(&definition.base_capability_profile)
         .to_string();
+    let display_name = snapshot
+        .get("displayName")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(&definition.display_name)
+        .to_string();
     let runtime_agent_id = if definition.scope == "built_in" {
         runtime_agent_id_for_builtin_definition_id(&definition.definition_id).unwrap_or_else(|| {
             runtime_agent_id_for_base_capability_profile(&base_capability_profile)
@@ -1039,7 +1258,7 @@ pub fn resolve_agent_definition_version_for_run(
         runtime_agent_id,
         definition_id: definition.definition_id,
         version: selected_version,
-        display_name: definition.display_name,
+        display_name,
         base_capability_profile,
         default_approval_mode,
         allowed_approval_modes,
@@ -1075,17 +1294,36 @@ fn validate_custom_agent_activation_consistency(
     activation_snapshot_string_matches(
         &version.snapshot,
         "lifecycleState",
-        &definition.lifecycle_state,
+        "active",
         &definition.definition_id,
         version.version,
     )?;
-    activation_snapshot_string_matches(
-        &version.snapshot,
-        "baseCapabilityProfile",
-        &definition.base_capability_profile,
-        &definition.definition_id,
-        version.version,
-    )?;
+    let pinned_profile = version
+        .snapshot
+        .get("baseCapabilityProfile")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if pinned_profile.is_empty() {
+        return Err(activation_preflight_error(
+            &definition.definition_id,
+            version.version,
+            "baseCapabilityProfile",
+            "a non-empty profile pinned in the selected snapshot",
+            "missing",
+        ));
+    }
+    if version.version == definition.current_version
+        && pinned_profile != definition.base_capability_profile
+    {
+        return Err(activation_preflight_error(
+            &definition.definition_id,
+            version.version,
+            "baseCapabilityProfile",
+            &definition.base_capability_profile,
+            pinned_profile,
+        ));
+    }
     if let Some(snapshot_version) = version.snapshot.get("version").and_then(JsonValue::as_u64) {
         if snapshot_version != u64::from(version.version) {
             return Err(activation_preflight_error(
@@ -1128,6 +1366,10 @@ fn custom_agent_activation_preflight_report(
     version: &AgentDefinitionVersionRecord,
 ) -> JsonValue {
     let snapshot = &version.snapshot;
+    let pinned_base_capability_profile = snapshot
+        .get("baseCapabilityProfile")
+        .and_then(JsonValue::as_str)
+        .unwrap_or_default();
     let checks = vec![
         activation_check_from_failures(
             "saved_validation_report",
@@ -1143,7 +1385,7 @@ fn custom_agent_activation_preflight_report(
             "snapshot_consistency",
             "Pinned snapshot consistency",
             activation_snapshot_consistency_failures(definition, version),
-            "The pinned snapshot agrees with the active definition registry row.",
+            "The pinned snapshot has immutable identity, scope, version, and activation metadata.",
             true,
             json!({
                 "definitionId": definition.definition_id,
@@ -1177,11 +1419,11 @@ fn custom_agent_activation_preflight_report(
         activation_check_from_failures(
             "effective_tools",
             "Effective tool policy",
-            activation_tool_policy_failures(snapshot, &definition.base_capability_profile),
+            activation_tool_policy_failures(snapshot, pinned_base_capability_profile),
             "The approval and tool policy can be narrowed under the base capability profile.",
             true,
             json!({
-                "baseCapabilityProfile": definition.base_capability_profile,
+                "baseCapabilityProfile": pinned_base_capability_profile,
                 "defaultApprovalMode": snapshot.get("defaultApprovalMode").cloned().unwrap_or(JsonValue::Null),
                 "allowedApprovalModes": snapshot.get("allowedApprovalModes").cloned().unwrap_or(JsonValue::Null),
                 "toolPolicy": snapshot.get("toolPolicy").cloned().unwrap_or(JsonValue::Null)
@@ -1260,7 +1502,7 @@ fn custom_agent_activation_preflight_report(
             "displayName": definition.display_name,
             "scope": definition.scope,
             "lifecycleState": definition.lifecycle_state,
-            "baseCapabilityProfile": definition.base_capability_profile
+            "baseCapabilityProfile": pinned_base_capability_profile
         },
         "checks": checks
     })
@@ -1339,18 +1581,23 @@ fn activation_snapshot_consistency_failures(
         &mut failures,
     );
     activation_required_string_equals(&version.snapshot, "scope", &definition.scope, &mut failures);
-    activation_required_string_equals(
-        &version.snapshot,
-        "lifecycleState",
-        &definition.lifecycle_state,
-        &mut failures,
-    );
-    activation_required_string_equals(
-        &version.snapshot,
-        "baseCapabilityProfile",
-        &definition.base_capability_profile,
-        &mut failures,
-    );
+    activation_required_string_equals(&version.snapshot, "lifecycleState", "active", &mut failures);
+    let pinned_profile = version
+        .snapshot
+        .get("baseCapabilityProfile")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    if pinned_profile.is_empty() {
+        failures.push("baseCapabilityProfile must be a non-empty pinned value".to_string());
+    } else if version.version == definition.current_version
+        && pinned_profile != definition.base_capability_profile
+    {
+        failures.push(format!(
+            "baseCapabilityProfile is `{pinned_profile}` but current registry metadata is `{}`",
+            definition.base_capability_profile
+        ));
+    }
     match version.snapshot.get("version").and_then(JsonValue::as_u64) {
         Some(snapshot_version) if snapshot_version == u64::from(version.version) => {}
         Some(snapshot_version) => failures.push(format!(
@@ -2234,7 +2481,12 @@ fn map_agent_definition_read_error(code: &'static str, error: rusqlite::Error) -
 mod tests {
     use super::*;
 
-    use std::{fs, path::PathBuf};
+    use std::{
+        fs,
+        path::PathBuf,
+        sync::{Arc, Barrier},
+        thread,
+    };
 
     use rusqlite::{params, Connection};
     use serde_json::json;
@@ -2502,6 +2754,202 @@ mod tests {
     }
 
     #[test]
+    fn pinned_historical_definition_uses_its_immutable_capability_profile() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-pinned-profile");
+
+        insert_agent_definition(&repo_root, &custom_definition(1, "2026-05-01T12:01:00Z"))
+            .expect("insert observe-only version");
+        let mut engineering = custom_definition(2, "2026-05-01T12:02:00Z");
+        engineering.base_capability_profile = "engineering".into();
+        engineering.display_name = "Current Engineering Researcher".into();
+        engineering.snapshot["baseCapabilityProfile"] = json!("engineering");
+        engineering.snapshot["displayName"] = json!("Current Engineering Researcher");
+        insert_agent_definition(&repo_root, &engineering).expect("insert engineering version");
+
+        let historical = resolve_agent_definition_version_for_run(
+            &repo_root,
+            Some("project_researcher"),
+            Some(1),
+            RuntimeAgentIdDto::Ask,
+        )
+        .expect("historical version remains runnable");
+        assert_eq!(historical.version, 1);
+        assert_eq!(historical.base_capability_profile, "observe_only");
+        assert_eq!(historical.display_name, "Project Researcher");
+        assert_eq!(historical.runtime_agent_id, RuntimeAgentIdDto::Ask);
+
+        let current = resolve_agent_definition_version_for_run(
+            &repo_root,
+            Some("project_researcher"),
+            Some(2),
+            RuntimeAgentIdDto::Ask,
+        )
+        .expect("current version remains runnable");
+        assert_eq!(current.base_capability_profile, "engineering");
+        assert_eq!(current.display_name, "Current Engineering Researcher");
+        assert_eq!(current.runtime_agent_id, RuntimeAgentIdDto::Engineer);
+    }
+
+    #[test]
+    fn conditional_definition_insert_reports_stale_version_conflict_atomically() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-definition-cas");
+
+        insert_agent_definition(&repo_root, &custom_definition(1, "2026-05-01T12:01:00Z"))
+            .expect("insert version one");
+        let winning_update = custom_definition(2, "2026-05-01T12:02:00Z");
+        insert_agent_definition_if_current_version(&repo_root, &winning_update, 1)
+            .expect("first version-two update wins");
+
+        let mut stale_update = custom_definition(2, "2026-05-01T12:03:00Z");
+        stale_update.display_name = "Stale overwrite".into();
+        stale_update.snapshot["displayName"] = json!("Stale overwrite");
+        let error = insert_agent_definition_if_current_version(&repo_root, &stale_update, 1)
+            .expect_err("stale update must lose with a stable conflict");
+        assert_eq!(error.code, "agent_definition_version_conflict");
+
+        let current = load_agent_definition(&repo_root, "project_researcher")
+            .expect("load definition")
+            .expect("definition exists");
+        assert_eq!(current.current_version, 2);
+        assert_eq!(current.display_name, winning_update.display_name);
+    }
+
+    #[test]
+    fn concurrent_conditional_definition_updates_have_one_winner() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-definition-cas-race");
+        insert_agent_definition(&repo_root, &custom_definition(1, "2026-05-01T12:01:00Z"))
+            .expect("insert version one");
+
+        let barrier = Arc::new(Barrier::new(2));
+        let workers = ["First update", "Second update"].map(|display_name| {
+            let repo_root = repo_root.clone();
+            let barrier = Arc::clone(&barrier);
+            thread::spawn(move || {
+                let mut update = custom_definition(2, "2026-05-01T12:02:00Z");
+                update.display_name = display_name.into();
+                update.snapshot["displayName"] = json!(display_name);
+                barrier.wait();
+                insert_agent_definition_if_current_version(&repo_root, &update, 1)
+            })
+        });
+        let outcomes = workers
+            .into_iter()
+            .map(|worker| worker.join().expect("join update worker"))
+            .collect::<Vec<_>>();
+
+        assert_eq!(outcomes.iter().filter(|outcome| outcome.is_ok()).count(), 1);
+        let losing_error = outcomes
+            .iter()
+            .find_map(|outcome| outcome.as_ref().err())
+            .expect("one update loses");
+        assert_eq!(losing_error.code, "agent_definition_version_conflict");
+        let current = load_agent_definition(&repo_root, "project_researcher")
+            .expect("load definition")
+            .expect("definition exists");
+        assert_eq!(current.current_version, 2);
+        assert!(matches!(
+            current.display_name.as_str(),
+            "First update" | "Second update"
+        ));
+    }
+
+    #[test]
+    fn archive_requires_the_active_expected_version_and_audits_the_winner() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "project-definition-archive-cas";
+        create_project_database(&repo_root, project_id);
+        insert_agent_definition(&repo_root, &custom_definition(1, "2026-05-01T12:01:00Z"))
+            .expect("insert version one");
+
+        let stale =
+            archive_agent_definition(&repo_root, "project_researcher", 2, "2026-05-01T12:02:00Z")
+                .expect_err("stale archive must not mutate the definition");
+        assert_eq!(stale.code, "agent_definition_version_conflict");
+        let still_active = load_agent_definition(&repo_root, "project_researcher")
+            .expect("load definition after stale archive")
+            .expect("definition exists");
+        assert_eq!(still_active.lifecycle_state, "active");
+
+        let archived =
+            archive_agent_definition(&repo_root, "project_researcher", 1, "2026-05-01T12:03:00Z")
+                .expect("matching active version archives");
+        assert_eq!(archived.lifecycle_state, "archived");
+
+        let repeated =
+            archive_agent_definition(&repo_root, "project_researcher", 1, "2026-05-01T12:04:00Z")
+                .expect_err("an archived definition cannot be archived twice");
+        assert_eq!(repeated.code, "agent_definition_lifecycle_conflict");
+
+        let archive_events = project_store::list_agent_runtime_audit_events_for_subject(
+            &repo_root,
+            project_id,
+            "custom_agent",
+            "project_researcher",
+        )
+        .expect("list definition audit events")
+        .into_iter()
+        .filter(|event| event.action_kind == "agent_definition_archived")
+        .collect::<Vec<_>>();
+        assert_eq!(archive_events.len(), 1);
+        assert_eq!(archive_events[0].agent_definition_version, Some(1));
+        assert_eq!(
+            archive_events[0].payload["expectedCurrentVersion"],
+            json!(1)
+        );
+        assert_eq!(archive_events[0].payload["archivedVersion"], json!(1));
+    }
+
+    #[test]
+    fn clone_insert_atomically_rejects_a_stale_source_version() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-definition-clone-cas");
+        insert_agent_definition(&repo_root, &custom_definition(1, "2026-05-01T12:01:00Z"))
+            .expect("insert source version one");
+        insert_agent_definition(&repo_root, &custom_definition(2, "2026-05-01T12:02:00Z"))
+            .expect("insert source version two");
+        let mut clone = custom_definition(1, "2026-05-01T12:03:00Z");
+        clone.definition_id = "project_researcher_clone".into();
+        clone.display_name = "Project Researcher Clone".into();
+        clone.snapshot["id"] = json!("project_researcher_clone");
+        clone.snapshot["displayName"] = json!("Project Researcher Clone");
+
+        let conflict = insert_agent_definition_clone_if_source_current_version(
+            &repo_root,
+            &clone,
+            "project_researcher",
+            1,
+        )
+        .expect_err("stale clone source must be rejected in the insert transaction");
+        assert_eq!(conflict.code, "agent_definition_source_version_conflict");
+        assert!(
+            load_agent_definition(&repo_root, "project_researcher_clone")
+                .expect("load clone target")
+                .is_none()
+        );
+
+        insert_agent_definition_clone_if_source_current_version(
+            &repo_root,
+            &clone,
+            "project_researcher",
+            2,
+        )
+        .expect("matching source version permits clone insert");
+    }
+
+    #[test]
     fn s11_agent_definition_version_diff_is_derived_from_saved_versions() {
         let tempdir = tempfile::tempdir().expect("temp dir");
         let repo_root = tempdir.path().join("repo");
@@ -2665,7 +3113,7 @@ mod tests {
         ]);
 
         insert_agent_definition(&repo_root, &definition).expect("insert attached skill definition");
-        archive_agent_definition(&repo_root, "project_researcher", "2026-05-01T12:05:00Z")
+        archive_agent_definition(&repo_root, "project_researcher", 1, "2026-05-01T12:05:00Z")
             .expect("archive attached skill definition");
 
         let audit_events = project_store::list_agent_runtime_audit_events_for_subject(
@@ -2683,6 +3131,8 @@ mod tests {
             .iter()
             .find(|event| event.action_kind == "agent_definition_archived")
             .expect("archived audit event");
+        assert_eq!(archived.payload["expectedCurrentVersion"], json!(1));
+        assert_eq!(archived.payload["archivedVersion"], json!(1));
         for event in [saved, archived] {
             assert_eq!(event.payload["attachedSkills"]["count"], json!(1));
             assert_eq!(
@@ -2755,6 +3205,46 @@ mod tests {
 
         assert_eq!(selection.definition_id, "project_researcher");
         assert_eq!(selection.version, 1);
+    }
+
+    #[test]
+    fn archived_definition_is_only_resolvable_for_an_already_started_workflow_pin() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        create_project_database(&repo_root, "project-archived-workflow-pin");
+        insert_agent_definition(&repo_root, &custom_definition(1, "2026-05-01T12:01:00Z"))
+            .expect("insert version one");
+        archive_agent_definition(&repo_root, "project_researcher", 1, "2026-05-01T12:02:00Z")
+            .expect("archive definition");
+
+        let direct_start = resolve_agent_definition_version_for_run(
+            &repo_root,
+            Some("project_researcher"),
+            Some(1),
+            RuntimeAgentIdDto::Ask,
+        )
+        .expect_err("an archived definition cannot be used for a new direct start");
+        assert_eq!(direct_start.code, "agent_definition_inactive");
+
+        let workflow_selection = resolve_pinned_agent_definition_version_for_started_workflow(
+            &repo_root,
+            "project_researcher",
+            1,
+            RuntimeAgentIdDto::Ask,
+        )
+        .expect("an already-started Workflow may execute its immutable pin");
+        assert_eq!(workflow_selection.definition_id, "project_researcher");
+        assert_eq!(workflow_selection.version, 1);
+
+        let missing_pin = resolve_pinned_agent_definition_version_for_started_workflow(
+            &repo_root,
+            "project_researcher",
+            2,
+            RuntimeAgentIdDto::Ask,
+        )
+        .expect_err("the trusted resolver still requires an existing exact version");
+        assert_eq!(missing_pin.code, "agent_definition_version_missing");
     }
 
     #[test]

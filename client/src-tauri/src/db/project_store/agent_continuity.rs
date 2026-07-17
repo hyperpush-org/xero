@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use rusqlite::{params, OptionalExtension, Row, Transaction};
+use rusqlite::{params, OptionalExtension, Row, Transaction, TransactionBehavior};
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
@@ -12,7 +12,10 @@ use crate::{
 };
 
 use super::{
-    agent_core::{load_agent_run, runtime_agent_id_sql_value, AgentRunStatus},
+    agent_core::{
+        load_agent_run, read_agent_run_snapshot, runtime_agent_id_sql_value, AgentEventRecord,
+        AgentRunEventKind, AgentRunSnapshotRecord, AgentRunStatus,
+    },
     open_runtime_database,
     project_record::{list_project_records, ProjectRecordKind},
     read_project_row, validate_non_empty_text,
@@ -279,6 +282,28 @@ pub struct AgentHandoffLineageUpdateRecord {
     pub diagnostic: Option<JsonValue>,
     pub updated_at: String,
     pub completed_at: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompleteAgentHandoffRecord {
+    pub project_id: String,
+    pub handoff_id: String,
+    pub source_run_id: String,
+    pub target_agent_session_id: String,
+    pub target_run_id: String,
+    pub handoff_record_id: String,
+    pub bundle: JsonValue,
+    pub state_transition_payload: JsonValue,
+    pub run_completed_payload: JsonValue,
+    pub completed_at: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct CompleteAgentHandoffResult {
+    pub source_snapshot: AgentRunSnapshotRecord,
+    pub lineage: AgentHandoffLineageRecord,
+    pub inserted_events: Vec<AgentEventRecord>,
+    pub replayed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1170,6 +1195,287 @@ pub fn update_agent_handoff_lineage(
                 "Xero updated handoff lineage but could not load it back.",
             )
         })
+}
+
+/// Commits the source terminal state and Completed lineage in one SQLite transaction.
+///
+/// A ready target start is a precondition. Exact retries return the existing source/lineage
+/// without appending duplicate terminal events.
+pub fn complete_agent_handoff(
+    repo_root: &Path,
+    record: &CompleteAgentHandoffRecord,
+) -> Result<CompleteAgentHandoffResult, CommandError> {
+    validate_non_empty_text(
+        &record.project_id,
+        "projectId",
+        "agent_handoff_completion_project_required",
+    )?;
+    for (value, field, code) in [
+        (
+            record.handoff_id.as_str(),
+            "handoffId",
+            "agent_handoff_completion_id_required",
+        ),
+        (
+            record.source_run_id.as_str(),
+            "sourceRunId",
+            "agent_handoff_completion_source_required",
+        ),
+        (
+            record.target_agent_session_id.as_str(),
+            "targetAgentSessionId",
+            "agent_handoff_completion_target_session_required",
+        ),
+        (
+            record.target_run_id.as_str(),
+            "targetRunId",
+            "agent_handoff_completion_target_required",
+        ),
+        (
+            record.handoff_record_id.as_str(),
+            "handoffRecordId",
+            "agent_handoff_completion_record_required",
+        ),
+        (
+            record.completed_at.as_str(),
+            "completedAt",
+            "agent_handoff_completion_timestamp_required",
+        ),
+    ] {
+        validate_non_empty_text(value, field, code)?;
+    }
+    let bundle_json = json_string(&record.bundle, "bundle")?;
+    let transition_json = json_string(&record.state_transition_payload, "stateTransition")?;
+    let completed_json = json_string(&record.run_completed_payload, "runCompleted")?;
+    let database_path = database_path_for_repo(repo_root);
+    let mut connection = open_runtime_database(repo_root, &database_path)?;
+    let transaction = connection
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            map_continuity_write_error(
+                &database_path,
+                "agent_handoff_completion_transaction_failed",
+                error,
+            )
+        })?;
+    let lineage = transaction
+        .query_row(
+            handoff_select_sql("WHERE project_id = ?1 AND handoff_id = ?2").as_str(),
+            params![record.project_id, record.handoff_id],
+            read_handoff_row,
+        )
+        .optional()
+        .map_err(map_continuity_read_error)?
+        .transpose()?
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_handoff_completion_lineage_missing",
+                format!(
+                    "Xero could not find handoff lineage `{}`.",
+                    record.handoff_id
+                ),
+            )
+        })?;
+    if lineage.source_run_id != record.source_run_id
+        || lineage.target_run_id.as_deref() != Some(record.target_run_id.as_str())
+    {
+        return Err(CommandError::user_fixable(
+            "agent_handoff_completion_identity_conflict",
+            "The handoff completion identity does not match its durable lineage.",
+        ));
+    }
+    let source_before = read_agent_run_snapshot(
+        &transaction,
+        repo_root,
+        &record.project_id,
+        &record.source_run_id,
+    )?;
+    if lineage.status == AgentHandoffLineageStatus::Completed {
+        if source_before.run.status != AgentRunStatus::HandedOff {
+            return Err(CommandError::system_fault(
+                "agent_handoff_completion_inconsistent",
+                "Completed handoff lineage does not have a handed-off source run.",
+            ));
+        }
+        transaction.commit().map_err(|error| {
+            map_continuity_write_error(
+                &database_path,
+                "agent_handoff_completion_commit_failed",
+                error,
+            )
+        })?;
+        return Ok(CompleteAgentHandoffResult {
+            source_snapshot: source_before,
+            lineage,
+            inserted_events: Vec::new(),
+            replayed: true,
+        });
+    }
+    if lineage.status != AgentHandoffLineageStatus::TargetCreated {
+        return Err(CommandError::retryable(
+            "agent_handoff_target_not_committable",
+            format!(
+                "Handoff `{}` is {:?}; its target must be durably created before completion.",
+                record.handoff_id, lineage.status
+            ),
+        ));
+    }
+    let target_ready = transaction
+        .query_row(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM agent_run_start_requests starts
+                JOIN agent_runs runs
+                  ON runs.project_id = starts.project_id AND runs.run_id = starts.run_id
+                WHERE starts.project_id = ?1 AND starts.run_id = ?2
+                  AND starts.state = 'ready' AND runs.status = 'running'
+            )
+            "#,
+            params![record.project_id, record.target_run_id],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(map_continuity_read_error)?
+        == 1;
+    if !target_ready {
+        return Err(CommandError::retryable(
+            "agent_handoff_target_not_ready",
+            format!(
+                "Handoff target run `{}` has not committed durable readiness.",
+                record.target_run_id
+            ),
+        ));
+    }
+
+    let mut inserted_events = Vec::with_capacity(2);
+    for (event_kind, event_kind_value, payload_json) in [
+        (
+            AgentRunEventKind::StateTransition,
+            "state_transition",
+            transition_json.as_str(),
+        ),
+        (
+            AgentRunEventKind::RunCompleted,
+            "run_completed",
+            completed_json.as_str(),
+        ),
+    ] {
+        transaction
+            .execute(
+                r#"
+                INSERT INTO agent_events (project_id, run_id, event_kind, payload_json, created_at)
+                VALUES (?1, ?2, ?3, ?4, ?5)
+                "#,
+                params![
+                    record.project_id,
+                    record.source_run_id,
+                    event_kind_value,
+                    payload_json,
+                    record.completed_at,
+                ],
+            )
+            .map_err(|error| {
+                map_continuity_write_error(
+                    &database_path,
+                    "agent_handoff_completion_event_failed",
+                    error,
+                )
+            })?;
+        inserted_events.push(AgentEventRecord {
+            id: transaction.last_insert_rowid(),
+            project_id: record.project_id.clone(),
+            run_id: record.source_run_id.clone(),
+            event_kind,
+            payload_json: payload_json.to_owned(),
+            created_at: record.completed_at.clone(),
+        });
+    }
+    let source_changed = transaction
+        .execute(
+            r#"
+            UPDATE agent_runs
+            SET status = 'handed_off', last_heartbeat_at = ?3,
+                completed_at = COALESCE(completed_at, ?3), cancelled_at = NULL,
+                last_error_code = NULL, last_error_message = NULL, updated_at = ?3
+            WHERE project_id = ?1 AND run_id = ?2
+              AND status IN ('starting', 'running', 'paused', 'completed')
+            "#,
+            params![record.project_id, record.source_run_id, record.completed_at],
+        )
+        .map_err(|error| {
+            map_continuity_write_error(
+                &database_path,
+                "agent_handoff_completion_source_failed",
+                error,
+            )
+        })?;
+    if source_changed != 1 {
+        return Err(CommandError::user_fixable(
+            "agent_handoff_source_not_committable",
+            format!(
+                "Source run `{}` changed state before its handoff could commit.",
+                record.source_run_id
+            ),
+        ));
+    }
+    let lineage_changed = transaction
+        .execute(
+            r#"
+            UPDATE agent_handoff_lineage
+            SET target_agent_session_id = ?3, target_run_id = ?4,
+                status = 'completed', handoff_record_id = ?5,
+                bundle_json = ?6, diagnostic_json = NULL,
+                updated_at = ?7, completed_at = ?7
+            WHERE project_id = ?1 AND handoff_id = ?2 AND status = 'target_created'
+            "#,
+            params![
+                record.project_id,
+                record.handoff_id,
+                record.target_agent_session_id,
+                record.target_run_id,
+                record.handoff_record_id,
+                bundle_json,
+                record.completed_at,
+            ],
+        )
+        .map_err(|error| {
+            map_continuity_write_error(
+                &database_path,
+                "agent_handoff_completion_lineage_failed",
+                error,
+            )
+        })?;
+    if lineage_changed != 1 {
+        return Err(CommandError::retryable(
+            "agent_handoff_completion_raced",
+            format!(
+                "Handoff `{}` changed while it was completing.",
+                record.handoff_id
+            ),
+        ));
+    }
+    transaction.commit().map_err(|error| {
+        map_continuity_write_error(
+            &database_path,
+            "agent_handoff_completion_commit_failed",
+            error,
+        )
+    })?;
+    let source_snapshot = load_agent_run(repo_root, &record.project_id, &record.source_run_id)?;
+    let lineage =
+        get_agent_handoff_lineage_by_handoff_id(repo_root, &record.project_id, &record.handoff_id)?
+            .ok_or_else(|| {
+                CommandError::system_fault(
+                    "agent_handoff_completion_lineage_missing",
+                    "Xero committed a handoff but could not load its lineage.",
+                )
+            })?;
+    Ok(CompleteAgentHandoffResult {
+        source_snapshot,
+        lineage,
+        inserted_events,
+        replayed: false,
+    })
 }
 
 pub fn reconcile_agent_handoff_lineage(

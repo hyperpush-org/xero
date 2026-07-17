@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   AGENT_DEFINITION_SCHEMA,
   AGENT_DEFINITION_SCHEMA_VERSION,
+  archiveAgentDefinitionRequestSchema,
   agentDefinitionPreviewResponseSchema,
   agentDefinitionVersionDiffSchema,
   agentDefinitionSummarySchema,
@@ -187,6 +188,20 @@ describe('agent definition contracts', () => {
       }),
     ).toThrow(/canonical definition id/)
     expect(() =>
+      updateAgentDefinitionRequestSchema.parse({
+        projectId: 'project-agent-definition',
+        definitionId: canonicalDefinition.id,
+        definition: canonicalDefinition,
+      }),
+    ).toThrow(/exact current definition version/)
+    expect(
+      updateAgentDefinitionRequestSchema.parse({
+        projectId: 'project-agent-definition',
+        definitionId: canonicalDefinition.id,
+        definition: { ...canonicalDefinition, version: 1 },
+      }).definition.version,
+    ).toBe(1)
+    expect(() =>
       canonicalCustomAgentDefinitionSchema.parse({
         ...canonicalDefinition,
         allowedApprovalModes: ['suggest', 'suggest'],
@@ -275,7 +290,7 @@ describe('agent definition contracts', () => {
           startPhaseId: 'missing-phase',
         },
       }),
-    ).toThrow(/start phase/)
+    ).toThrow(/start stage/)
     expect(() =>
       canonicalCustomAgentDefinitionSchema.parse({
         ...canonicalDefinition,
@@ -289,7 +304,7 @@ describe('agent definition contracts', () => {
           ],
         },
       }),
-    ).toThrow(/phase ids/)
+    ).toThrow(/stage ids/)
     expect(() =>
       canonicalCustomAgentDefinitionSchema.parse({
         ...canonicalDefinition,
@@ -308,7 +323,7 @@ describe('agent definition contracts', () => {
           ],
         },
       }),
-    ).toThrow(/branch target/)
+    ).toThrow(/exit target/)
     expect(() =>
       canonicalCustomAgentDefinitionSchema.parse({
         ...canonicalDefinition,
@@ -437,6 +452,97 @@ describe('agent definition contracts', () => {
         },
       }),
     ).toThrow(/retrieval record kinds/)
+  })
+
+  it('requires Stage tool predicates to be executable under nonempty allowed tools', () => {
+    const invalid = {
+      ...canonicalDefinition,
+      workflowStructure: {
+        startPhaseId: 'inspect',
+        phases: [
+          {
+            id: 'inspect',
+            title: 'Inspect',
+            allowedTools: ['read'],
+            requiredChecks: [
+              { kind: 'tool_succeeded', toolNames: ['search', 'find'], minCount: 1 },
+            ],
+            branches: [
+              {
+                targetPhaseId: 'draft',
+                condition: {
+                  kind: 'tool_succeeded',
+                  toolName: 'project_context_search',
+                },
+              },
+            ],
+          },
+          { id: 'draft', title: 'Draft', allowedTools: ['read'] },
+        ],
+      },
+    }
+    const result = canonicalCustomAgentDefinitionSchema.safeParse(invalid)
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(
+        result.error.issues.filter((issue) =>
+          issue.message.includes('none of its tools are executable'),
+        ),
+      ).toHaveLength(2)
+    }
+
+    const parsed = canonicalCustomAgentDefinitionSchema.parse({
+      ...invalid,
+      workflowStructure: {
+        ...invalid.workflowStructure,
+        phases: [
+          {
+            ...invalid.workflowStructure.phases[0],
+            requiredChecks: [
+              { kind: 'tool_succeeded', toolNames: ['search', 'read'], minCount: 1 },
+            ],
+            branches: [
+              {
+                targetPhaseId: 'draft',
+                condition: { kind: 'tool_succeeded', toolNames: ['tool_search'] },
+              },
+            ],
+          },
+          invalid.workflowStructure.phases[1],
+        ],
+      },
+    })
+    const inspect = parsed.workflowStructure?.phases[0]
+    expect(inspect?.requiredChecks?.[0]).toMatchObject({
+      kind: 'tool_succeeded',
+      toolName: 'search',
+      toolNames: ['search', 'read'],
+    })
+    expect(inspect?.branches?.[0]?.condition).toMatchObject({
+      kind: 'tool_succeeded',
+      toolName: 'tool_search',
+      toolNames: ['tool_search'],
+    })
+  })
+
+  it('requires an exact current version for archive requests', () => {
+    expect(
+      archiveAgentDefinitionRequestSchema.parse({
+        projectId: 'project-1',
+        definitionId: 'release_notes_helper',
+        expectedCurrentVersion: 3,
+      }),
+    ).toEqual({
+      projectId: 'project-1',
+      definitionId: 'release_notes_helper',
+      expectedCurrentVersion: 3,
+    })
+    expect(() =>
+      archiveAgentDefinitionRequestSchema.parse({
+        projectId: 'project-1',
+        definitionId: 'release_notes_helper',
+      }),
+    ).toThrow()
   })
 
   it('accepts typed default model selections and rejects malformed shapes', () => {

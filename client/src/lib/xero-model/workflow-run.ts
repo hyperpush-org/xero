@@ -143,9 +143,19 @@ export type CreateWorkflowDefinitionRequestDto = z.infer<
 export const updateWorkflowDefinitionRequestSchema = z
   .object({
     workflowId: nonEmptyTextSchema,
+    expectedVersion: z.number().int().positive(),
     definition: workflowDefinitionSchema,
   })
   .strict()
+  .superRefine((request, context) => {
+    if (request.definition.version !== request.expectedVersion) {
+      context.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['expectedVersion'],
+        message: 'expectedVersion must match definition.version.',
+      })
+    }
+  })
 export type UpdateWorkflowDefinitionRequestDto = z.infer<
   typeof updateWorkflowDefinitionRequestSchema
 >
@@ -195,6 +205,7 @@ export const startWorkflowRunRequestSchema = z
   .object({
     projectId: nonEmptyTextSchema,
     workflowId: nonEmptyTextSchema,
+    idempotencyKey: nonEmptyTextSchema.max(200),
     initialInput: z.unknown().nullable().optional(),
   })
   .strict()
@@ -232,6 +243,7 @@ export const resumeWorkflowNextIncompletePhaseRequestSchema = z
   .object({
     projectId: nonEmptyTextSchema,
     runId: nonEmptyTextSchema,
+    idempotencyKey: nonEmptyTextSchema.max(200),
   })
   .strict()
 export type ResumeWorkflowNextIncompletePhaseRequestDto = z.infer<

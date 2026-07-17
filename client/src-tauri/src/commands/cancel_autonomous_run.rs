@@ -45,17 +45,16 @@ pub fn cancel_autonomous_run<R: Runtime>(
     let after = if let Some(snapshot) = before.as_ref().filter(|snapshot| {
         snapshot.run.supervisor_kind == crate::runtime::OWNED_AGENT_SUPERVISOR_KIND
     }) {
-        let _ = state
-            .inner()
-            .agent_run_supervisor()
-            .cancel(&snapshot.run.run_id)?;
         if project_store::load_agent_run(&repo_root, &request.project_id, &snapshot.run.run_id)
             .is_ok()
         {
-            let _ = crate::runtime::cancel_owned_agent_run(
-                &repo_root,
-                &request.project_id,
-                &snapshot.run.run_id,
+            let runtime = crate::runtime::DesktopAgentCoreRuntime::new(
+                state.inner().agent_run_supervisor().clone(),
+            );
+            let _ = runtime.cancel_run(
+                repo_root.clone(),
+                request.project_id.clone(),
+                snapshot.run.run_id.clone(),
             )?;
         }
         Some(stop_owned_runtime_run(&repo_root, snapshot)?)

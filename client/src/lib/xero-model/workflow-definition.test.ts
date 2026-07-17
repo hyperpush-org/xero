@@ -100,7 +100,7 @@ function linearWorkflow(): WorkflowDefinitionDto {
         type: 'success',
         label: '',
         priority: 10,
-        condition: { kind: 'node_status', nodeId: 'agent-a', status: 'succeeded' },
+        condition: { kind: 'always' },
       },
       {
         id: 'edge-b-done',
@@ -134,6 +134,62 @@ describe('validateWorkflowDefinition', () => {
     const report = validateWorkflowDefinition(linearWorkflow())
 
     expect(report).toEqual({ status: 'valid', diagnostics: [] })
+  })
+
+  it('enforces Xero\'s bounded git-status policy instead of self-authorized command lists', () => {
+    const workflow = linearWorkflow()
+    const commandNode: Extract<WorkflowNodeDto, { type: 'command' }> = {
+      id: 'agent-a',
+      type: 'command',
+      title: 'Repository status',
+      description: '',
+      position: { x: 0, y: 0 },
+      command: 'git',
+      args: ['status', '--short'],
+      allowedCommands: ['git'],
+      workingDirectory: null,
+      timeoutSeconds: 30,
+      successExitCodes: [0],
+      outputContract: {
+        artifactType: 'text_output',
+        schemaVersion: 1,
+        extraction: 'generic_text',
+        required: true,
+      },
+      parser: { extraction: 'generic_text' },
+    }
+    workflow.nodes[0] = commandNode
+
+    expect(validateWorkflowDefinition(workflow)).toEqual({ status: 'valid', diagnostics: [] })
+
+    workflow.nodes[0] = {
+      ...commandNode,
+      command: 'pnpm',
+      args: ['test'],
+      allowedCommands: ['pnpm'],
+    }
+    expect(validateWorkflowDefinition(workflow).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'workflow_command_not_allowed_by_app_policy',
+        path: 'nodes.0.command',
+      }),
+    ]))
+
+    workflow.nodes[0] = { ...commandNode, args: ['push'] }
+    expect(validateWorkflowDefinition(workflow).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'workflow_command_arguments_not_allowed_by_app_policy',
+        path: 'nodes.0.args',
+      }),
+    ]))
+
+    workflow.nodes[0] = { ...commandNode, args: ['status', '--', '../outside'] }
+    expect(validateWorkflowDefinition(workflow).diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'workflow_command_arguments_not_allowed_by_app_policy',
+        path: 'nodes.0.args',
+      }),
+    ]))
   })
 
   it('accepts a conditional router with one explicit else edge', () => {
@@ -193,6 +249,60 @@ describe('validateWorkflowDefinition', () => {
     expect(report, JSON.stringify(report.diagnostics)).toMatchObject({ status: 'valid' })
   })
 
+  it('rejects a conditional route without an explicit always fallback', () => {
+    const workflow = linearWorkflow()
+    workflow.edges[0] = {
+      ...workflow.edges[0],
+      condition: { kind: 'node_status', nodeId: 'agent-a', status: 'succeeded' },
+    }
+
+    const report = validateWorkflowDefinition(workflow)
+
+    expect(report.status).toBe('invalid')
+    expect(report.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'conditional_route_fallback_missing',
+        path: 'nodes.agent-a',
+      }),
+    ]))
+  })
+
+  it('rejects Needs Human terminals inside subgraphs', () => {
+    const workflow = linearWorkflow()
+    workflow.subgraphs = [{
+      id: 'review',
+      title: 'Review',
+      description: '',
+      startNodeId: 'needs-human',
+      nodes: [{
+        id: 'needs-human',
+        type: 'terminal',
+        title: 'Needs human',
+        description: '',
+        position: { x: 0, y: 0 },
+        terminalStatus: 'needs_human',
+      }],
+      edges: [],
+      inputBindings: [],
+      outputContract: {
+        artifactType: 'subgraph_result',
+        schemaVersion: 1,
+        extraction: 'generic_text',
+        required: true,
+      },
+    }]
+
+    const report = validateWorkflowDefinition(workflow)
+
+    expect(report.status).toBe('invalid')
+    expect(report.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'subgraph_needs_human_terminal_unsupported',
+        path: 'subgraphs.0.nodes.0.terminalStatus',
+      }),
+    ]))
+  })
+
   it('rejects a cycle without an explicit loop policy', () => {
     const workflow = linearWorkflow()
     workflow.edges.push({
@@ -245,9 +355,200 @@ describe('validateWorkflowDefinition', () => {
         onExhausted: 'human',
       },
     })
+    workflow.edges.push({
+      id: 'edge-b-human-fallback',
+      fromNodeId: 'agent-b',
+      toNodeId: 'human',
+      type: 'conditional',
+      label: 'fallback',
+      priority: 90,
+      condition: { kind: 'always' },
+    })
 
     const report = validateWorkflowDefinition(workflow)
     expect(report, JSON.stringify(report.diagnostics)).toMatchObject({ status: 'valid' })
+  })
+
+  it('applies full node, edge, reference, state, command, and loop validation inside subgraphs', () => {
+    const workflow = linearWorkflow()
+    const source = workflow.nodes[0]
+    const sink = workflow.nodes[1]
+    if (source.type !== 'agent' || sink.type !== 'agent') throw new Error('expected agent nodes')
+    workflow.subgraphs = [{
+      id: 'local-flow',
+      title: 'Local flow',
+      description: '',
+      startNodeId: 'source',
+      nodes: [
+        { ...source, id: 'source', title: 'Source' },
+        {
+          ...sink,
+          id: 'sink',
+          title: 'Sink',
+          inputBindings: [{
+            source: 'artifact',
+            name: 'missing',
+            required: true,
+            artifactRef: 'ghost.text_output',
+          }],
+        },
+        {
+          id: 'state',
+          type: 'state_read',
+          title: 'Read state',
+          description: '',
+          position: { x: 0, y: 0 },
+          query: {
+            entityType: 'milestone',
+            filters: [{ path: 'invalid', operator: 'eq', value: 'open', values: [] }],
+            includeArchived: false,
+          },
+          outputArtifactType: 'state_result',
+        },
+        {
+          id: 'command',
+          type: 'command',
+          title: 'Command',
+          description: '',
+          position: { x: 0, y: 0 },
+          command: 'pnpm',
+          args: [],
+          allowedCommands: ['npm'],
+          timeoutSeconds: 30,
+          successExitCodes: [0],
+          outputContract: {
+            artifactType: 'command_result',
+            schemaVersion: 1,
+            extraction: 'generic_text',
+            required: true,
+          },
+          parser: { extraction: 'generic_text' },
+        },
+      ],
+      edges: [
+        {
+          id: 'source-to-sink',
+          fromNodeId: 'source',
+          toNodeId: 'sink',
+          type: 'success',
+          label: '',
+          priority: 10,
+          condition: { kind: 'node_status', nodeId: 'ghost', status: 'succeeded' },
+        },
+        {
+          id: 'sink-to-source',
+          fromNodeId: 'sink',
+          toNodeId: 'source',
+          type: 'loop',
+          label: 'retry',
+          priority: 20,
+          condition: { kind: 'loop_attempt_lt', loopKey: 'missing-loop', value: 2 },
+          loopPolicy: {
+            loopKey: 'local-loop',
+            maxAttempts: 2,
+            attemptScope: 'run',
+            carryoverPolicy: 'selected',
+            selectedArtifactRefs: ['ghost.text_output'],
+            resetPolicy: 'never',
+            onExhausted: 'ghost',
+          },
+        },
+      ],
+      inputBindings: [],
+      outputContract: {
+        artifactType: 'subgraph_result',
+        schemaVersion: 1,
+        extraction: 'generic_text',
+        required: true,
+      },
+    }]
+
+    const report = validateWorkflowDefinition(workflow)
+    const diagnostics = new Map(report.diagnostics.map((diagnostic) => [diagnostic.code, diagnostic.path]))
+
+    expect(report.status).toBe('invalid')
+    expect(diagnostics.get('artifact_ref_missing')).toBe('subgraphs.0.nodes.1.inputBindings.0.artifactRef')
+    expect(diagnostics.get('state_query_filter_path_invalid')).toBe('subgraphs.0.nodes.2.query.filters.0.path')
+    expect(diagnostics.get('command_not_in_allowlist')).toBe('subgraphs.0.nodes.3.allowedCommands')
+    expect(diagnostics.get('condition_node_ref_missing')).toBe('subgraphs.0.edges.0.condition')
+    expect(diagnostics.get('condition_loop_key_missing')).toBe('subgraphs.0.edges.1.condition')
+    expect(diagnostics.get('loop_exhaustion_target_missing')).toBe('subgraphs.0.edges.1.loopPolicy.onExhausted')
+    expect(diagnostics.get('loop_artifact_ref_missing')).toBe('subgraphs.0.edges.1.loopPolicy.selectedArtifactRefs.0')
+  })
+
+  it('validates nested subgraph invocations and rejects recursive invocation cycles', () => {
+    const workflow = linearWorkflow()
+    const terminal = {
+      id: 'local-done',
+      type: 'terminal' as const,
+      title: 'Done',
+      description: '',
+      position: { x: 0, y: 0 },
+      terminalStatus: 'success' as const,
+    }
+    const genericSubgraphOutput = {
+      artifactType: 'subgraph_result',
+      schemaVersion: 1,
+      extraction: 'generic_text' as const,
+      required: true,
+    }
+    workflow.subgraphs = [
+      {
+        id: 'inner',
+        title: 'Inner',
+        description: '',
+        startNodeId: terminal.id,
+        nodes: [terminal],
+        edges: [],
+        inputBindings: [],
+        outputContract: genericSubgraphOutput,
+      },
+      {
+        id: 'outer',
+        title: 'Outer',
+        description: '',
+        startNodeId: 'invoke-inner',
+        nodes: [
+          {
+            id: 'invoke-inner',
+            type: 'subgraph',
+            title: 'Invoke inner',
+            description: '',
+            position: { x: 0, y: 0 },
+            subgraphId: 'inner',
+            inputBindings: [],
+            outputContract: genericSubgraphOutput,
+          },
+          { ...terminal, id: 'outer-done' },
+        ],
+        edges: [{
+          id: 'inner-to-done',
+          fromNodeId: 'invoke-inner',
+          toNodeId: 'outer-done',
+          type: 'success',
+          label: '',
+          priority: 10,
+          condition: { kind: 'always' },
+        }],
+        inputBindings: [],
+        outputContract: genericSubgraphOutput,
+      },
+    ]
+
+    expect(validateWorkflowDefinition(workflow)).toEqual({ status: 'valid', diagnostics: [] })
+
+    const outerNode = workflow.subgraphs[1].nodes[0]
+    if (outerNode.type !== 'subgraph') throw new Error('expected subgraph node')
+    outerNode.subgraphId = 'outer'
+    const report = validateWorkflowDefinition(workflow)
+
+    expect(report.status).toBe('invalid')
+    expect(report.diagnostics).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        code: 'recursive_subgraph_invocation',
+        path: 'subgraphs.1.nodes.0.subgraphId',
+      }),
+    ]))
   })
 
   it('rejects router conditions that read fields outside the artifact schema', () => {
@@ -299,7 +600,6 @@ describe('validateWorkflowDefinition', () => {
         value: 'passed',
       },
     }
-
     const report = validateWorkflowDefinition(workflow)
 
     expect(report, JSON.stringify(report.diagnostics)).toMatchObject({ status: 'invalid' })
@@ -357,6 +657,15 @@ describe('validateWorkflowDefinition', () => {
         value: 'passed',
       },
     }
+    workflow.edges.push({
+      id: 'edge-a-safe-fallback',
+      fromNodeId: 'agent-a',
+      toNodeId: 'done',
+      type: 'success',
+      label: 'fallback',
+      priority: 90,
+      condition: { kind: 'always' },
+    })
 
     const report = validateWorkflowDefinition(workflow)
     expect(report, JSON.stringify(report.diagnostics)).toMatchObject({ status: 'valid' })
@@ -368,7 +677,7 @@ describe('validateWorkflowDefinition', () => {
       id: 'edge-b-other-default',
       fromNodeId: 'agent-b',
       toNodeId: 'done',
-      type: 'conditional',
+      type: 'success',
       label: 'else again',
       priority: 999,
       condition: { kind: 'always' },

@@ -52,14 +52,16 @@ pub(crate) fn stop_runtime_run_blocking<R: Runtime>(
     if let Some(snapshot) = before.as_ref().filter(|snapshot| {
         snapshot.run.supervisor_kind == crate::runtime::OWNED_AGENT_SUPERVISOR_KIND
     }) {
-        let _ = state.agent_run_supervisor().cancel(&snapshot.run.run_id)?;
         if project_store::load_agent_run(&repo_root, &request.project_id, &snapshot.run.run_id)
             .is_ok()
         {
-            let _ = crate::runtime::cancel_owned_agent_run(
-                &repo_root,
-                &request.project_id,
-                &snapshot.run.run_id,
+            let runtime = crate::runtime::DesktopAgentCoreRuntime::new(
+                state.agent_run_supervisor().clone(),
+            );
+            let _ = runtime.cancel_run(
+                repo_root.clone(),
+                request.project_id.clone(),
+                snapshot.run.run_id.clone(),
             )?;
         }
         let after = stop_owned_runtime_run(&repo_root, snapshot)?;

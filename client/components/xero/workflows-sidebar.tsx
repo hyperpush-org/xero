@@ -810,6 +810,8 @@ function workflowRunTone(status: WorkflowRunDto["status"]): string {
       return "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
     case "paused":
       return "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300"
+    case "cancelling":
+      return "border-amber-500/35 bg-amber-500/10 text-amber-700 dark:text-amber-300"
     case "failed":
       return "border-destructive/35 bg-destructive/10 text-destructive"
     case "cancelled":

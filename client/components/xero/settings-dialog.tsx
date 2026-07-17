@@ -482,6 +482,7 @@ export interface SettingsDialogProps {
   onArchiveAgentDefinition?: (request: {
     projectId: string
     definitionId: string
+    expectedCurrentVersion: number
   }) => Promise<import("@/src/lib/xero-model/agent-definition").AgentDefinitionSummaryDto>
   onGetAgentDefinitionVersion?: (request: {
     projectId: string

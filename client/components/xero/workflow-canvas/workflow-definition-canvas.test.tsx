@@ -50,6 +50,7 @@ vi.mock('@xyflow/react', async () => {
     edges = [],
     nodes,
     fitViewOptions,
+    onConnect,
     onNodeClick,
     onNodesChange,
   }: {
@@ -74,6 +75,12 @@ vi.mock('@xyflow/react', async () => {
     }>
     nodes: Array<{ id: string; position?: { x: number; y: number } }>
     fitViewOptions?: { maxZoom?: number }
+    onConnect?: (connection: {
+      source: string
+      target: string
+      sourceHandle: string | null
+      targetHandle: string | null
+    }) => void
     onNodeClick?: (event: unknown, node: { id: string }) => void
     onNodesChange?: (changes: Array<{ id: string; type: 'position'; position: { x: number; y: number } }>) => void
   }) => (
@@ -109,6 +116,22 @@ vi.mock('@xyflow/react', async () => {
           }
         >
           move node
+        </button>
+      ) : null}
+      {nodes[0] && nodes[1] ? (
+        <button
+          type="button"
+          data-testid="simulate-workflow-connect"
+          onClick={() =>
+            onConnect?.({
+              source: nodes[0].id,
+              target: nodes[1].id,
+              sourceHandle: 'workflow-right-success',
+              targetHandle: 'workflow-left-success',
+            })
+          }
+        >
+          connect nodes
         </button>
       ) : null}
       {edges.map((edge) => (
@@ -218,6 +241,79 @@ describe('WorkflowDefinitionCanvas', () => {
         .at(-1)
       expect(latestStatus.definition.startNodeId).toBe('agent')
     })
+  })
+
+  it('authors an agent-to-agent artifact handoff from a blank Workflow', async () => {
+    const onCanvasStatusChange = vi.fn()
+    const onSaveDefinition = vi.fn(async (definition: WorkflowDefinitionDto) => definition)
+    const definition = instantiateBlankWorkflow({ projectId: 'project-1' })
+
+    render(
+      <WorkflowDefinitionCanvas
+        definition={definition}
+        initialMode="edit"
+        isCreating
+        onSaveDefinition={onSaveDefinition}
+        onCanvasStatusChange={onCanvasStatusChange}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Add first agent step' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('workflow-react-flow')).toHaveAttribute('data-node-count', '1'),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Add agent' }))
+    await waitFor(() =>
+      expect(screen.getByTestId('workflow-react-flow')).toHaveAttribute('data-node-count', '2'),
+    )
+    fireEvent.click(screen.getByTestId('simulate-workflow-connect'))
+
+    fireEvent.click(screen.getByTestId('workflow-node-agent_2'))
+    fireEvent.click(screen.getByRole('button', { name: 'Add input' }))
+    fireEvent.click(screen.getByLabelText('Input 1 source'))
+    fireEvent.click(await screen.findByRole('option', { name: 'Artifact' }))
+    fireEvent.change(screen.getByLabelText('Input 1 name'), {
+      target: { value: 'plan' },
+    })
+    fireEvent.change(screen.getByLabelText('Input 1 prompt label'), {
+      target: { value: 'Implementation plan' },
+    })
+    fireEvent.change(screen.getByLabelText('Input 1 path'), {
+      target: { value: '$.summary' },
+    })
+    fireEvent.click(screen.getByLabelText('Input 1 required'))
+
+    await waitFor(() => {
+      const latestStatus = onCanvasStatusChange.mock.calls
+        .map((call) => call[0])
+        .filter(Boolean)
+        .at(-1)
+      expect(latestStatus.saveDisabled).toBe(false)
+      latestStatus.save()
+    })
+
+    await waitFor(() => expect(onSaveDefinition).toHaveBeenCalledTimes(1))
+    const savedDefinition = onSaveDefinition.mock.calls[0]?.[0]
+    expect(savedDefinition?.edges).toEqual([
+      expect.objectContaining({ fromNodeId: 'agent', toNodeId: 'agent_2' }),
+    ])
+    expect(savedDefinition?.nodes[1]).toEqual(
+      expect.objectContaining({
+        id: 'agent_2',
+        inputBindings: [
+          {
+            source: 'artifact',
+            name: 'plan',
+            required: false,
+            artifactRef: 'agent.text_output',
+            path: '$.summary',
+            promptLabel: 'Implementation plan',
+          },
+        ],
+        runOverrides: null,
+        resourceScopes: [],
+      }),
+    )
   })
 
   it('keeps live drag moves off the workflow definition status path', async () => {
@@ -429,6 +525,27 @@ describe('WorkflowDefinitionCanvas', () => {
     expect(screen.getByText('Connections')).toBeInTheDocument()
     expect(screen.getByText('Query incomplete phases -> select')).toBeInTheDocument()
     expect(screen.getByText('route -> Phase route')).toBeInTheDocument()
+  })
+
+  it('explains the bounded command policy in the command editor', () => {
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'gsd_auto',
+    })
+
+    render(
+      <WorkflowDefinitionCanvas
+        definition={definition}
+        initialMode="edit"
+        onSaveDefinition={vi.fn()}
+      />,
+    )
+
+    fireEvent.click(screen.getByTestId('workflow-node-verify_command'))
+
+    expect(screen.getByText('Xero permits only a sanitized, read-only git status command.')).toBeInTheDocument()
+    expect(screen.getByText(/always ignores submodules/)).toBeInTheDocument()
+    expect(screen.getByText(/built-in policy remains authoritative/)).toBeInTheDocument()
   })
 
   it('wraps long workflow binding summaries in the properties panel', () => {
@@ -673,7 +790,137 @@ describe('WorkflowDefinitionCanvas', () => {
     await waitFor(() => expect(onResumeNextIncompletePhase).toHaveBeenCalledWith('run-1'))
     expect(await screen.findByText('Resume scheduled')).toBeInTheDocument()
   })
+
+  it('keeps checkpoints without a payload schema one-click and sends no synthetic payload', async () => {
+    const { definition, run } = waitingCheckpointFixture(null)
+    const onResumeCheckpoint = vi.fn(async () => undefined)
+
+    render(
+      <WorkflowDefinitionCanvas
+        definition={definition}
+        run={run}
+        onResumeCheckpoint={onResumeCheckpoint}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() =>
+      expect(onResumeCheckpoint).toHaveBeenCalledWith(
+        'run-1',
+        'run-1:node:approval:attempt:0',
+        'approve',
+        null,
+      ),
+    )
+    expect(screen.queryByLabelText('Resume payload (JSON)')).toBeNull()
+  })
+
+  it('validates schema-backed checkpoint JSON before submitting the parsed payload', async () => {
+    const { definition, run } = waitingCheckpointFixture({
+      type: 'object',
+      required: ['note'],
+      additionalProperties: false,
+      properties: {
+        note: { type: 'string', minLength: 3 },
+      },
+    })
+    const onResumeCheckpoint = vi.fn(async () => undefined)
+
+    render(
+      <WorkflowDefinitionCanvas
+        definition={definition}
+        run={run}
+        onResumeCheckpoint={onResumeCheckpoint}
+      />,
+    )
+
+    const payload = screen.getByLabelText('Resume payload (JSON)')
+    fireEvent.change(payload, { target: { value: '{' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Workflow' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('Enter a valid JSON payload')
+    expect(onResumeCheckpoint).not.toHaveBeenCalled()
+
+    fireEvent.change(payload, { target: { value: '{}' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Workflow' }))
+    expect(screen.getByRole('alert')).toHaveTextContent('missing required field "note"')
+    expect(onResumeCheckpoint).not.toHaveBeenCalled()
+
+    fireEvent.change(payload, { target: { value: '{"note":"Looks good"}' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Resume Workflow' }))
+
+    await waitFor(() =>
+      expect(onResumeCheckpoint).toHaveBeenCalledWith(
+        'run-1',
+        'run-1:node:approval:attempt:0',
+        'approve',
+        { note: 'Looks good' },
+      ),
+    )
+    expect(screen.queryByRole('alert')).toBeNull()
+  })
 })
+
+function waitingCheckpointFixture(
+  resumePayloadSchema: Record<string, unknown> | null,
+): { definition: WorkflowDefinitionDto; run: WorkflowRunDto } {
+  const now = '2026-01-01T00:00:00Z'
+  const blank = instantiateBlankWorkflow({ projectId: 'project-1' })
+  const definition: WorkflowDefinitionDto = {
+    ...blank,
+    id: 'workflow-checkpoint',
+    name: 'Checkpoint workflow',
+    startNodeId: 'approval',
+    nodes: [
+      {
+        id: 'approval',
+        type: 'human_checkpoint',
+        title: 'Approval',
+        description: '',
+        position: { x: 120, y: 160 },
+        checkpointType: 'decision',
+        prompt: 'Review the result before continuing.',
+        decisionOptions: ['approve', 'reject'],
+        resumePayloadSchema,
+        stateUpdates: [],
+      },
+    ],
+    edges: [],
+  }
+  return {
+    definition,
+    run: {
+      id: 'run-1',
+      projectId: 'project-1',
+      workflowVersionId: 'workflow-version-1',
+      workflowId: definition.id,
+      workflowVersionNumber: 1,
+      status: 'paused',
+      terminalStatus: 'needs_human',
+      definitionSnapshot: definition,
+      initialInput: null,
+      startedAt: now,
+      updatedAt: now,
+      completedAt: null,
+      cancellationReason: null,
+      nodes: [
+        workflowRunNode(
+          'run-1:node:approval:attempt:0',
+          'approval',
+          'human_checkpoint',
+          'waiting_on_gate',
+          0,
+          now,
+        ),
+      ],
+      edgeDecisions: [],
+      artifacts: [],
+      gateDecisions: [],
+      loopAttempts: [],
+      events: [],
+    },
+  }
+}
 
 function workflowWithSubgraph(): WorkflowDefinitionDto {
   const definition = instantiateBlankWorkflow({ projectId: 'project-1' })

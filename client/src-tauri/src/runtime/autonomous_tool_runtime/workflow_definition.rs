@@ -316,8 +316,12 @@ impl AutonomousToolRuntime {
             ));
         }
 
-        let saved =
-            project_store::update_workflow_definition(&self.repo_root, &workflow_id, &definition)?;
+        let saved = project_store::update_workflow_definition(
+            &self.repo_root,
+            &workflow_id,
+            definition.version,
+            &definition,
+        )?;
         let saved_summary = workflow_summary_from_definition(&saved, true)?;
         Ok(AutonomousWorkflowDefinitionOutput {
             action: request.action,

@@ -1,20 +1,342 @@
 use super::*;
+use crate::runtime::autonomous_tool_runtime::autonomous_tool_result_succeeded;
 use crate::runtime::{
-    AutonomousAgentWorkflowPolicy, AutonomousAgentWorkflowReplay, AutonomousTodoItem,
+    AutonomousAgentWorkflowPolicy, AutonomousAgentWorkflowReplay,
+    AutonomousAgentWorkflowReplayEvent, AutonomousTodoItem, AutonomousTodoStatus,
+    AutonomousToolOutput, AutonomousToolResult,
 };
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, BTreeSet};
+use std::{
+    cell::Cell,
+    collections::{BTreeMap, BTreeSet},
+};
 use xero_agent_core::{
     production_runtime_trace_metadata, validate_production_runtime_contract,
     ProductionRuntimeContract, RuntimeStoreDescriptor,
 };
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PreparedOwnedAgentContinuation {
     pub snapshot: AgentRunSnapshotRecord,
     pub drive_request: ContinueOwnedAgentRunRequest,
     pub drive_required: bool,
     pub handoff: Option<PreparedAgentHandoff>,
+    pub(crate) drive_lease: Option<AgentRunLease>,
+}
+
+const OWNED_AGENT_START_IDENTITY_SCHEMA: &str = "xero.owned_agent_start_identity.v1";
+const OWNED_AGENT_START_RECOVERY_SCHEMA: &str = "xero.owned_agent_start_recovery.v1";
+const OWNED_AGENT_CONTINUATION_IDENTITY_SCHEMA: &str = "xero.owned_agent_continuation_identity.v1";
+const OWNED_AGENT_CONTINUATION_RECOVERY_SCHEMA: &str = "xero.owned_agent_continuation_recovery.v1";
+const HANDOFF_TARGET_START_RECOVERY_SCHEMA: &str = "xero.handoff_target_start_recovery.v1";
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnedAgentStartIdentityV1 {
+    schema: String,
+    project_id: String,
+    agent_session_id: String,
+    run_id: String,
+    prompt: String,
+    attachments: Vec<MessageAttachment>,
+    linked_paths: Vec<RuntimeLinkedPathDto>,
+    controls: Option<RuntimeRunControlInputDto>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnedAgentContinuationIdentityV1 {
+    schema: String,
+    project_id: String,
+    run_id: String,
+    continuation_request_id: String,
+    prompt: String,
+    attachments: Vec<MessageAttachment>,
+    linked_paths: Vec<RuntimeLinkedPathDto>,
+    controls: Option<RuntimeRunControlInputDto>,
+    answer_pending_actions: bool,
+    answer_pending_action_id: Option<String>,
+    auto_compact: Option<AgentAutoCompactPreference>,
+    internal_resume: Option<AgentRunInternalResume>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnedAgentStartRecoveryPayloadV1 {
+    schema: String,
+    request: OwnedAgentStartIdentityV1,
+    runtime_controls: RuntimeRunControlInputDto,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct OwnedAgentContinuationRecoveryPayloadV1 {
+    schema: String,
+    request: OwnedAgentContinuationIdentityV1,
+    runtime_controls: RuntimeRunControlInputDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveredOwnedAgentStartPayload {
+    pub project_id: String,
+    pub agent_session_id: String,
+    pub run_id: String,
+    pub prompt: String,
+    pub attachments: Vec<MessageAttachment>,
+    pub linked_paths: Vec<RuntimeLinkedPathDto>,
+    pub controls: Option<RuntimeRunControlInputDto>,
+    pub runtime_controls: RuntimeRunControlInputDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct RecoveredOwnedAgentContinuationPayload {
+    pub project_id: String,
+    pub run_id: String,
+    pub prompt: String,
+    pub attachments: Vec<MessageAttachment>,
+    pub linked_paths: Vec<RuntimeLinkedPathDto>,
+    pub controls: Option<RuntimeRunControlInputDto>,
+    pub runtime_controls: RuntimeRunControlInputDto,
+    pub answer_pending_actions: bool,
+    pub answer_pending_action_id: Option<String>,
+    pub auto_compact: Option<AgentAutoCompactPreference>,
+    pub internal_resume: Option<AgentRunInternalResume>,
+}
+
+#[cfg(test)]
+mod continuation_dispatch_classification_tests {
+    use super::continuation_drive_finish_value;
+
+    #[test]
+    fn pre_dispatch_failure_leaves_prepared_request_available_for_safe_retry() {
+        assert_eq!(continuation_drive_finish_value(false, false, false), None);
+    }
+
+    #[test]
+    fn post_dispatch_failure_stays_driving_and_is_not_replayed() {
+        assert_eq!(continuation_drive_finish_value(false, true, true), None);
+    }
+}
+
+#[cfg(test)]
+mod recovery_payload_tests {
+    use super::*;
+
+    fn runtime_controls() -> RuntimeRunControlInputDto {
+        RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: Some("engineer".into()),
+            agent_definition_version: Some(7),
+            provider_profile_id: Some("profile-1".into()),
+            model_id: "model-1".into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Yolo,
+            plan_mode_required: true,
+            auto_compact_enabled: false,
+        }
+    }
+
+    fn attachment() -> MessageAttachment {
+        MessageAttachment {
+            kind: MessageAttachmentKind::Document,
+            absolute_path: PathBuf::from("/tmp/spec.pdf"),
+            media_type: "application/pdf".into(),
+            original_name: "spec.pdf".into(),
+            size_bytes: 321,
+            width: None,
+            height: None,
+        }
+    }
+
+    fn linked_path() -> RuntimeLinkedPathDto {
+        RuntimeLinkedPathDto {
+            kind: crate::commands::RuntimeLinkedPathKindDto::Folder,
+            absolute_path: "/tmp/context".into(),
+        }
+    }
+
+    #[test]
+    fn start_recovery_round_trip_preserves_exact_identity_and_hash() {
+        let identity = OwnedAgentStartIdentityV1 {
+            schema: OWNED_AGENT_START_IDENTITY_SCHEMA.into(),
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            prompt: "Use all supplied context.".into(),
+            attachments: vec![attachment()],
+            linked_paths: vec![linked_path()],
+            controls: Some(runtime_controls()),
+        };
+        let payload_hash = hash_serializable_identity(
+            &identity,
+            "test_start_hash_failed",
+            "the test start identity",
+        )
+        .expect("hash start identity");
+        let recovery_payload_json = serde_json::to_string(&OwnedAgentStartRecoveryPayloadV1 {
+            schema: OWNED_AGENT_START_RECOVERY_SCHEMA.into(),
+            request: identity.clone(),
+            runtime_controls: runtime_controls(),
+        })
+        .expect("encode start recovery");
+        let start = project_store::AgentRunStartRequestRecord {
+            project_id: identity.project_id.clone(),
+            run_id: identity.run_id.clone(),
+            payload_hash: payload_hash.clone(),
+            recovery_payload_json,
+            state: project_store::AgentRunStartRequestState::Ready,
+            owner_process_id: 42,
+            owner_process_birth_identity: "birth-1".into(),
+            created_at: "2026-07-15T12:00:00Z".into(),
+            ready_at: Some("2026-07-15T12:00:01Z".into()),
+            failed_at: None,
+        };
+
+        let recovered = decode_owned_agent_start_recovery_payload(&start)
+            .expect("decode exact start")
+            .expect("owned start payload");
+        let recovered_identity = OwnedAgentStartIdentityV1 {
+            schema: OWNED_AGENT_START_IDENTITY_SCHEMA.into(),
+            project_id: recovered.project_id,
+            agent_session_id: recovered.agent_session_id,
+            run_id: recovered.run_id,
+            prompt: recovered.prompt,
+            attachments: recovered.attachments,
+            linked_paths: recovered.linked_paths,
+            controls: recovered.controls,
+        };
+        assert_eq!(recovered_identity, identity);
+        assert_eq!(recovered.runtime_controls, runtime_controls());
+        assert_eq!(
+            hash_serializable_identity(
+                &recovered_identity,
+                "test_start_hash_failed",
+                "the recovered test start identity",
+            )
+            .expect("rehash recovered start"),
+            payload_hash
+        );
+    }
+
+    #[test]
+    fn continuation_recovery_round_trip_preserves_every_dispatch_field() {
+        let identity = OwnedAgentContinuationIdentityV1 {
+            schema: OWNED_AGENT_CONTINUATION_IDENTITY_SCHEMA.into(),
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            continuation_request_id: "continuation-1".into(),
+            prompt: "Approve and continue.".into(),
+            attachments: vec![attachment()],
+            linked_paths: vec![linked_path()],
+            controls: Some(runtime_controls()),
+            answer_pending_actions: true,
+            answer_pending_action_id: Some("action-1".into()),
+            auto_compact: Some(AgentAutoCompactPreference {
+                enabled: true,
+                threshold_percent: Some(73),
+                raw_tail_message_count: Some(9),
+            }),
+            internal_resume: Some(AgentRunInternalResume {
+                wake_id: "wake-1".into(),
+                reason: "scheduled".into(),
+                payload: json!({ "attempt": 2 }),
+            }),
+        };
+        let payload_hash = hash_serializable_identity(
+            &identity,
+            "test_continuation_hash_failed",
+            "the test continuation identity",
+        )
+        .expect("hash continuation identity");
+        let recovery_payload_json =
+            serde_json::to_string(&OwnedAgentContinuationRecoveryPayloadV1 {
+                schema: OWNED_AGENT_CONTINUATION_RECOVERY_SCHEMA.into(),
+                request: identity.clone(),
+                runtime_controls: runtime_controls(),
+            })
+            .expect("encode continuation recovery");
+        let durable = project_store::AgentContinuationRequestRecord {
+            project_id: identity.project_id.clone(),
+            request_id: identity.continuation_request_id.clone(),
+            run_id: identity.run_id.clone(),
+            payload_hash: payload_hash.clone(),
+            recovery_payload_json,
+            state: project_store::AgentContinuationRequestState::Prepared,
+            message_id: 1,
+            linked_path_grant_event_id: Some(2),
+            message_event_id: 3,
+            prepared_at: "2026-07-15T12:00:00Z".into(),
+            drive_started_at: None,
+            consumed_at: None,
+        };
+
+        let recovered = decode_owned_agent_continuation_recovery_payload(&durable)
+            .expect("decode exact continuation");
+        let recovered_identity = OwnedAgentContinuationIdentityV1 {
+            schema: OWNED_AGENT_CONTINUATION_IDENTITY_SCHEMA.into(),
+            project_id: recovered.project_id,
+            run_id: recovered.run_id,
+            continuation_request_id: durable.request_id,
+            prompt: recovered.prompt,
+            attachments: recovered.attachments,
+            linked_paths: recovered.linked_paths,
+            controls: recovered.controls,
+            answer_pending_actions: recovered.answer_pending_actions,
+            answer_pending_action_id: recovered.answer_pending_action_id,
+            auto_compact: recovered.auto_compact,
+            internal_resume: recovered.internal_resume,
+        };
+        assert_eq!(recovered_identity, identity);
+        assert_eq!(recovered.runtime_controls, runtime_controls());
+        assert_eq!(
+            hash_serializable_identity(
+                &recovered_identity,
+                "test_continuation_hash_failed",
+                "the recovered test continuation identity",
+            )
+            .expect("rehash recovered continuation"),
+            payload_hash
+        );
+    }
+
+    #[test]
+    fn recovery_fails_closed_when_runtime_controls_are_missing() {
+        let identity = OwnedAgentStartIdentityV1 {
+            schema: OWNED_AGENT_START_IDENTITY_SCHEMA.into(),
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            prompt: "Recover exactly.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: None,
+        };
+        let start = project_store::AgentRunStartRequestRecord {
+            project_id: identity.project_id.clone(),
+            run_id: identity.run_id.clone(),
+            payload_hash: hash_serializable_identity(
+                &identity,
+                "test_start_hash_failed",
+                "the test start identity",
+            )
+            .expect("hash start identity"),
+            recovery_payload_json: json!({
+                "schema": OWNED_AGENT_START_RECOVERY_SCHEMA,
+                "request": identity,
+            })
+            .to_string(),
+            state: project_store::AgentRunStartRequestState::Ready,
+            owner_process_id: 42,
+            owner_process_birth_identity: "birth-1".into(),
+            created_at: "2026-07-15T12:00:00Z".into(),
+            ready_at: Some("2026-07-15T12:00:01Z".into()),
+            failed_at: None,
+        };
+
+        let error = decode_owned_agent_start_recovery_payload(&start)
+            .expect_err("missing exact runtime controls must not be inferred");
+        assert_eq!(error.code, "agent_run_start_recovery_payload_corrupt");
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,14 +371,52 @@ pub(crate) struct ResolvedAgentRouteTarget {
 pub fn run_owned_agent_task(
     request: OwnedAgentRunRequest,
 ) -> CommandResult<AgentRunSnapshotRecord> {
-    create_owned_agent_run(&request)?;
-    drive_owned_agent_run(request, AgentRunCancellationToken::default(), None)
+    let snapshot = create_owned_agent_run(&request)?;
+    if snapshot.run.status != AgentRunStatus::Running {
+        return Ok(snapshot);
+    }
+    let continuation = initial_owned_agent_continuation_request(&request);
+    let registration = register_existing_initial_agent_continuation(&continuation, &snapshot)?;
+    if registration.request.state == project_store::AgentContinuationRequestState::Consumed {
+        return Ok(snapshot);
+    }
+    drive_owned_agent_continuation(continuation, AgentRunCancellationToken::default(), None)
+}
+
+pub(crate) fn initial_owned_agent_continuation_request(
+    request: &OwnedAgentRunRequest,
+) -> ContinueOwnedAgentRunRequest {
+    ContinueOwnedAgentRunRequest {
+        repo_root: request.repo_root.clone(),
+        project_id: request.project_id.clone(),
+        run_id: request.run_id.clone(),
+        continuation_request_id: format!("agent-start:{}", request.run_id),
+        prompt: request.prompt.clone(),
+        attachments: request.attachments.clone(),
+        linked_paths: request.linked_paths.clone(),
+        controls: request.controls.clone(),
+        tool_runtime: request.tool_runtime.clone(),
+        provider_config: request.provider_config.clone(),
+        provider_preflight: request.provider_preflight.clone(),
+        answer_pending_actions: false,
+        answer_pending_action_id: None,
+        auto_compact: None,
+        internal_resume: None,
+    }
 }
 
 pub fn create_owned_agent_run(
     request: &OwnedAgentRunRequest,
 ) -> CommandResult<AgentRunSnapshotRecord> {
     validate_prompt(&request.prompt)?;
+    let start_payload_hash = owned_agent_start_payload_hash(request)?;
+    if let Some(existing) = project_store::load_agent_run_start_request(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+    )? {
+        return recover_registered_owned_agent_start(request, &start_payload_hash, existing);
+    }
     if let Some(identity) = request.tool_runtime.subagent_child_identity() {
         identity.validate_for_run(&request.prompt)?;
     }
@@ -73,12 +433,16 @@ pub fn create_owned_agent_run(
         &request.project_id,
         controls.active.runtime_agent_id,
     )?;
-    let definition_selection = project_store::resolve_agent_definition_for_run(
+    let definition_selection = project_store::resolve_agent_definition_version_for_run(
         &request.repo_root,
         request
             .controls
             .as_ref()
             .and_then(|controls| controls.agent_definition_id.as_deref()),
+        request
+            .controls
+            .as_ref()
+            .and_then(|controls| controls.agent_definition_version),
         controls.active.runtime_agent_id,
     )?;
     project_store::ensure_runtime_agent_allowed_for_project(
@@ -157,7 +521,19 @@ pub fn create_owned_agent_run(
     };
     let now = now_timestamp();
 
-    project_store::insert_agent_run(
+    let owner_process_id = std::process::id();
+    let owner_process_birth_identity = crate::runtime::process_tree::process_birth_identity(
+        owner_process_id,
+    )
+    .ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_run_process_identity_unavailable",
+            "Xero could not establish a process-lifetime identity for this agent start.",
+        )
+    })?;
+    let start_recovery_payload_json =
+        owned_agent_start_recovery_payload_json(request, &controls.active)?;
+    let registration = project_store::register_agent_run_start(
         &request.repo_root,
         &NewAgentRunRecord {
             runtime_agent_id: definition_selection.runtime_agent_id,
@@ -172,7 +548,23 @@ pub fn create_owned_agent_run(
             system_prompt: system_prompt.clone(),
             now: now.clone(),
         },
+        &start_payload_hash,
+        &start_recovery_payload_json,
+        owner_process_id,
+        &owner_process_birth_identity,
     )?;
+    if let project_store::AgentRunStartRegistrationResult::Replayed {
+        snapshot: _,
+        request: existing,
+    } = registration
+    {
+        return recover_registered_owned_agent_start(request, &start_payload_hash, existing);
+    }
+    let mut preparation_guard = OwnedAgentStartPreparationGuard::new(
+        request.repo_root.clone(),
+        request.project_id.clone(),
+        request.run_id.clone(),
+    );
     if let Some(identity) = request.tool_runtime.subagent_child_identity() {
         project_store::update_agent_run_lineage(
             &request.repo_root,
@@ -236,6 +628,16 @@ pub fn create_owned_agent_run(
         json!({
             "kind": "tool_application_style_resolution",
             "toolApplicationPolicy": request.tool_runtime.tool_application_policy(),
+        }),
+    )?;
+    append_event(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        AgentRunEventKind::RuntimeSettingsChanged,
+        json!({
+            "kind": "agent_runtime_controls_snapshot",
+            "controls": controls.active,
         }),
     )?;
 
@@ -332,7 +734,206 @@ pub fn create_owned_agent_run(
         },
     )?;
 
+    project_store::mark_agent_run_start_ready(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &now_timestamp(),
+    )?;
+    preparation_guard.disarm();
+
     project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)
+}
+
+struct OwnedAgentStartPreparationGuard {
+    repo_root: PathBuf,
+    project_id: String,
+    run_id: String,
+    armed: bool,
+}
+
+impl OwnedAgentStartPreparationGuard {
+    fn new(repo_root: PathBuf, project_id: String, run_id: String) -> Self {
+        Self {
+            repo_root,
+            project_id,
+            run_id,
+            armed: true,
+        }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for OwnedAgentStartPreparationGuard {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        let _ = project_store::fail_preparing_agent_run_start(
+            &self.repo_root,
+            &self.project_id,
+            &self.run_id,
+            project_store::AgentRunDiagnosticRecord {
+                code: "agent_run_start_preparation_failed".into(),
+                message: "Xero could not finish preparing this owned-agent run.".into(),
+            },
+            &now_timestamp(),
+        );
+    }
+}
+
+fn owned_agent_start_identity(request: &OwnedAgentRunRequest) -> OwnedAgentStartIdentityV1 {
+    OwnedAgentStartIdentityV1 {
+        schema: OWNED_AGENT_START_IDENTITY_SCHEMA.into(),
+        project_id: request.project_id.clone(),
+        agent_session_id: request.agent_session_id.clone(),
+        run_id: request.run_id.clone(),
+        prompt: request.prompt.clone(),
+        attachments: request.attachments.clone(),
+        linked_paths: request.linked_paths.clone(),
+        controls: request.controls.clone(),
+    }
+}
+
+fn hash_serializable_identity<T: Serialize>(
+    payload: &T,
+    code: &'static str,
+    context: &'static str,
+) -> CommandResult<String> {
+    let encoded = serde_json::to_vec(payload).map_err(|error| {
+        CommandError::system_fault(code, format!("Xero could not encode {context}: {error}"))
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(encoded);
+    Ok(format!("{:x}", hasher.finalize()))
+}
+
+fn owned_agent_start_payload_hash(request: &OwnedAgentRunRequest) -> CommandResult<String> {
+    hash_serializable_identity(
+        &owned_agent_start_identity(request),
+        "agent_run_start_identity_encode_failed",
+        "the owned-agent start identity",
+    )
+}
+
+fn active_controls_as_input(
+    controls: &RuntimeRunActiveControlSnapshotDto,
+) -> RuntimeRunControlInputDto {
+    RuntimeRunControlInputDto {
+        runtime_agent_id: controls.runtime_agent_id,
+        agent_definition_id: controls.agent_definition_id.clone(),
+        agent_definition_version: controls.agent_definition_version,
+        provider_profile_id: controls.provider_profile_id.clone(),
+        model_id: controls.model_id.clone(),
+        thinking_effort: controls.thinking_effort.clone(),
+        approval_mode: controls.approval_mode.clone(),
+        plan_mode_required: controls.plan_mode_required,
+        auto_compact_enabled: controls.auto_compact_enabled,
+    }
+}
+
+fn owned_agent_start_recovery_payload_json(
+    request: &OwnedAgentRunRequest,
+    runtime_controls: &RuntimeRunActiveControlSnapshotDto,
+) -> CommandResult<String> {
+    serde_json::to_string(&OwnedAgentStartRecoveryPayloadV1 {
+        schema: OWNED_AGENT_START_RECOVERY_SCHEMA.into(),
+        request: owned_agent_start_identity(request),
+        runtime_controls: active_controls_as_input(runtime_controls),
+    })
+    .map_err(|error| {
+        CommandError::system_fault(
+            "agent_run_start_recovery_payload_encode_failed",
+            format!("Xero could not persist the owned-agent start recovery payload: {error}"),
+        )
+    })
+}
+
+fn recover_registered_owned_agent_start(
+    request: &OwnedAgentRunRequest,
+    payload_hash: &str,
+    start: project_store::AgentRunStartRequestRecord,
+) -> CommandResult<AgentRunSnapshotRecord> {
+    if start.payload_hash != payload_hash {
+        return Err(CommandError::user_fixable(
+            "agent_run_start_conflict",
+            format!(
+                "Owned-agent run id `{}` was already used for a different start request.",
+                request.run_id
+            ),
+        ));
+    }
+    if decode_owned_agent_start_recovery_payload(&start)?.is_none() {
+        return Err(CommandError::system_fault(
+            "agent_run_start_recovery_payload_kind_mismatch",
+            format!(
+                "Owned-agent run `{}` is bound to a handoff-target start payload.",
+                request.run_id
+            ),
+        ));
+    }
+    let snapshot =
+        project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
+    match start.state {
+        project_store::AgentRunStartRequestState::Ready
+        | project_store::AgentRunStartRequestState::Failed => Ok(snapshot),
+        project_store::AgentRunStartRequestState::Preparing
+            if owned_agent_start_snapshot_is_ready(&snapshot) =>
+        {
+            project_store::mark_agent_run_start_ready(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+                &now_timestamp(),
+            )?;
+            Ok(snapshot)
+        }
+        project_store::AgentRunStartRequestState::Preparing
+            if crate::runtime::process_tree::process_identity_is_live(
+                start.owner_process_id,
+                &start.owner_process_birth_identity,
+            ) =>
+        {
+            Err(CommandError::retryable(
+                "agent_run_start_in_progress",
+                format!(
+                    "Owned-agent run `{}` is still being prepared by its start owner.",
+                    request.run_id
+                ),
+            ))
+        }
+        project_store::AgentRunStartRequestState::Preparing => {
+            project_store::fail_preparing_agent_run_start(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+                project_store::AgentRunDiagnosticRecord {
+                    code: "agent_run_start_interrupted".into(),
+                    message: "The process preparing this owned-agent run exited before its durable readiness marker was committed.".into(),
+                },
+                &now_timestamp(),
+            )
+        }
+    }
+}
+
+fn owned_agent_start_snapshot_is_ready(snapshot: &AgentRunSnapshotRecord) -> bool {
+    snapshot.run.status == AgentRunStatus::Running
+        && snapshot
+            .messages
+            .iter()
+            .any(|message| message.role == AgentMessageRole::System)
+        && snapshot
+            .messages
+            .iter()
+            .any(|message| message.role == AgentMessageRole::User)
+        && snapshot
+            .events
+            .iter()
+            .any(|event| event.event_kind == AgentRunEventKind::RunStarted)
 }
 
 fn owned_agent_production_runtime_contract(
@@ -502,18 +1103,64 @@ fn workflow_policy_for_runtime_agent(
 fn workflow_replay_from_snapshot(
     snapshot: &AgentRunSnapshotRecord,
 ) -> AutonomousAgentWorkflowReplay {
-    let mut tool_successes = BTreeMap::new();
-    for tool_call in &snapshot.tool_calls {
-        if tool_call.state == AgentToolCallState::Succeeded {
-            *tool_successes
-                .entry(tool_call.tool_name.clone())
-                .or_default() += 1;
-        }
-    }
+    let events = snapshot
+        .events
+        .iter()
+        .filter_map(|event| {
+            let payload = serde_json::from_str::<JsonValue>(&event.payload_json).ok()?;
+            let tool_call_id = payload.get("toolCallId")?.as_str()?.trim();
+            if tool_call_id.is_empty() {
+                return None;
+            }
+            match &event.event_kind {
+                AgentRunEventKind::ToolStarted => {
+                    let tool_name = payload.get("toolName")?.as_str()?.trim();
+                    if tool_name.is_empty() {
+                        return None;
+                    }
+                    Some(AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                        tool_call_id: tool_call_id.to_owned(),
+                        tool_name: tool_name.to_owned(),
+                    })
+                }
+                AgentRunEventKind::ToolCompleted => {
+                    let completed_tool_name = payload.get("toolName")?.as_str()?.trim();
+                    if completed_tool_name.is_empty() {
+                        return None;
+                    }
+                    let transport_succeeded = payload.get("ok")?.as_bool()?;
+                    let result = payload.get("output").and_then(|output| {
+                        serde_json::from_value::<AutonomousToolResult>(output.clone()).ok()
+                    });
+                    let succeeded = transport_succeeded
+                        && result.as_ref().is_some_and(|result| {
+                            result.tool_name == completed_tool_name
+                                && autonomous_tool_result_succeeded(result)
+                        });
+                    let completed_todo_id =
+                        succeeded.then_some(result).flatten().and_then(|result| {
+                            match result.output {
+                                AutonomousToolOutput::Todo(output) => output
+                                    .changed_item
+                                    .filter(|item| item.status == AutonomousTodoStatus::Completed)
+                                    .map(|item| item.id),
+                                _ => None,
+                            }
+                        });
+                    Some(AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                        tool_call_id: tool_call_id.to_owned(),
+                        succeeded,
+                        completed_todo_id,
+                    })
+                }
+                _ => None,
+            }
+        })
+        .collect();
 
     AutonomousAgentWorkflowReplay {
         todo_items: latest_todo_items_from_snapshot(snapshot),
-        tool_successes,
+        events,
     }
 }
 
@@ -552,6 +1199,21 @@ pub(crate) fn record_linked_path_grants(
     run_id: &str,
     linked_paths: &[RuntimeLinkedPathDto],
 ) -> CommandResult<()> {
+    let Some(payload) = linked_path_grant_payload(linked_paths) else {
+        return Ok(());
+    };
+
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::ToolPermissionGrant,
+        payload,
+    )
+    .map(|_| ())
+}
+
+fn linked_path_grant_payload(linked_paths: &[RuntimeLinkedPathDto]) -> Option<JsonValue> {
     let paths = linked_paths
         .iter()
         .filter_map(|linked_path| {
@@ -565,21 +1227,13 @@ pub(crate) fn record_linked_path_grants(
         })
         .collect::<Vec<_>>();
     if paths.is_empty() {
-        return Ok(());
+        return None;
     }
-
-    append_event(
-        repo_root,
-        project_id,
-        run_id,
-        AgentRunEventKind::ToolPermissionGrant,
-        json!({
-            "schema": "xero.linked_context_paths.v1",
-            "grantKind": "linked_context_paths",
-            "paths": paths,
-        }),
-    )
-    .map(|_| ())
+    Some(json!({
+        "schema": "xero.linked_context_paths.v1",
+        "grantKind": "linked_context_paths",
+        "paths": paths,
+    }))
 }
 
 fn linked_path_kind_label(kind: &crate::commands::RuntimeLinkedPathKindDto) -> &'static str {
@@ -755,6 +1409,7 @@ pub fn drive_owned_agent_run(
     let browser_control_preference = request.tool_runtime.browser_control_preference();
     let base_tool_runtime = request
         .tool_runtime
+        .clone()
         .with_runtime_run_controls(controls.clone())
         .with_agent_tool_policy(agent_tool_policy.clone())
         .with_agent_workflow_policy(agent_workflow_policy)
@@ -909,7 +1564,46 @@ pub fn cancel_owned_agent_run(
     project_id: &str,
     run_id: &str,
 ) -> CommandResult<AgentRunSnapshotRecord> {
-    mark_owned_agent_run_cancelled(repo_root, project_id, run_id)
+    let payload = serde_json::to_string(&json!({
+        "code": AGENT_RUN_CANCELLED_CODE,
+        "message": "Owned agent run was cancelled.",
+        "state": AgentRunState::Blocked.as_str(),
+        "stopReason": AgentRunStopReason::Cancelled.as_str(),
+    }))
+    .map_err(|error| {
+        CommandError::system_fault(
+            "agent_run_cancel_event_serialize_failed",
+            format!("Xero could not serialize the cancellation event: {error}"),
+        )
+    })?;
+    for _ in 0..4 {
+        let expected = project_store::load_agent_run_drive_lease(repo_root, project_id, run_id)?;
+        match project_store::cancel_agent_run_with_expected_drive_lease(
+            repo_root,
+            project_id,
+            run_id,
+            expected.as_ref(),
+            false,
+            &payload,
+            &now_timestamp(),
+        )? {
+            project_store::AgentRunCancellationCasResult::Applied {
+                snapshot, event, ..
+            } => {
+                if let Some(event) = event.as_ref() {
+                    publish_committed_agent_event(repo_root, event);
+                }
+                return Ok(snapshot);
+            }
+            project_store::AgentRunCancellationCasResult::LeaseChanged(_) => continue,
+        }
+    }
+    Err(CommandError::retryable(
+        "agent_run_cancel_raced",
+        format!(
+            "Xero could not cancel owned-agent run `{run_id}` because its drive ownership kept changing. Retry the cancellation."
+        ),
+    ))
 }
 
 pub fn append_user_message(
@@ -956,15 +1650,105 @@ pub fn prepare_owned_agent_continuation(
     prepare_owned_agent_continuation_for_drive(request).map(|prepared| prepared.snapshot)
 }
 
+pub(crate) fn recover_prepared_owned_agent_continuation(
+    request: &ContinueOwnedAgentRunRequest,
+) -> CommandResult<PreparedOwnedAgentContinuation> {
+    let durable = project_store::load_agent_continuation_request_by_id(
+        &request.repo_root,
+        &request.project_id,
+        &request.continuation_request_id,
+    )?
+    .ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_continuation_request_missing",
+            "A prepared continuation disappeared during startup recovery.",
+        )
+    })?;
+    if durable.run_id != request.run_id
+        || durable.state != project_store::AgentContinuationRequestState::Prepared
+    {
+        return Err(CommandError::user_fixable(
+            "agent_continuation_not_recoverable",
+            "Only a durable Prepared continuation can be recovered for provider dispatch.",
+        ));
+    }
+    decode_owned_agent_continuation_recovery_payload(&durable)?;
+    let recomputed_hash = continuation_request_payload_hash(request)?;
+    if recomputed_hash != durable.payload_hash {
+        return Err(CommandError::system_fault(
+            "agent_continuation_recovery_hash_mismatch",
+            format!(
+                "Continuation `{}` changed between durable preparation and recovery.",
+                request.continuation_request_id
+            ),
+        ));
+    }
+    let snapshot =
+        project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
+    let snapshot = finish_post_commit_continuation_preparation(request, &snapshot)?;
+    Ok(PreparedOwnedAgentContinuation {
+        drive_required: snapshot.run.status == AgentRunStatus::Running,
+        snapshot,
+        drive_request: request.clone(),
+        handoff: None,
+        drive_lease: None,
+    })
+}
+
 pub fn prepare_owned_agent_continuation_for_drive(
     request: &ContinueOwnedAgentRunRequest,
 ) -> CommandResult<PreparedOwnedAgentContinuation> {
     validate_prompt(&request.prompt)?;
+    validate_continuation_request_id(&request.continuation_request_id)?;
+    let continuation_payload_hash = continuation_request_payload_hash(request)?;
+    if let Some(mut existing) = project_store::load_agent_continuation_preparation(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &request.continuation_request_id,
+        &continuation_payload_hash,
+    )? {
+        if existing.state == project_store::AgentContinuationRequestState::Driving {
+            existing = project_store::reconcile_completed_agent_continuation(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+                &request.continuation_request_id,
+                &now_timestamp(),
+            )?
+            .ok_or_else(|| {
+                CommandError::system_fault(
+                    "agent_continuation_request_missing",
+                    "The continuation request disappeared during completion reconciliation.",
+                )
+            })?;
+        }
+        let snapshot = project_store::load_agent_run(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        )?;
+        let snapshot = if existing.state == project_store::AgentContinuationRequestState::Prepared {
+            finish_post_commit_continuation_preparation(request, &snapshot)?
+        } else {
+            snapshot
+        };
+        let drive_required = existing.state
+            == project_store::AgentContinuationRequestState::Prepared
+            && snapshot.run.status == AgentRunStatus::Running;
+        return Ok(PreparedOwnedAgentContinuation {
+            snapshot,
+            drive_request: request.clone(),
+            drive_required,
+            handoff: None,
+            drive_lease: None,
+        });
+    }
     let mut before =
         project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
     if matches!(
         before.run.status,
-        AgentRunStatus::Cancelling | AgentRunStatus::Cancelled
+        AgentRunStatus::Cancelling | AgentRunStatus::Cancelled | AgentRunStatus::HandedOff
     ) {
         return Err(CommandError::user_fixable(
             "agent_run_not_resumable",
@@ -998,6 +1782,7 @@ pub fn prepare_owned_agent_continuation_for_drive(
             drive_request: request.clone(),
             drive_required: false,
             handoff: None,
+            drive_lease: None,
         });
     }
 
@@ -1017,216 +1802,74 @@ pub fn prepare_owned_agent_continuation_for_drive(
         return Ok(prepared);
     }
     ensure_context_budget_allows_continuation(request, provider.as_ref(), &before)?;
+    let recovery_runtime_controls = continuation_recovery_runtime_controls(request, &before)?;
+    let recovery_payload_json =
+        owned_agent_continuation_recovery_payload_json(request, &recovery_runtime_controls)?;
 
-    if let Some(action_id) = request.answer_pending_action_id.as_deref() {
-        let answered = project_store::answer_pending_agent_action_request(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            action_id,
-            &request.prompt,
-        )?;
-        append_event(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            AgentRunEventKind::PolicyDecision,
-            json!({
-                "kind": "approval_decision",
-                "actionId": answered.action_id,
-                "actionType": answered.action_type,
-                "decision": "approved",
-                "response": answered.response,
-                "status": answered.status,
-            }),
-        )?;
-        before = project_store::load_agent_run(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-        )?;
-        let definition_snapshot =
-            load_agent_definition_snapshot_for_run(&request.repo_root, &before.run)?;
-        let (default_approval_mode, allowed_approval_modes) =
-            agent_definition_approval_modes_from_snapshot(
-                &definition_snapshot,
-                before.run.runtime_agent_id,
-            );
-        let controls = runtime_controls_for_owned_agent_run(
-            &request.repo_root,
-            &before.run,
-            request.controls.as_ref(),
-            &allowed_approval_modes,
-            default_approval_mode,
-        )?;
-        let agent_tool_policy =
-            effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
-        let agent_workflow_policy =
-            workflow_policy_for_runtime_agent(before.run.runtime_agent_id, &definition_snapshot);
-        let replay_tool_runtime = request
-            .tool_runtime
-            .clone()
-            .with_runtime_run_controls(controls.clone())
-            .with_agent_tool_policy(agent_tool_policy.clone())
-            .with_agent_workflow_policy(agent_workflow_policy)
-            .with_agent_workflow_replay(workflow_replay_from_snapshot(&before))
-            .with_agent_run_context(
-                &request.project_id,
-                &before.run.agent_session_id,
-                &request.run_id,
-            );
-        let replay_tool_runtime = replay_tool_runtime
-            .with_linked_read_roots(linked_read_roots_from_snapshot(&before))?
-            .with_durable_subagent_tasks_for_run(
-                &request.repo_root,
-                &request.project_id,
-                &request.run_id,
-            )?;
-        let stage_allowed_tools = replay_tool_runtime.current_workflow_allowed_tools()?;
-        let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
-            skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
-            browser_control_preference: request.tool_runtime.browser_control_preference(),
-            runtime_agent_id: controls.active.runtime_agent_id,
-            agent_tool_policy: agent_tool_policy.clone(),
-            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
-            stage_allowed_tools,
-        });
-        replay_answered_tool_action_requests(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            &tool_registry,
-            &replay_tool_runtime,
-            &before,
-        )?;
-        before = project_store::load_agent_run(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-        )?;
-    } else if request.answer_pending_actions {
-        project_store::answer_pending_agent_action_requests(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            &request.prompt,
-        )?;
-        before = project_store::load_agent_run(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-        )?;
-        let definition_snapshot =
-            load_agent_definition_snapshot_for_run(&request.repo_root, &before.run)?;
-        let (default_approval_mode, allowed_approval_modes) =
-            agent_definition_approval_modes_from_snapshot(
-                &definition_snapshot,
-                before.run.runtime_agent_id,
-            );
-        let controls = runtime_controls_for_owned_agent_run(
-            &request.repo_root,
-            &before.run,
-            request.controls.as_ref(),
-            &allowed_approval_modes,
-            default_approval_mode,
-        )?;
-        let agent_tool_policy =
-            effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
-        let agent_workflow_policy =
-            workflow_policy_for_runtime_agent(before.run.runtime_agent_id, &definition_snapshot);
-        let replay_tool_runtime = request
-            .tool_runtime
-            .clone()
-            .with_runtime_run_controls(controls.clone())
-            .with_agent_tool_policy(agent_tool_policy.clone())
-            .with_agent_workflow_policy(agent_workflow_policy)
-            .with_agent_workflow_replay(workflow_replay_from_snapshot(&before))
-            .with_agent_run_context(
-                &request.project_id,
-                &before.run.agent_session_id,
-                &request.run_id,
-            );
-        let replay_tool_runtime = replay_tool_runtime
-            .with_linked_read_roots(linked_read_roots_from_snapshot(&before))?
-            .with_durable_subagent_tasks_for_run(
-                &request.repo_root,
-                &request.project_id,
-                &request.run_id,
-            )?;
-        let stage_allowed_tools = replay_tool_runtime.current_workflow_allowed_tools()?;
-        let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
-            skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
-            browser_control_preference: request.tool_runtime.browser_control_preference(),
-            runtime_agent_id: controls.active.runtime_agent_id,
-            agent_tool_policy: agent_tool_policy.clone(),
-            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
-            stage_allowed_tools,
-        });
-        replay_answered_tool_action_requests(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            &tool_registry,
-            &replay_tool_runtime,
-            &before,
-        )?;
-        before = project_store::load_agent_run(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-        )?;
-    }
-
-    mark_interrupted_tool_calls_before_continuation(
-        &request.repo_root,
-        &request.project_id,
-        &request.run_id,
-        &before,
-    )?;
-
-    if request.internal_resume.is_some() {
-        if !request.attachments.is_empty() {
-            return Err(CommandError::invalid_request("attachments"));
-        }
-        append_message(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            AgentMessageRole::Developer,
-            request.prompt.clone(),
-        )?;
-    } else {
-        let continuation_attachment_inputs = message_attachments_to_inputs(&request.attachments);
-        append_user_message_with_attachments(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            request.prompt.clone(),
-            continuation_attachment_inputs,
-        )?;
-        record_linked_path_grants(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            &request.linked_paths,
-        )?;
-        append_event(
-            &request.repo_root,
-            &request.project_id,
-            &request.run_id,
-            AgentRunEventKind::MessageDelta,
-            json!({ "role": "user", "text": request.prompt.clone() }),
-        )?;
-    }
+    let (message_role, attachments, linked_path_grant_payload) =
+        if request.internal_resume.is_some() {
+            if !request.attachments.is_empty() {
+                return Err(CommandError::invalid_request("attachments"));
+            }
+            (AgentMessageRole::Developer, Vec::new(), None)
+        } else {
+            (
+                AgentMessageRole::User,
+                message_attachments_to_inputs(&request.attachments),
+                linked_path_grant_payload(&request.linked_paths),
+            )
+        };
     let resumed_at = now_timestamp();
-    let snapshot = project_store::update_agent_run_status(
+    let message_payload = json!({
+        "role": if message_role == AgentMessageRole::Developer {
+            "developer"
+        } else {
+            "user"
+        },
+        "text": request.prompt.clone(),
+    });
+    let preparation = project_store::prepare_agent_continuation(
         &request.repo_root,
-        &request.project_id,
-        &request.run_id,
-        AgentRunStatus::Running,
-        None,
-        &resumed_at,
+        &project_store::NewAgentContinuationPreparationRecord {
+            project_id: request.project_id.clone(),
+            request_id: request.continuation_request_id.clone(),
+            run_id: request.run_id.clone(),
+            payload_hash: continuation_payload_hash,
+            recovery_payload_json,
+            role: message_role,
+            content: request.prompt.clone(),
+            attachments,
+            linked_path_grant_payload_json: linked_path_grant_payload
+                .map(|payload| serde_json::to_string(&payload))
+                .transpose()
+                .map_err(|error| {
+                    CommandError::system_fault(
+                        "agent_continuation_grant_serialize_failed",
+                        format!(
+                            "Xero could not serialize linked-path continuation grants: {error}"
+                        ),
+                    )
+                })?,
+            message_payload_json: serde_json::to_string(&message_payload).map_err(|error| {
+                CommandError::system_fault(
+                    "agent_continuation_message_event_serialize_failed",
+                    format!("Xero could not serialize the continuation message event: {error}"),
+                )
+            })?,
+            action_answer: (request.answer_pending_action_id.is_some()
+                || request.answer_pending_actions)
+                .then(|| project_store::AgentContinuationActionAnswerRecord {
+                    action_id: request.answer_pending_action_id.clone(),
+                    response: request.prompt.clone(),
+                }),
+            prepared_at: resumed_at.clone(),
+        },
     )?;
+    for event in &preparation.inserted_events {
+        publish_committed_agent_event(&request.repo_root, event);
+    }
+    let prepared_snapshot =
+        finish_post_commit_continuation_preparation(request, &preparation.snapshot)?;
     project_store::upsert_agent_coordination_presence(
         &request.repo_root,
         &project_store::UpsertAgentCoordinationPresenceRecord {
@@ -1242,11 +1885,449 @@ pub fn prepare_owned_agent_continuation_for_drive(
             lease_seconds: None,
         },
     )?;
+    let drive_required = preparation.request.state
+        != project_store::AgentContinuationRequestState::Consumed
+        && prepared_snapshot.run.status == AgentRunStatus::Running;
     Ok(PreparedOwnedAgentContinuation {
-        snapshot,
+        snapshot: prepared_snapshot,
         drive_request: request.clone(),
-        drive_required: true,
+        drive_required,
         handoff: None,
+        drive_lease: None,
+    })
+}
+
+fn finish_post_commit_continuation_preparation(
+    request: &ContinueOwnedAgentRunRequest,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<AgentRunSnapshotRecord> {
+    let mut snapshot = snapshot.clone();
+    if request.answer_pending_action_id.is_some() || request.answer_pending_actions {
+        let definition_snapshot =
+            load_agent_definition_snapshot_for_run(&request.repo_root, &snapshot.run)?;
+        let (default_approval_mode, allowed_approval_modes) =
+            agent_definition_approval_modes_from_snapshot(
+                &definition_snapshot,
+                snapshot.run.runtime_agent_id,
+            );
+        let controls = runtime_controls_for_owned_agent_run(
+            &request.repo_root,
+            &snapshot.run,
+            request.controls.as_ref(),
+            &allowed_approval_modes,
+            default_approval_mode,
+        )?;
+        let agent_tool_policy =
+            effective_agent_tool_policy(&definition_snapshot, &request.tool_runtime);
+        let agent_workflow_policy =
+            workflow_policy_for_runtime_agent(snapshot.run.runtime_agent_id, &definition_snapshot);
+        let replay_tool_runtime = request
+            .tool_runtime
+            .clone()
+            .with_runtime_run_controls(controls.clone())
+            .with_agent_tool_policy(agent_tool_policy.clone())
+            .with_agent_workflow_policy(agent_workflow_policy)
+            .with_agent_workflow_replay(workflow_replay_from_snapshot(&snapshot))
+            .with_agent_run_context(
+                &request.project_id,
+                &snapshot.run.agent_session_id,
+                &request.run_id,
+            );
+        let replay_tool_runtime = replay_tool_runtime
+            .with_linked_read_roots(linked_read_roots_from_snapshot(&snapshot))?
+            .with_durable_subagent_tasks_for_run(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+            )?;
+        let stage_allowed_tools = replay_tool_runtime.current_workflow_allowed_tools()?;
+        let tool_registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {
+            skill_tool_enabled: request.tool_runtime.skill_tool_enabled(),
+            browser_control_preference: request.tool_runtime.browser_control_preference(),
+            runtime_agent_id: controls.active.runtime_agent_id,
+            agent_tool_policy: agent_tool_policy.clone(),
+            tool_application_policy: request.tool_runtime.tool_application_policy().clone(),
+            stage_allowed_tools,
+        });
+        replay_answered_tool_action_requests(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            &tool_registry,
+            &replay_tool_runtime,
+            &snapshot,
+        )?;
+        snapshot = project_store::load_agent_run(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        )?;
+    }
+    mark_interrupted_tool_calls_before_continuation(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &snapshot,
+    )?;
+    project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)
+}
+
+fn validate_continuation_request_id(request_id: &str) -> CommandResult<()> {
+    if request_id.trim().is_empty() || request_id.len() > 200 {
+        return Err(CommandError::invalid_request("continuationRequestId"));
+    }
+    Ok(())
+}
+
+/// Binds the already-persisted first user turn of a newly-created run to the durable
+/// continuation identity used by runtime-start recovery.
+///
+/// `create_owned_agent_run` records the initial user message before any provider call. Recovery
+/// must reuse that turn instead of appending the queued prompt again, so the continuation marker
+/// references the original message and message event.
+pub(crate) fn register_existing_initial_agent_continuation(
+    request: &ContinueOwnedAgentRunRequest,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<project_store::AgentContinuationPreparationResult> {
+    validate_prompt(&request.prompt)?;
+    validate_continuation_request_id(&request.continuation_request_id)?;
+    if snapshot.run.project_id != request.project_id || snapshot.run.run_id != request.run_id {
+        return Err(CommandError::system_fault(
+            "agent_continuation_initial_snapshot_mismatch",
+            "Xero could not bind the initial continuation because the persisted run identity did not match the request.",
+        ));
+    }
+    let payload_hash = continuation_request_payload_hash(request)?;
+    let start = project_store::load_agent_run_start_request(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+    )?
+    .ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_run_start_identity_missing",
+            "Xero could not bind the initial continuation without its durable start identity.",
+        )
+    })?;
+    let recovery_start = decode_owned_agent_start_recovery_payload(&start)?.ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_run_start_recovery_payload_kind_mismatch",
+            "A handoff-target recovery payload cannot seed a direct owned-agent continuation.",
+        )
+    })?;
+    let recovery_payload_json =
+        owned_agent_continuation_recovery_payload_json(request, &recovery_start.runtime_controls)?;
+    if let Some(existing) = project_store::load_agent_continuation_preparation(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &request.continuation_request_id,
+        &payload_hash,
+    )? {
+        return Ok(project_store::AgentContinuationPreparationResult {
+            snapshot: snapshot.clone(),
+            request: existing,
+            inserted_events: Vec::new(),
+            inserted: false,
+        });
+    }
+
+    let initial_message = snapshot
+        .messages
+        .iter()
+        .find(|message| {
+            message.role == AgentMessageRole::User
+                && message.content == request.prompt
+                && persisted_attachments_match_request(&message.attachments, &request.attachments)
+        })
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_continuation_initial_message_missing",
+                "Xero could not find the persisted initial user message for runtime-start recovery.",
+            )
+        })?;
+    let initial_event = snapshot
+        .events
+        .iter()
+        .find(|event| {
+            if event.event_kind != AgentRunEventKind::MessageDelta {
+                return false;
+            }
+            serde_json::from_str::<JsonValue>(&event.payload_json)
+                .ok()
+                .is_some_and(|payload| {
+                    payload.get("role").and_then(JsonValue::as_str) == Some("user")
+                        && payload.get("text").and_then(JsonValue::as_str)
+                            == Some(request.prompt.as_str())
+                })
+        })
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_continuation_initial_event_missing",
+                "Xero could not find the persisted initial user-message event for runtime-start recovery.",
+            )
+        })?;
+
+    project_store::register_existing_agent_continuation(
+        &request.repo_root,
+        &project_store::ExistingAgentContinuationPreparationRecord {
+            project_id: request.project_id.clone(),
+            request_id: request.continuation_request_id.clone(),
+            run_id: request.run_id.clone(),
+            payload_hash,
+            recovery_payload_json,
+            message_id: initial_message.id,
+            message_event_id: initial_event.id,
+            prepared_at: initial_message.created_at.clone(),
+        },
+    )
+}
+
+fn persisted_attachments_match_request(
+    persisted: &[project_store::AgentMessageAttachmentRecord],
+    requested: &[MessageAttachment],
+) -> bool {
+    persisted.len() == requested.len()
+        && persisted.iter().zip(requested).all(|(stored, requested)| {
+            let kind_matches = matches!(
+                (&stored.kind, &requested.kind),
+                (
+                    project_store::AgentMessageAttachmentKind::Image,
+                    MessageAttachmentKind::Image
+                ) | (
+                    project_store::AgentMessageAttachmentKind::Document,
+                    MessageAttachmentKind::Document
+                ) | (
+                    project_store::AgentMessageAttachmentKind::Text,
+                    MessageAttachmentKind::Text
+                )
+            );
+            kind_matches
+                && stored.storage_path == requested.absolute_path.to_string_lossy()
+                && stored.media_type == requested.media_type
+                && stored.original_name == requested.original_name
+                && stored.size_bytes == requested.size_bytes
+                && stored.width == requested.width
+                && stored.height == requested.height
+        })
+}
+
+pub(crate) fn continuation_request_payload_hash(
+    request: &ContinueOwnedAgentRunRequest,
+) -> CommandResult<String> {
+    hash_serializable_identity(
+        &owned_agent_continuation_identity(request),
+        "agent_continuation_payload_serialize_failed",
+        "the continuation request identity",
+    )
+}
+
+fn owned_agent_continuation_identity(
+    request: &ContinueOwnedAgentRunRequest,
+) -> OwnedAgentContinuationIdentityV1 {
+    OwnedAgentContinuationIdentityV1 {
+        schema: OWNED_AGENT_CONTINUATION_IDENTITY_SCHEMA.into(),
+        project_id: request.project_id.clone(),
+        run_id: request.run_id.clone(),
+        continuation_request_id: request.continuation_request_id.clone(),
+        prompt: request.prompt.clone(),
+        attachments: request.attachments.clone(),
+        linked_paths: request.linked_paths.clone(),
+        controls: request.controls.clone(),
+        answer_pending_actions: request.answer_pending_actions,
+        answer_pending_action_id: request.answer_pending_action_id.clone(),
+        auto_compact: request.auto_compact.clone(),
+        internal_resume: request.internal_resume.clone(),
+    }
+}
+
+fn owned_agent_continuation_recovery_payload_json(
+    request: &ContinueOwnedAgentRunRequest,
+    runtime_controls: &RuntimeRunControlInputDto,
+) -> CommandResult<String> {
+    serde_json::to_string(&OwnedAgentContinuationRecoveryPayloadV1 {
+        schema: OWNED_AGENT_CONTINUATION_RECOVERY_SCHEMA.into(),
+        request: owned_agent_continuation_identity(request),
+        runtime_controls: runtime_controls.clone(),
+    })
+    .map_err(|error| {
+        CommandError::system_fault(
+            "agent_continuation_recovery_payload_encode_failed",
+            format!("Xero could not persist the continuation recovery payload: {error}"),
+        )
+    })
+}
+
+fn continuation_recovery_runtime_controls(
+    request: &ContinueOwnedAgentRunRequest,
+    snapshot: &AgentRunSnapshotRecord,
+) -> CommandResult<RuntimeRunControlInputDto> {
+    let definition_snapshot =
+        load_agent_definition_snapshot_for_run(&request.repo_root, &snapshot.run)?;
+    let (default_approval_mode, allowed_approval_modes) =
+        agent_definition_approval_modes_from_snapshot(
+            &definition_snapshot,
+            snapshot.run.runtime_agent_id,
+        );
+    let controls = runtime_controls_for_owned_agent_run(
+        &request.repo_root,
+        &snapshot.run,
+        request.controls.as_ref(),
+        &allowed_approval_modes,
+        default_approval_mode,
+    )?;
+    Ok(active_controls_as_input(&controls.active))
+}
+
+pub(crate) fn decode_owned_agent_start_recovery_payload(
+    start: &project_store::AgentRunStartRequestRecord,
+) -> CommandResult<Option<RecoveredOwnedAgentStartPayload>> {
+    let value =
+        serde_json::from_str::<JsonValue>(&start.recovery_payload_json).map_err(|error| {
+            CommandError::system_fault(
+                "agent_run_start_recovery_payload_corrupt",
+                format!(
+                    "Owned-agent run `{}` has an unreadable durable recovery payload: {error}",
+                    start.run_id
+                ),
+            )
+        })?;
+    let schema = value
+        .get("schema")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_run_start_recovery_payload_missing",
+                format!(
+                    "Owned-agent run `{}` is missing its exact durable recovery payload.",
+                    start.run_id
+                ),
+            )
+        })?;
+    if schema == HANDOFF_TARGET_START_RECOVERY_SCHEMA {
+        return Ok(None);
+    }
+    if schema != OWNED_AGENT_START_RECOVERY_SCHEMA {
+        return Err(CommandError::system_fault(
+            "agent_run_start_recovery_payload_unsupported",
+            format!(
+                "Owned-agent run `{}` has unsupported recovery schema `{schema}`.",
+                start.run_id
+            ),
+        ));
+    }
+    let payload =
+        serde_json::from_value::<OwnedAgentStartRecoveryPayloadV1>(value).map_err(|error| {
+            CommandError::system_fault(
+                "agent_run_start_recovery_payload_corrupt",
+                format!(
+                    "Owned-agent run `{}` has an invalid durable recovery payload: {error}",
+                    start.run_id
+                ),
+            )
+        })?;
+    if payload.request.schema != OWNED_AGENT_START_IDENTITY_SCHEMA
+        || payload.request.project_id != start.project_id
+        || payload.request.run_id != start.run_id
+    {
+        return Err(CommandError::system_fault(
+            "agent_run_start_recovery_identity_mismatch",
+            format!(
+                "Owned-agent run `{}` has a recovery payload bound to a different run.",
+                start.run_id
+            ),
+        ));
+    }
+    let recomputed_hash = hash_serializable_identity(
+        &payload.request,
+        "agent_run_start_recovery_hash_failed",
+        "the recovered owned-agent start identity",
+    )?;
+    if recomputed_hash != start.payload_hash {
+        return Err(CommandError::system_fault(
+            "agent_run_start_recovery_hash_mismatch",
+            format!(
+                "Owned-agent run `{}` failed durable start-identity verification.",
+                start.run_id
+            ),
+        ));
+    }
+    Ok(Some(RecoveredOwnedAgentStartPayload {
+        project_id: payload.request.project_id,
+        agent_session_id: payload.request.agent_session_id,
+        run_id: payload.request.run_id,
+        prompt: payload.request.prompt,
+        attachments: payload.request.attachments,
+        linked_paths: payload.request.linked_paths,
+        controls: payload.request.controls,
+        runtime_controls: payload.runtime_controls,
+    }))
+}
+
+pub(crate) fn decode_owned_agent_continuation_recovery_payload(
+    durable: &project_store::AgentContinuationRequestRecord,
+) -> CommandResult<RecoveredOwnedAgentContinuationPayload> {
+    let payload = serde_json::from_str::<OwnedAgentContinuationRecoveryPayloadV1>(
+        &durable.recovery_payload_json,
+    )
+    .map_err(|error| {
+        CommandError::system_fault(
+            "agent_continuation_recovery_payload_corrupt",
+            format!(
+                "Continuation `{}` has an unreadable durable recovery payload: {error}",
+                durable.request_id
+            ),
+        )
+    })?;
+    if payload.schema != OWNED_AGENT_CONTINUATION_RECOVERY_SCHEMA
+        || payload.request.schema != OWNED_AGENT_CONTINUATION_IDENTITY_SCHEMA
+    {
+        return Err(CommandError::system_fault(
+            "agent_continuation_recovery_payload_unsupported",
+            format!(
+                "Continuation `{}` does not have a supported owned-agent recovery payload.",
+                durable.request_id
+            ),
+        ));
+    }
+    if payload.request.project_id != durable.project_id
+        || payload.request.run_id != durable.run_id
+        || payload.request.continuation_request_id != durable.request_id
+    {
+        return Err(CommandError::system_fault(
+            "agent_continuation_recovery_identity_mismatch",
+            format!(
+                "Continuation `{}` has a recovery payload bound to a different request.",
+                durable.request_id
+            ),
+        ));
+    }
+    let recomputed_hash = hash_serializable_identity(
+        &payload.request,
+        "agent_continuation_recovery_hash_failed",
+        "the recovered continuation identity",
+    )?;
+    if recomputed_hash != durable.payload_hash {
+        return Err(CommandError::system_fault(
+            "agent_continuation_recovery_hash_mismatch",
+            format!(
+                "Continuation `{}` failed durable request-identity verification.",
+                durable.request_id
+            ),
+        ));
+    }
+    Ok(RecoveredOwnedAgentContinuationPayload {
+        project_id: payload.request.project_id,
+        run_id: payload.request.run_id,
+        prompt: payload.request.prompt,
+        attachments: payload.request.attachments,
+        linked_paths: payload.request.linked_paths,
+        controls: payload.request.controls,
+        runtime_controls: payload.runtime_controls,
+        answer_pending_actions: payload.request.answer_pending_actions,
+        answer_pending_action_id: payload.request.answer_pending_action_id,
+        auto_compact: payload.request.auto_compact,
+        internal_resume: payload.request.internal_resume,
     })
 }
 
@@ -1559,6 +2640,10 @@ fn resolve_handoff_target_selection(
         handoff_definition_scope(&source_target.definition_snapshot) == "built_in";
     let requested_points_to_source = requested.runtime_agent_id
         == source_snapshot.run.runtime_agent_id
+        && requested
+            .agent_definition_version
+            .map(|version| version == source_snapshot.run.agent_definition_version)
+            .unwrap_or(true)
         && match requested_definition_id {
             Some(definition_id) => definition_id == source_snapshot.run.agent_definition_id,
             None => source_is_built_in,
@@ -2066,31 +3151,48 @@ fn prepare_handoff_continuation(
         )?;
     }
 
-    mark_source_run_handed_off(
+    let completed_at = now_timestamp();
+    let completion = project_store::complete_agent_handoff(
         &request.repo_root,
-        source_snapshot,
-        &lineage.handoff_id,
-        &target_snapshot.run.run_id,
-        target.runtime_agent_id,
-        provider,
+        &project_store::CompleteAgentHandoffRecord {
+            project_id: lineage.project_id.clone(),
+            handoff_id: lineage.handoff_id.clone(),
+            source_run_id: source_snapshot.run.run_id.clone(),
+            target_agent_session_id: target_snapshot.run.agent_session_id.clone(),
+            target_run_id: target_snapshot.run.run_id.clone(),
+            handoff_record_id: handoff_record_id.clone(),
+            bundle,
+            state_transition_payload: json!({
+                "kind": "agent_state_transition",
+                "from": JsonValue::Null,
+                "to": AgentRunState::Complete.as_str(),
+                "reason": "Owned-agent run handed off to a target agent run.",
+                "stopReason": AgentRunStopReason::Complete.as_str(),
+                "handoffId": lineage.handoff_id,
+                "targetRunId": target_snapshot.run.run_id,
+                "targetRuntimeAgentId": target.runtime_agent_id.as_str(),
+            }),
+            run_completed_payload: json!({
+                "summary": "Owned agent run handed off to a target agent run.",
+                "state": AgentRunState::Complete.as_str(),
+                "stopReason": AgentRunStopReason::Complete.as_str(),
+                "handoffId": lineage.handoff_id,
+                "targetRunId": target_snapshot.run.run_id,
+                "targetRuntimeAgentId": target.runtime_agent_id.as_str(),
+            }),
+            completed_at,
+        },
     )?;
-    if lineage.status != project_store::AgentHandoffLineageStatus::Completed {
-        project_store::update_agent_handoff_lineage(
-            &request.repo_root,
-            &project_store::AgentHandoffLineageUpdateRecord {
-                project_id: lineage.project_id.clone(),
-                handoff_id: lineage.handoff_id.clone(),
-                target_agent_session_id: Some(target_snapshot.run.agent_session_id.clone()),
-                target_run_id: Some(target_snapshot.run.run_id.clone()),
-                status: project_store::AgentHandoffLineageStatus::Completed,
-                handoff_record_id: Some(handoff_record_id.clone()),
-                bundle,
-                diagnostic: None,
-                updated_at: now_timestamp(),
-                completed_at: Some(now_timestamp()),
-            },
-        )?;
+    for event in &completion.inserted_events {
+        publish_committed_agent_event(&request.repo_root, event);
     }
+    capture_memory_candidates_for_run(
+        &request.repo_root,
+        &completion.source_snapshot,
+        provider,
+        "handoff",
+    )?;
+    lineage = completion.lineage;
 
     Ok(PreparedOwnedAgentContinuation {
         snapshot: target_snapshot.clone(),
@@ -2107,6 +3209,7 @@ fn prepare_handoff_continuation(
             target_run_id: target_snapshot.run.run_id,
             handoff_record_id,
         }),
+        drive_lease: None,
     })
 }
 
@@ -2905,10 +4008,33 @@ fn create_or_load_handoff_target_run(
     target_run_id: &str,
     bundle: &JsonValue,
 ) -> CommandResult<AgentRunSnapshotRecord> {
-    match project_store::load_agent_run(&request.repo_root, &request.project_id, target_run_id) {
-        Ok(snapshot) => return Ok(snapshot),
-        Err(error) if error.code == "agent_run_not_found" => {}
-        Err(error) => return Err(error),
+    let target_drive_request =
+        request_for_handoff_target(request, source_snapshot, target, target_run_id);
+    let continuation_payload_hash = continuation_request_payload_hash(&target_drive_request)?;
+    let (start_payload_hash, start_recovery_payload_json) = handoff_target_start_payload(
+        source_snapshot,
+        target,
+        target_run_id,
+        bundle,
+        &continuation_payload_hash,
+    )?;
+    let mut replace_interrupted_start = None;
+    if let Some(existing) = project_store::load_agent_run_start_request(
+        &request.repo_root,
+        &request.project_id,
+        target_run_id,
+    )? {
+        match recover_handoff_target_start(
+            request,
+            &target_drive_request,
+            &start_payload_hash,
+            existing.clone(),
+        )? {
+            HandoffTargetStartRecovery::Ready(snapshot) => return Ok(snapshot),
+            HandoffTargetStartRecovery::ReplaceInterrupted => {
+                replace_interrupted_start = Some(existing);
+            }
+        }
     }
 
     project_store::ensure_agent_session_active(
@@ -2961,22 +4087,72 @@ fn create_or_load_handoff_target_run(
         attached_skill_contexts,
     )?;
     let now = now_timestamp();
-    project_store::insert_agent_run(
-        &request.repo_root,
-        &NewAgentRunRecord {
-            runtime_agent_id: target.runtime_agent_id,
-            agent_definition_id: Some(target.agent_definition_id.clone()),
-            agent_definition_version: Some(target.agent_definition_version),
-            project_id: request.project_id.clone(),
-            agent_session_id: source_snapshot.run.agent_session_id.clone(),
-            run_id: target_run_id.to_string(),
-            provider_id: provider.provider_id().to_string(),
-            model_id: provider.model_id().to_string(),
-            prompt: request.prompt.clone(),
-            system_prompt: system_prompt.clone(),
-            now: now.clone(),
-        },
-    )?;
+    let owner_process_id = std::process::id();
+    let owner_process_birth_identity = crate::runtime::process_tree::process_birth_identity(
+        owner_process_id,
+    )
+    .ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_run_process_identity_unavailable",
+            "Xero could not establish a process-lifetime identity for this handoff target start.",
+        )
+    })?;
+    let new_run = NewAgentRunRecord {
+        runtime_agent_id: target.runtime_agent_id,
+        agent_definition_id: Some(target.agent_definition_id.clone()),
+        agent_definition_version: Some(target.agent_definition_version),
+        project_id: request.project_id.clone(),
+        agent_session_id: source_snapshot.run.agent_session_id.clone(),
+        run_id: target_run_id.to_string(),
+        provider_id: provider.provider_id().to_string(),
+        model_id: provider.model_id().to_string(),
+        prompt: request.prompt.clone(),
+        system_prompt: system_prompt.clone(),
+        now: now.clone(),
+    };
+    let registration = if let Some(expected) = replace_interrupted_start.as_ref() {
+        project_store::replace_replayable_agent_run_start(
+            &request.repo_root,
+            expected,
+            &new_run,
+            &start_payload_hash,
+            &start_recovery_payload_json,
+            owner_process_id,
+            &owner_process_birth_identity,
+        )?
+    } else {
+        project_store::register_agent_run_start(
+            &request.repo_root,
+            &new_run,
+            &start_payload_hash,
+            &start_recovery_payload_json,
+            owner_process_id,
+            &owner_process_birth_identity,
+        )?
+    };
+    if let project_store::AgentRunStartRegistrationResult::Replayed {
+        snapshot: _,
+        request: existing,
+    } = registration
+    {
+        if let HandoffTargetStartRecovery::Ready(snapshot) = recover_handoff_target_start(
+            request,
+            &target_drive_request,
+            &start_payload_hash,
+            existing,
+        )? {
+            return Ok(snapshot);
+        }
+        return Err(CommandError::retryable(
+            "agent_handoff_target_start_raced",
+            "The handoff target start was replaced while another owner was registering it.",
+        ));
+    }
+    let mut preparation_guard = OwnedAgentStartPreparationGuard::new(
+        request.repo_root.clone(),
+        request.project_id.clone(),
+        target_run_id.to_owned(),
+    );
     project_store::persist_runtime_attached_skill_snapshot(
         &request.repo_root,
         &attached_skill_snapshot,
@@ -2994,20 +4170,6 @@ fn create_or_load_handoff_target_run(
         target_run_id,
         AgentMessageRole::Developer,
         handoff_seed,
-    )?;
-    append_message(
-        &request.repo_root,
-        &request.project_id,
-        target_run_id,
-        AgentMessageRole::User,
-        request.prompt.clone(),
-    )?;
-    append_event(
-        &request.repo_root,
-        &request.project_id,
-        target_run_id,
-        AgentRunEventKind::MessageDelta,
-        json!({ "role": "user", "text": request.prompt.clone() }),
     )?;
     append_event(
         &request.repo_root,
@@ -3059,6 +4221,16 @@ fn create_or_load_handoff_target_run(
             "pendingPromptIncluded": true,
         }),
     )?;
+    append_event(
+        &request.repo_root,
+        &request.project_id,
+        target_run_id,
+        AgentRunEventKind::RuntimeSettingsChanged,
+        json!({
+            "kind": "agent_runtime_controls_snapshot",
+            "controls": controls.active,
+        }),
+    )?;
     project_store::update_agent_run_status(
         &request.repo_root,
         &request.project_id,
@@ -3066,7 +4238,223 @@ fn create_or_load_handoff_target_run(
         AgentRunStatus::Running,
         None,
         &now_timestamp(),
-    )
+    )?;
+    append_event(
+        &request.repo_root,
+        &request.project_id,
+        target_run_id,
+        AgentRunEventKind::RunStarted,
+        json!({
+            "message": "Owned-agent handoff target started.",
+            "state": AgentRunState::Intake.as_str(),
+            "runtimeAgentId": target.runtime_agent_id.as_str(),
+            "runtimeAgentLabel": target.runtime_agent_id.label(),
+            "handoffSourceRunId": source_snapshot.run.run_id,
+        }),
+    )?;
+    let prepared_at = now_timestamp();
+    let continuation_recovery_payload_json = owned_agent_continuation_recovery_payload_json(
+        &target_drive_request,
+        &active_controls_as_input(&controls.active),
+    )?;
+    let message_payload = serde_json::to_string(&json!({
+        "role": "user",
+        "text": target_drive_request.prompt,
+    }))
+    .map_err(|error| {
+        CommandError::system_fault(
+            "agent_continuation_message_event_serialize_failed",
+            format!("Xero could not serialize the handoff target message event: {error}"),
+        )
+    })?;
+    let preparation = project_store::prepare_agent_continuation(
+        &request.repo_root,
+        &project_store::NewAgentContinuationPreparationRecord {
+            project_id: request.project_id.clone(),
+            request_id: target_drive_request.continuation_request_id.clone(),
+            run_id: target_run_id.to_owned(),
+            payload_hash: continuation_payload_hash,
+            recovery_payload_json: continuation_recovery_payload_json,
+            role: AgentMessageRole::User,
+            content: target_drive_request.prompt.clone(),
+            attachments: message_attachments_to_inputs(&target_drive_request.attachments),
+            linked_path_grant_payload_json: linked_path_grant_payload(
+                &target_drive_request.linked_paths,
+            )
+            .map(|payload| serde_json::to_string(&payload))
+            .transpose()
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "agent_continuation_grant_serialize_failed",
+                    format!("Xero could not serialize handoff linked-path grants: {error}"),
+                )
+            })?,
+            message_payload_json: message_payload,
+            action_answer: None,
+            prepared_at,
+        },
+    )?;
+    for event in &preparation.inserted_events {
+        publish_committed_agent_event(&request.repo_root, event);
+    }
+    project_store::mark_agent_run_start_ready(
+        &request.repo_root,
+        &request.project_id,
+        target_run_id,
+        &now_timestamp(),
+    )?;
+    preparation_guard.disarm();
+    project_store::load_agent_run(&request.repo_root, &request.project_id, target_run_id)
+}
+
+enum HandoffTargetStartRecovery {
+    Ready(AgentRunSnapshotRecord),
+    ReplaceInterrupted,
+}
+
+fn handoff_target_start_payload(
+    source_snapshot: &AgentRunSnapshotRecord,
+    target: &HandoffTargetSelection,
+    target_run_id: &str,
+    bundle: &JsonValue,
+    continuation_payload_hash: &str,
+) -> CommandResult<(String, String)> {
+    let payload = json!({
+        "schema": HANDOFF_TARGET_START_RECOVERY_SCHEMA,
+        "projectId": source_snapshot.run.project_id,
+        "sourceRunId": source_snapshot.run.run_id,
+        "targetRunId": target_run_id,
+        "targetRuntimeAgentId": target.runtime_agent_id.as_str(),
+        "targetAgentDefinitionId": target.agent_definition_id,
+        "targetAgentDefinitionVersion": target.agent_definition_version,
+        "sourceContextHash": bundle.get("sourceContextHash"),
+        "continuationPayloadHash": continuation_payload_hash,
+    });
+    let bytes = serde_json::to_vec(&payload).map_err(|error| {
+        CommandError::system_fault(
+            "agent_handoff_target_identity_encode_failed",
+            format!("Xero could not encode the handoff target start identity: {error}"),
+        )
+    })?;
+    let mut hasher = Sha256::new();
+    hasher.update(&bytes);
+    let payload_json = String::from_utf8(bytes).map_err(|error| {
+        CommandError::system_fault(
+            "agent_handoff_target_identity_encode_failed",
+            format!("Xero encoded an invalid handoff target identity: {error}"),
+        )
+    })?;
+    Ok((format!("{:x}", hasher.finalize()), payload_json))
+}
+
+fn recover_handoff_target_start(
+    request: &ContinueOwnedAgentRunRequest,
+    target_drive_request: &ContinueOwnedAgentRunRequest,
+    expected_payload_hash: &str,
+    start: project_store::AgentRunStartRequestRecord,
+) -> CommandResult<HandoffTargetStartRecovery> {
+    if start.payload_hash != expected_payload_hash {
+        return Err(CommandError::user_fixable(
+            "agent_handoff_target_start_conflict",
+            format!(
+                "Handoff target run id `{}` is already bound to different source context.",
+                target_drive_request.run_id
+            ),
+        ));
+    }
+    let continuation_payload_hash = continuation_request_payload_hash(target_drive_request)?;
+    let continuation = project_store::load_agent_continuation_preparation(
+        &request.repo_root,
+        &request.project_id,
+        &target_drive_request.run_id,
+        &target_drive_request.continuation_request_id,
+        &continuation_payload_hash,
+    )?;
+    let snapshot = project_store::load_agent_run(
+        &request.repo_root,
+        &request.project_id,
+        &target_drive_request.run_id,
+    )?;
+    match start.state {
+        project_store::AgentRunStartRequestState::Ready => {
+            if continuation.is_none() {
+                return Err(CommandError::system_fault(
+                    "agent_handoff_target_continuation_missing",
+                    "A ready handoff target is missing its durable provider-dispatch request.",
+                ));
+            }
+            Ok(HandoffTargetStartRecovery::Ready(snapshot))
+        }
+        project_store::AgentRunStartRequestState::Failed => {
+            if continuation.as_ref().is_some_and(|continuation| {
+                matches!(
+                    continuation.state,
+                    project_store::AgentContinuationRequestState::Driving
+                        | project_store::AgentContinuationRequestState::Consumed
+                )
+            }) {
+                Err(CommandError::system_fault(
+                    "agent_handoff_target_start_failed",
+                    format!(
+                        "Handoff target run `{}` failed after it became unsafe to rebuild.",
+                        target_drive_request.run_id
+                    ),
+                ))
+            } else {
+                Ok(HandoffTargetStartRecovery::ReplaceInterrupted)
+            }
+        }
+        project_store::AgentRunStartRequestState::Preparing
+            if continuation.as_ref().is_some_and(|continuation| {
+                continuation.state == project_store::AgentContinuationRequestState::Prepared
+            }) && snapshot.run.status == AgentRunStatus::Running
+                && snapshot
+                    .events
+                    .iter()
+                    .any(|event| event.event_kind == AgentRunEventKind::RunStarted) =>
+        {
+            project_store::mark_agent_run_start_ready(
+                &request.repo_root,
+                &request.project_id,
+                &target_drive_request.run_id,
+                &now_timestamp(),
+            )?;
+            Ok(HandoffTargetStartRecovery::Ready(snapshot))
+        }
+        project_store::AgentRunStartRequestState::Preparing
+            if crate::runtime::process_tree::process_identity_is_live(
+                start.owner_process_id,
+                &start.owner_process_birth_identity,
+            ) =>
+        {
+            Err(CommandError::retryable(
+                "agent_handoff_target_start_in_progress",
+                format!(
+                    "Handoff target run `{}` is still being prepared by its start owner.",
+                    target_drive_request.run_id
+                ),
+            ))
+        }
+        project_store::AgentRunStartRequestState::Preparing => {
+            if continuation.as_ref().is_some_and(|continuation| {
+                matches!(
+                    continuation.state,
+                    project_store::AgentContinuationRequestState::Driving
+                        | project_store::AgentContinuationRequestState::Consumed
+                )
+            }) {
+                Err(CommandError::system_fault(
+                    "agent_handoff_target_start_outcome_unknown",
+                    format!(
+                        "Handoff target run `{}` has an interrupted start that is unsafe to rebuild.",
+                        target_drive_request.run_id
+                    ),
+                ))
+            } else {
+                Ok(HandoffTargetStartRecovery::ReplaceInterrupted)
+            }
+        }
+    }
 }
 
 fn request_for_handoff_target(
@@ -3079,9 +4467,10 @@ fn request_for_handoff_target(
         repo_root: request.repo_root.clone(),
         project_id: request.project_id.clone(),
         run_id: target_run_id.to_string(),
+        continuation_request_id: request.continuation_request_id.clone(),
         prompt: request.prompt.clone(),
-        attachments: Vec::new(),
-        linked_paths: Vec::new(),
+        attachments: request.attachments.clone(),
+        linked_paths: request.linked_paths.clone(),
         controls: Some(handoff_control_input_for_target(
             request,
             source_snapshot,
@@ -3147,65 +4536,6 @@ fn handoff_target_needs_drive(snapshot: &AgentRunSnapshotRecord) -> bool {
         snapshot.run.status,
         AgentRunStatus::Starting | AgentRunStatus::Running
     )
-}
-
-fn mark_source_run_handed_off(
-    repo_root: &Path,
-    source_snapshot: &AgentRunSnapshotRecord,
-    handoff_id: &str,
-    target_run_id: &str,
-    target_runtime_agent_id: RuntimeAgentIdDto,
-    provider: &dyn ProviderAdapter,
-) -> CommandResult<AgentRunSnapshotRecord> {
-    if source_snapshot.run.status == AgentRunStatus::HandedOff {
-        return project_store::load_agent_run(
-            repo_root,
-            &source_snapshot.run.project_id,
-            &source_snapshot.run.run_id,
-        );
-    }
-    record_state_transition(
-        repo_root,
-        &source_snapshot.run.project_id,
-        &source_snapshot.run.run_id,
-        AgentStateTransition {
-            from: None,
-            to: AgentRunState::Complete,
-            reason: "Owned-agent run handed off to a target agent run.",
-            stop_reason: Some(AgentRunStopReason::Complete),
-            extra: Some(json!({
-                "handoffId": handoff_id,
-                "targetRunId": target_run_id,
-                "targetRuntimeAgentId": target_runtime_agent_id.as_str(),
-            })),
-        },
-    )?;
-    append_event(
-        repo_root,
-        &source_snapshot.run.project_id,
-        &source_snapshot.run.run_id,
-        AgentRunEventKind::RunCompleted,
-        json!({
-            "summary": "Owned agent run handed off to a target agent run.",
-            "state": AgentRunState::Complete.as_str(),
-            "stopReason": AgentRunStopReason::Complete.as_str(),
-            "handoffId": handoff_id,
-            "targetRunId": target_run_id,
-            "targetRuntimeAgentId": target_runtime_agent_id.as_str(),
-        }),
-    )?;
-    project_store::update_agent_run_status(
-        repo_root,
-        &source_snapshot.run.project_id,
-        &source_snapshot.run.run_id,
-        AgentRunStatus::HandedOff,
-        None,
-        &now_timestamp(),
-    )
-    .and_then(|snapshot| {
-        capture_memory_candidates_for_run(repo_root, &snapshot, provider, "handoff")?;
-        Ok(snapshot)
-    })
 }
 
 fn render_handoff_seed_message(bundle: &JsonValue) -> CommandResult<String> {
@@ -3434,6 +4764,135 @@ pub fn drive_owned_agent_continuation(
     cancellation: AgentRunCancellationToken,
     supervisor: Option<AgentRunSupervisor>,
 ) -> CommandResult<AgentRunSnapshotRecord> {
+    let preparation = project_store::load_agent_continuation_request_by_id(
+        &request.repo_root,
+        &request.project_id,
+        &request.continuation_request_id,
+    )?;
+    let preparation = match preparation {
+        Some(preparation)
+            if preparation.state == project_store::AgentContinuationRequestState::Driving =>
+        {
+            project_store::reconcile_completed_agent_continuation(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+                &request.continuation_request_id,
+                &now_timestamp(),
+            )?
+        }
+        preparation => preparation,
+    };
+    match preparation {
+        Some(preparation)
+            if preparation.state == project_store::AgentContinuationRequestState::Consumed =>
+        {
+            return project_store::load_agent_run(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+            );
+        }
+        Some(preparation)
+            if preparation.state == project_store::AgentContinuationRequestState::Driving =>
+        {
+            return Err(CommandError::user_fixable(
+                "agent_continuation_outcome_unknown",
+                "The provider may already have received this continuation. Xero will not replay it without reconciliation evidence.",
+            ));
+        }
+        Some(_) => {}
+        None => {
+            return Err(CommandError::system_fault(
+                "agent_continuation_request_missing",
+                "Xero could not find the prepared continuation before provider dispatch.",
+            ));
+        }
+    }
+
+    let provider_dispatch_claimed = Cell::new(false);
+    let provider_dispatch_started = Cell::new(false);
+    let result = drive_owned_agent_continuation_inner(&request, cancellation, supervisor, &|| {
+        if provider_dispatch_claimed.get() {
+            provider_dispatch_started.set(true);
+            return Ok(());
+        }
+        match project_store::mark_agent_continuation_drive_started(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+                &request.continuation_request_id,
+                &now_timestamp(),
+            )? {
+                project_store::AgentContinuationDriveStartResult::Started(_) => {
+                    provider_dispatch_claimed.set(true);
+                    provider_dispatch_started.set(true);
+                    Ok(())
+                }
+                project_store::AgentContinuationDriveStartResult::AlreadyDriving(_) => {
+                    Err(CommandError::user_fixable(
+                        "agent_continuation_outcome_unknown",
+                        "The provider may already have received this continuation. Xero will not replay it without reconciliation evidence.",
+                    ))
+                }
+                project_store::AgentContinuationDriveStartResult::Consumed(_) => {
+                    Err(CommandError::user_fixable(
+                        "agent_continuation_already_consumed",
+                        "This continuation was already consumed before provider dispatch.",
+                    ))
+                }
+                project_store::AgentContinuationDriveStartResult::Missing => {
+                    Err(CommandError::system_fault(
+                        "agent_continuation_request_missing",
+                        "The prepared continuation disappeared before provider dispatch.",
+                    ))
+                }
+            }
+    });
+    let finish_result = continuation_drive_finish_value(
+        result.is_ok(),
+        provider_dispatch_claimed.get(),
+        provider_dispatch_started.get(),
+    )
+    .map(|consumed| {
+        project_store::finish_agent_continuation_drive(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+            &request.continuation_request_id,
+            consumed,
+            &now_timestamp(),
+        )
+    })
+    .transpose();
+    match (result, finish_result) {
+        (Err(error), _) => Err(error),
+        (Ok(_), Err(error)) => Err(error),
+        (Ok(snapshot), Ok(_)) => Ok(snapshot),
+    }
+}
+
+fn continuation_drive_finish_value(
+    succeeded: bool,
+    provider_dispatch_claimed: bool,
+    provider_dispatch_started: bool,
+) -> Option<bool> {
+    if succeeded && provider_dispatch_claimed && provider_dispatch_started {
+        Some(true)
+    } else {
+        // Before the dispatch CAS, the request is still Prepared. After it, the provider may
+        // have received the turn, so the request must remain Driving. Neither case is safe to
+        // mutate here without stronger reconciliation evidence.
+        None
+    }
+}
+
+fn drive_owned_agent_continuation_inner(
+    request: &ContinueOwnedAgentRunRequest,
+    cancellation: AgentRunCancellationToken,
+    supervisor: Option<AgentRunSupervisor>,
+    on_provider_dispatch: &dyn Fn() -> CommandResult<()>,
+) -> CommandResult<AgentRunSnapshotRecord> {
     cancellation.check_cancelled()?;
     let before =
         project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
@@ -3477,6 +4936,7 @@ pub fn drive_owned_agent_continuation(
     let browser_control_preference = request.tool_runtime.browser_control_preference();
     let base_tool_runtime = request
         .tool_runtime
+        .clone()
         .with_runtime_run_controls(controls.clone())
         .with_agent_tool_policy(agent_tool_policy.clone())
         .with_agent_workflow_policy(agent_workflow_policy)
@@ -3513,7 +4973,7 @@ pub fn drive_owned_agent_continuation(
         cancellation.clone(),
         supervisor.clone(),
     );
-    match drive_provider_loop(
+    match drive_provider_loop_with_dispatch_observer(
         provider.as_ref(),
         messages,
         controls,
@@ -3526,6 +4986,7 @@ pub fn drive_owned_agent_continuation(
         request.provider_preflight.as_ref(),
         request.auto_compact.as_ref(),
         &cancellation,
+        on_provider_dispatch,
     ) {
         Ok(()) => {
             if let Err(error) = cancellation.check_cancelled() {
@@ -4246,6 +5707,13 @@ fn record_runtime_run_scheduled_wait_checkpoint(
                 created_at: now.into(),
             }),
             control_state: Some(runtime_snapshot.controls.clone()),
+            expected_snapshot: Some(project_store::RuntimeRunWriteExpectationRecord {
+                run_id: runtime_snapshot.run.run_id.clone(),
+                status: runtime_snapshot.run.status.clone(),
+                last_checkpoint_sequence: runtime_snapshot.last_checkpoint_sequence,
+                control_state: runtime_snapshot.controls.clone(),
+                updated_at: runtime_snapshot.run.updated_at.clone(),
+            }),
         },
     )?;
     Ok(())
@@ -4314,6 +5782,16 @@ fn mark_owned_agent_run_cancelled(
                 | AgentRunStatus::Failed
         ) {
             return Ok(snapshot);
+        }
+        if snapshot.run.status == AgentRunStatus::Cancelling {
+            return project_store::update_agent_run_status(
+                repo_root,
+                project_id,
+                run_id,
+                AgentRunStatus::Cancelled,
+                None,
+                &now_timestamp(),
+            );
         }
     }
 
@@ -4615,6 +6093,7 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             repo_root: self.repo_root.clone(),
             project_id: self.project_id.clone(),
             run_id: child_run_id.to_owned(),
+            continuation_request_id: subagent_continuation_request_id(task, text),
             prompt: text.into(),
             attachments: Vec::new(),
             linked_paths: Vec::new(),
@@ -4652,12 +6131,20 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             auto_compact: None,
             internal_resume: None,
         };
+        // Claim before continuation preparation mutates durable messages, approvals, or status.
+        // This closes the race with an operator/scheduled resume of the same child run.
+        let source_child_lease = self.acquire_child_run_lease(&request.run_id)?;
         let prepared = prepare_owned_agent_continuation_for_drive(&request)?;
         let mut updated_task = task.clone();
         let snapshot = if prepared.drive_required {
-            // Serialize with any concurrent scheduled-wakeup resume of this child run.
             let child_run_id = prepared.drive_request.run_id.clone();
-            let _child_lease = self.acquire_child_run_lease(&child_run_id)?;
+            let _child_lease = if child_run_id == request.run_id {
+                source_child_lease
+            } else {
+                let target_child_lease = self.acquire_child_run_lease(&child_run_id)?;
+                drop(source_child_lease);
+                target_child_lease
+            };
             let child_token = self.cancellation.linked_child();
             {
                 let mut tokens = self.subagent_tokens.lock().map_err(|_| {
@@ -4774,7 +6261,12 @@ impl OwnedAgentSubagentExecutor {
     fn acquire_child_run_lease(&self, child_run_id: &str) -> CommandResult<Option<AgentRunLease>> {
         match self.supervisor.as_ref() {
             Some(supervisor) => supervisor
-                .begin(&self.project_id, &self.agent_session_id, child_run_id)
+                .begin_persisted(
+                    &self.repo_root,
+                    &self.project_id,
+                    &self.agent_session_id,
+                    child_run_id,
+                )
                 .map(Some),
             None => Ok(None),
         }
@@ -5017,6 +6509,18 @@ fn refresh_subagent_task_usage(
         task.used_tool_calls = snapshot.tool_calls.len();
     }
     apply_subagent_usage_budget_status(task);
+}
+
+fn subagent_continuation_request_id(task: &AutonomousSubagentTask, text: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(text.as_bytes());
+    let text_hash = format!("{:x}", hasher.finalize());
+    format!(
+        "subagent-input:{}:{}:{}",
+        sanitize_action_id(&task.subagent_id),
+        task.input_log.len() + 1,
+        &text_hash[..16]
+    )
 }
 
 fn apply_subagent_error_to_task(task: &mut AutonomousSubagentTask, error: &CommandError) {
@@ -5814,6 +7318,7 @@ mod tests {
                 },
                 checkpoint: None,
                 control_state: Some(persisted_controls),
+                expected_snapshot: None,
             },
         )
         .expect("persist runtime run");
@@ -5929,6 +7434,16 @@ mod tests {
         profile: &str,
         attached_skills: JsonValue,
     ) {
+        let record = custom_definition_record(definition_id, profile, attached_skills);
+        project_store::insert_agent_definition(repo_root, &record)
+            .expect("insert custom definition");
+    }
+
+    fn custom_definition_record(
+        definition_id: &str,
+        profile: &str,
+        attached_skills: JsonValue,
+    ) -> project_store::NewAgentDefinitionRecord {
         let (display_name, short_label, description, default_mode, allowed_modes, tool_policy) =
             match profile {
                 "engineering" => (
@@ -5970,18 +7485,16 @@ mod tests {
                     }),
                 ),
             };
-        project_store::insert_agent_definition(
-            repo_root,
-            &project_store::NewAgentDefinitionRecord {
-                definition_id: definition_id.into(),
-                version: 1,
-                display_name: display_name.into(),
-                short_label: short_label.into(),
-                description: description.into(),
-                scope: "project_custom".into(),
-                lifecycle_state: "active".into(),
-                base_capability_profile: profile.into(),
-                snapshot: json!({
+        project_store::NewAgentDefinitionRecord {
+            definition_id: definition_id.into(),
+            version: 1,
+            display_name: display_name.into(),
+            short_label: short_label.into(),
+            description: description.into(),
+            scope: "project_custom".into(),
+            lifecycle_state: "active".into(),
+            base_capability_profile: profile.into(),
+            snapshot: json!({
                     "schema": "xero.agent_definition.v1",
                     "schemaVersion": 3,
                     "id": definition_id,
@@ -6048,13 +7561,11 @@ mod tests {
                         "carrySummary": true,
                         "includeDurableContext": true
                     }
-                }),
-                validation_report: Some(json!({ "status": "valid" })),
-                created_at: "2026-05-01T12:01:00Z".into(),
-                updated_at: "2026-05-01T12:01:00Z".into(),
-            },
-        )
-        .expect("insert custom definition");
+            }),
+            validation_report: Some(json!({ "status": "valid" })),
+            created_at: "2026-05-01T12:01:00Z".into(),
+            updated_at: "2026-05-01T12:01:00Z".into(),
+        }
     }
 
     fn seed_attached_project_skill(
@@ -6231,12 +7742,99 @@ mod tests {
     }
 
     #[test]
-    fn workflow_replay_from_snapshot_restores_latest_plan_and_success_counts() {
+    fn workflow_replay_from_snapshot_restores_latest_plan_and_ordered_stage_events() {
         let mut snapshot =
             snapshot_for_handoff_source(RuntimeAgentIdDto::Engineer, "workflow_replay");
         snapshot.events = vec![
             project_store::AgentEventRecord {
                 id: 1,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolStarted,
+                payload_json: json!({
+                    "toolCallId": "read-1",
+                    "toolName": AUTONOMOUS_TOOL_READ
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:04:00Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 2,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolCompleted,
+                payload_json: json!({
+                    "toolCallId": "read-1",
+                    "toolName": AUTONOMOUS_TOOL_READ,
+                    "ok": true,
+                    "output": {
+                        "toolName": AUTONOMOUS_TOOL_READ,
+                        "summary": "Read completed.",
+                        "commandResult": null,
+                        "output": {"kind": "todo", "action": "list", "items": []}
+                    }
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:04:01Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 3,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolStarted,
+                payload_json: json!({
+                    "toolCallId": "read-2",
+                    "toolName": AUTONOMOUS_TOOL_READ
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:04:10Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 4,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolCompleted,
+                payload_json: json!({
+                    "toolCallId": "read-2",
+                    "toolName": AUTONOMOUS_TOOL_READ,
+                    "ok": true,
+                    "output": {
+                        "toolName": AUTONOMOUS_TOOL_READ,
+                        "summary": "Read completed.",
+                        "commandResult": null,
+                        "output": {"kind": "todo", "action": "list", "items": []}
+                    }
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:04:11Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 5,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolStarted,
+                payload_json: json!({
+                    "toolCallId": "read-failed",
+                    "toolName": AUTONOMOUS_TOOL_READ
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:04:20Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 6,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolCompleted,
+                payload_json: json!({
+                    "toolCallId": "read-failed",
+                    "toolName": AUTONOMOUS_TOOL_READ,
+                    "ok": false
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:04:21Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 7,
                 project_id: snapshot.run.project_id.clone(),
                 run_id: snapshot.run.run_id.clone(),
                 event_kind: AgentRunEventKind::PlanUpdated,
@@ -6255,7 +7853,7 @@ mod tests {
                 created_at: "2026-06-28T02:05:30Z".into(),
             },
             project_store::AgentEventRecord {
-                id: 2,
+                id: 8,
                 project_id: snapshot.run.project_id.clone(),
                 run_id: snapshot.run.run_id.clone(),
                 event_kind: AgentRunEventKind::PlanUpdated,
@@ -6319,8 +7917,36 @@ mod tests {
         let replay = workflow_replay_from_snapshot(&snapshot);
 
         assert_eq!(
-            replay.tool_successes.get(AUTONOMOUS_TOOL_READ).copied(),
-            Some(2)
+            replay.events,
+            vec![
+                AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                    tool_call_id: "read-1".into(),
+                    tool_name: AUTONOMOUS_TOOL_READ.into(),
+                },
+                AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                    tool_call_id: "read-1".into(),
+                    succeeded: true,
+                    completed_todo_id: None,
+                },
+                AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                    tool_call_id: "read-2".into(),
+                    tool_name: AUTONOMOUS_TOOL_READ.into(),
+                },
+                AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                    tool_call_id: "read-2".into(),
+                    succeeded: true,
+                    completed_todo_id: None,
+                },
+                AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                    tool_call_id: "read-failed".into(),
+                    tool_name: AUTONOMOUS_TOOL_READ.into(),
+                },
+                AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                    tool_call_id: "read-failed".into(),
+                    succeeded: false,
+                    completed_todo_id: None,
+                },
+            ]
         );
         let implementation_plan = replay
             .todo_items
@@ -6328,6 +7954,84 @@ mod tests {
             .expect("latest persisted plan todo");
         assert_eq!(implementation_plan.status, AutonomousTodoStatus::Completed);
         assert_eq!(implementation_plan.phase_id.as_deref(), Some("plan"));
+    }
+
+    #[test]
+    fn workflow_replay_does_not_treat_command_approval_preview_as_stage_success() {
+        let mut snapshot =
+            snapshot_for_handoff_source(RuntimeAgentIdDto::Engineer, "workflow_preview_replay");
+        snapshot.events = vec![
+            project_store::AgentEventRecord {
+                id: 1,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolStarted,
+                payload_json: json!({
+                    "toolCallId": "verify-preview",
+                    "toolName": AUTONOMOUS_TOOL_COMMAND_VERIFY
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:04:00Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 2,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolCompleted,
+                payload_json: json!({
+                    "toolCallId": "verify-preview",
+                    "toolName": AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                    "ok": true,
+                    "output": {
+                        "toolName": AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                        "summary": "Verification requires approval.",
+                        "commandResult": null,
+                        "output": {
+                            "kind": "command",
+                            "argv": ["cargo", "test"],
+                            "cwd": ".",
+                            "intent": "read_only_verification",
+                            "stdout": null,
+                            "stderr": null,
+                            "stdoutTruncated": false,
+                            "stderrTruncated": false,
+                            "stdoutRedacted": false,
+                            "stderrRedacted": false,
+                            "exitCode": null,
+                            "timedOut": false,
+                            "spawned": false,
+                            "policy": {
+                                "outcome": "escalated",
+                                "approvalMode": "suggest",
+                                "profile": "read_only_verification",
+                                "code": "policy_escalated_approval_mode",
+                                "reason": "Operator approval is required."
+                            },
+                            "changedFilesTruncated": false
+                        }
+                    }
+                })
+                .to_string(),
+                created_at: "2026-06-28T02:04:01Z".into(),
+            },
+        ];
+
+        let replay = workflow_replay_from_snapshot(&snapshot);
+
+        assert_eq!(
+            replay.events,
+            vec![
+                AutonomousAgentWorkflowReplayEvent::ToolStarted {
+                    tool_call_id: "verify-preview".into(),
+                    tool_name: AUTONOMOUS_TOOL_COMMAND_VERIFY.into(),
+                },
+                AutonomousAgentWorkflowReplayEvent::ToolCompleted {
+                    tool_call_id: "verify-preview".into(),
+                    succeeded: false,
+                    completed_todo_id: None,
+                },
+            ]
+        );
     }
 
     #[test]
@@ -6395,6 +8099,215 @@ mod tests {
     }
 
     #[test]
+    fn same_definition_handoff_honors_an_explicit_newer_version() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "same-definition-version-handoff";
+        let definition_id = "versioned_handoff_builder";
+        create_project_database(&repo_root, project_id);
+
+        let mut version_one = custom_definition_record(definition_id, "engineering", json!([]));
+        version_one.snapshot["handoffPolicy"] = json!({
+            "enabled": true,
+            "routingMode": "suggest",
+            "allowedTargets": [{
+                "kind": "custom",
+                "definitionId": definition_id,
+                "version": 2
+            }],
+            "preserveDefinitionVersion": false,
+            "carrySummary": true,
+            "includeDurableContext": true
+        });
+        version_one.snapshot["promptFragments"] = json!([{
+            "id": "version.marker",
+            "body": "Version one marker."
+        }]);
+        project_store::insert_agent_definition(&repo_root, &version_one)
+            .expect("insert version one");
+        let mut version_two = version_one.clone();
+        version_two.version = 2;
+        version_two.snapshot["version"] = json!(2);
+        version_two.snapshot["promptFragments"] = json!([{
+            "id": "version.marker",
+            "body": "Version two marker."
+        }]);
+        version_two.created_at = "2026-05-01T12:02:00Z".into();
+        version_two.updated_at = "2026-05-01T12:02:00Z".into();
+        project_store::insert_agent_definition(&repo_root, &version_two)
+            .expect("insert version two");
+        let source = project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some(definition_id.into()),
+                agent_definition_version: Some(1),
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "version-one-source".into(),
+                provider_id: FAKE_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Start with version one.".into(),
+                system_prompt: "system".into(),
+                now: "2026-05-01T12:03:00Z".into(),
+            },
+        )
+        .expect("insert pinned source run");
+        let request = ContinueOwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            run_id: source.run.run_id.clone(),
+            continuation_request_id: "switch-to-version-two".into(),
+            prompt: "Continue with the updated definition.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(RuntimeRunControlInputDto {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some(definition_id.into()),
+                agent_definition_version: Some(2),
+                provider_profile_id: Some(FAKE_PROVIDER_ID.into()),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Yolo,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+            }),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+            answer_pending_actions: false,
+            answer_pending_action_id: None,
+            auto_compact: None,
+            internal_resume: None,
+        };
+
+        let target = resolve_handoff_target_selection(&request, &source)
+            .expect("explicit version switch resolves the requested snapshot");
+
+        assert_eq!(target.agent_definition_id, definition_id);
+        assert_eq!(target.agent_definition_version, 2);
+        assert_eq!(
+            target.definition_snapshot["promptFragments"][0]["body"],
+            json!("Version two marker.")
+        );
+    }
+
+    #[test]
+    fn same_agent_continuation_reopens_a_completed_run() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "completed-continuation-reopen";
+        let run_id = "ask-completed-source";
+        create_project_database(&repo_root, project_id);
+
+        let source = run_owned_agent_task(OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: run_id.into(),
+            prompt: "Explain why the sky appears blue.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Ask,
+                "ask",
+                RuntimeRunApprovalModeDto::Suggest,
+            )),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        })
+        .expect("complete source run");
+        assert_eq!(source.run.status, AgentRunStatus::Completed);
+        assert!(source.run.completed_at.is_some());
+
+        let continuation = ContinueOwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            run_id: run_id.into(),
+            continuation_request_id: "completed-continuation-1".into(),
+            prompt: "Now summarize that in one sentence.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Ask,
+                "ask",
+                RuntimeRunApprovalModeDto::Suggest,
+            )),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+            answer_pending_actions: false,
+            answer_pending_action_id: None,
+            auto_compact: None,
+            internal_resume: None,
+        };
+        let prepared = prepare_owned_agent_continuation_for_drive(&continuation)
+            .expect("prepare same-agent continuation");
+
+        assert!(prepared.drive_required);
+        assert_eq!(prepared.snapshot.run.run_id, run_id);
+        assert_eq!(prepared.snapshot.run.status, AgentRunStatus::Running);
+        assert!(prepared.snapshot.run.completed_at.is_none());
+        let continuation_message_count = prepared.snapshot.messages.len();
+        let event_count_before_unknown_drive = prepared.snapshot.events.len();
+        assert!(matches!(
+            project_store::mark_agent_continuation_drive_started(
+                &repo_root,
+                project_id,
+                run_id,
+                &continuation.continuation_request_id,
+                &now_timestamp(),
+            )
+            .expect("mark ambiguous drive"),
+            project_store::AgentContinuationDriveStartResult::Started(_)
+        ));
+        let unknown = drive_owned_agent_continuation(
+            continuation.clone(),
+            AgentRunCancellationToken::default(),
+            None,
+        )
+        .expect_err("an already-driving continuation must never dispatch again");
+        assert_eq!(unknown.code, "agent_continuation_outcome_unknown");
+        let after_unknown = project_store::load_agent_run(&repo_root, project_id, run_id)
+            .expect("reload unknown-outcome run");
+        assert_eq!(after_unknown.events.len(), event_count_before_unknown_drive);
+        project_store::finish_agent_continuation_drive(
+            &repo_root,
+            project_id,
+            run_id,
+            &continuation.continuation_request_id,
+            false,
+            &now_timestamp(),
+        )
+        .expect("leave an ambiguous dispatch unchanged");
+
+        project_store::update_agent_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            AgentRunStatus::Completed,
+            None,
+            &now_timestamp(),
+        )
+        .expect("complete continuation turn");
+        let retry = prepare_owned_agent_continuation_for_drive(&continuation)
+            .expect("reuse completed continuation preparation");
+        assert!(!retry.drive_required);
+        assert_eq!(retry.snapshot.run.status, AgentRunStatus::Completed);
+        assert_eq!(retry.snapshot.messages.len(), continuation_message_count);
+
+        let conflict = prepare_owned_agent_continuation_for_drive(&ContinueOwnedAgentRunRequest {
+            prompt: "A different prompt with the same request id.".into(),
+            ..continuation
+        })
+        .expect_err("conflicting continuation request payload must be rejected");
+        assert_eq!(conflict.code, "agent_continuation_request_conflict");
+    }
+
+    #[test]
     fn accepted_routing_switch_hands_off_completed_ask_run_to_engineer() {
         let tempdir = tempfile::tempdir().expect("temp dir");
         let repo_root = tempdir.path().join("repo");
@@ -6428,6 +8341,7 @@ mod tests {
             repo_root: repo_root.clone(),
             project_id: project_id.into(),
             run_id: source_run_id.into(),
+            continuation_request_id: "routed-continuation-1".into(),
             prompt: [
                 "The user accepted the routing suggestion to switch to Engineer.",
                 "Continue the original request now in this same session.",
@@ -6981,7 +8895,12 @@ mod tests {
         })
         .expect("run custom engineering agent");
 
-        assert_eq!(snapshot.run.status, AgentRunStatus::Completed);
+        assert_eq!(
+            snapshot.run.status,
+            AgentRunStatus::Completed,
+            "custom engineering run failed: {:#?}",
+            snapshot.run.last_error
+        );
         assert_eq!(snapshot.run.runtime_agent_id, RuntimeAgentIdDto::Engineer);
         assert_eq!(snapshot.run.agent_definition_id, "phase4_builder");
         assert_eq!(snapshot.run.agent_definition_version, 1);
@@ -7007,6 +8926,266 @@ mod tests {
             call.tool_name == AUTONOMOUS_TOOL_COMMAND_VERIFY
                 && call.state == AgentToolCallState::Succeeded
         }));
+    }
+
+    #[test]
+    fn crawl_run_with_invalid_required_report_fails_without_completion_event() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "crawl-invalid-required-report";
+        let run_id = "crawl-invalid-required-report-run";
+        create_project_database(&repo_root, project_id);
+        let connection = Connection::open(database_path_for_repo(&repo_root))
+            .expect("open project database to establish origin");
+        connection
+            .execute(
+                "UPDATE projects SET project_origin = 'brownfield' WHERE id = ?1",
+                params![project_id],
+            )
+            .expect("mark fixture as Open existing project");
+
+        let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: run_id.into(),
+            prompt: "Crawl the repository and return the required structured report.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(RuntimeRunControlInputDto {
+                runtime_agent_id: RuntimeAgentIdDto::Crawl,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                provider_profile_id: Some(FAKE_PROVIDER_ID.into()),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                thinking_effort: None,
+                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                plan_mode_required: false,
+                auto_compact_enabled: true,
+            }),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        })
+        .expect("invalid required report should produce a failed run snapshot");
+
+        assert_eq!(snapshot.run.status, AgentRunStatus::Failed);
+        assert!(snapshot
+            .run
+            .last_error
+            .as_ref()
+            .is_some_and(|diagnostic| diagnostic.code == "crawl_report_invalid"));
+        assert!(snapshot
+            .events
+            .iter()
+            .any(|event| event.event_kind == AgentRunEventKind::RunFailed));
+        assert!(!snapshot
+            .events
+            .iter()
+            .any(|event| event.event_kind == AgentRunEventKind::RunCompleted));
+    }
+
+    #[test]
+    fn create_owned_agent_run_uses_explicit_custom_definition_version_snapshot() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "explicit-custom-definition-version";
+        let definition_id = "versioned_builder";
+        create_project_database(&repo_root, project_id);
+
+        let mut version_one = custom_definition_record(definition_id, "engineering", json!([]));
+        version_one.snapshot["promptFragments"] = json!([{
+            "id": "version.marker",
+            "body": "Pinned version one prompt marker."
+        }]);
+        version_one.snapshot["toolPolicy"]["allowedTools"] = json!(["read"]);
+        version_one.snapshot["workflowStructure"] = json!({
+            "startPhaseId": "inspect_v1",
+            "phases": [{
+                "id": "inspect_v1",
+                "title": "Inspect V1",
+                "allowedTools": ["read"],
+                "requiredChecks": [{
+                    "kind": "tool_succeeded",
+                    "toolName": "read"
+                }]
+            }]
+        });
+        project_store::insert_agent_definition(&repo_root, &version_one)
+            .expect("insert version one");
+
+        let mut version_two = version_one.clone();
+        version_two.version = 2;
+        version_two.snapshot["version"] = json!(2);
+        version_two.snapshot["promptFragments"] = json!([{
+            "id": "version.marker",
+            "body": "Current version two prompt marker."
+        }]);
+        version_two.snapshot["toolPolicy"]["allowedTools"] = json!(["write"]);
+        version_two.snapshot["workflowStructure"] = json!({
+            "startPhaseId": "implement_v2",
+            "phases": [{
+                "id": "implement_v2",
+                "title": "Implement V2",
+                "allowedTools": ["write"],
+                "requiredChecks": [{
+                    "kind": "tool_succeeded",
+                    "toolName": "write"
+                }]
+            }]
+        });
+        version_two.created_at = "2026-05-01T12:02:00Z".into();
+        version_two.updated_at = "2026-05-01T12:02:00Z".into();
+        project_store::insert_agent_definition(&repo_root, &version_two)
+            .expect("insert version two");
+
+        let mut controls = custom_controls(
+            RuntimeAgentIdDto::Engineer,
+            definition_id,
+            RuntimeRunApprovalModeDto::Yolo,
+        );
+        controls.agent_definition_version = Some(1);
+        let snapshot = create_owned_agent_run(&OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: "explicit-version-run".into(),
+            prompt: "Inspect the repository using the pinned definition.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(controls),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        })
+        .expect("create owned agent run");
+        let persisted_definition =
+            load_agent_definition_snapshot_for_run(&repo_root, &snapshot.run)
+                .expect("load persisted definition snapshot");
+
+        assert_eq!(snapshot.run.agent_definition_version, 1);
+        assert!(snapshot
+            .run
+            .system_prompt
+            .contains("Pinned version one prompt marker."));
+        assert!(!snapshot
+            .run
+            .system_prompt
+            .contains("Current version two prompt marker."));
+        assert!(snapshot
+            .run
+            .system_prompt
+            .contains("Start Stage: `inspect_v1`."));
+        assert!(snapshot.run.system_prompt.contains("Allowed tools: read."));
+        assert!(!snapshot.run.system_prompt.contains("implement_v2"));
+        assert_eq!(
+            persisted_definition["toolPolicy"]["allowedTools"],
+            json!(["read"])
+        );
+        assert_eq!(
+            persisted_definition["workflowStructure"]["startPhaseId"],
+            json!("inspect_v1")
+        );
+    }
+
+    #[test]
+    fn owned_agent_start_replays_exact_payload_and_recovers_only_durable_readiness() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "owned-start-idempotency";
+        create_project_database(&repo_root, project_id);
+        let request = OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: "owned-start-ready-run".into(),
+            prompt: "Start this exact task once.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: None,
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        };
+        let first = create_owned_agent_run(&request).expect("create first start");
+        let replay = create_owned_agent_run(&request).expect("replay exact start");
+        assert_eq!(replay.messages.len(), first.messages.len());
+        assert_eq!(replay.events.len(), first.events.len());
+
+        let conflict = create_owned_agent_run(&OwnedAgentRunRequest {
+            prompt: "Different task using the same run id.".into(),
+            ..request.clone()
+        })
+        .expect_err("same run id with different input must conflict");
+        assert_eq!(conflict.code, "agent_run_start_conflict");
+
+        let connection = Connection::open(database_path_for_repo(&repo_root)).expect("open db");
+        connection
+            .execute(
+                r#"
+                UPDATE agent_run_start_requests
+                SET state = 'preparing', owner_process_id = ?3,
+                    owner_process_birth_identity = 'dead-process-birth',
+                    ready_at = NULL, failed_at = NULL
+                WHERE project_id = ?1 AND run_id = ?2
+                "#,
+                params![project_id, request.run_id, i64::from(u32::MAX)],
+            )
+            .expect("simulate crash after durable readiness");
+        let recovered = create_owned_agent_run(&request).expect("recover fully prepared start");
+        assert_eq!(recovered.run.status, AgentRunStatus::Running);
+        assert_eq!(
+            project_store::load_agent_run_start_request(&repo_root, project_id, &request.run_id,)
+                .expect("load start marker")
+                .expect("start marker")
+                .state,
+            project_store::AgentRunStartRequestState::Ready
+        );
+
+        let incomplete = OwnedAgentRunRequest {
+            run_id: "owned-start-incomplete-run".into(),
+            ..request
+        };
+        create_owned_agent_run(&incomplete).expect("create second start");
+        connection
+            .execute(
+                "DELETE FROM agent_events WHERE project_id = ?1 AND run_id = ?2 AND event_kind = 'run_started'",
+                params![project_id, incomplete.run_id],
+            )
+            .expect("remove readiness event");
+        connection
+            .execute(
+                r#"
+                UPDATE agent_runs SET status = 'starting' WHERE project_id = ?1 AND run_id = ?2;
+                "#,
+                params![project_id, incomplete.run_id],
+            )
+            .expect("restore incomplete status");
+        connection
+            .execute(
+                r#"
+                UPDATE agent_run_start_requests
+                SET state = 'preparing', owner_process_id = ?3,
+                    owner_process_birth_identity = 'dead-process-birth',
+                    ready_at = NULL, failed_at = NULL
+                WHERE project_id = ?1 AND run_id = ?2
+                "#,
+                params![project_id, incomplete.run_id, i64::from(u32::MAX)],
+            )
+            .expect("simulate incomplete crashed start");
+        let failed = create_owned_agent_run(&incomplete).expect("fail incomplete start");
+        assert_eq!(failed.run.status, AgentRunStatus::Failed);
+        assert_eq!(
+            failed
+                .run
+                .last_error
+                .as_ref()
+                .map(|error| error.code.as_str()),
+            Some("agent_run_start_interrupted")
+        );
     }
 
     #[test]

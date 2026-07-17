@@ -9,6 +9,11 @@ import {
 import { recordIpcPayloadSample } from '@/src/lib/ipc-payload-budget'
 import { createSafeTauriUnlisten } from '@/src/lib/tauri-events'
 import {
+  browserIdempotencyStorage,
+  ContinuationIdempotencyCoordinator,
+} from '@/src/features/xero/continuation-idempotency'
+import { AgentStartIdempotencyCoordinator } from '@/src/features/xero/agent-start-idempotency'
+import {
   autonomousRunStateSchema,
   cancelAutonomousRunRequestSchema,
   getAutonomousRunRequestSchema,
@@ -881,6 +886,39 @@ const COMMANDS = {
   startEnvironmentDiscovery: 'start_environment_discovery',
 } as const
 
+function createContinuationRequestId(prefix: string): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.()
+  if (!randomUuid) {
+    throw new Error('Xero cannot create a continuation request id in this runtime.')
+  }
+  return `${prefix}-${randomUuid}`
+}
+
+function createAgentRunId(): string {
+  const randomUuid = globalThis.crypto?.randomUUID?.()
+  if (!randomUuid) {
+    throw new Error('Xero cannot create an agent run id in this runtime.')
+  }
+  return `agent-run-${randomUuid}`
+}
+
+const agentStartCoordinator = new AgentStartIdempotencyCoordinator(createAgentRunId, {
+  storage: browserIdempotencyStorage(),
+})
+
+const agentMessageContinuationCoordinator = new ContinuationIdempotencyCoordinator(
+  () => createContinuationRequestId('agent-message'),
+  {
+    storage: browserIdempotencyStorage(),
+  },
+)
+const agentResumeContinuationCoordinator = new ContinuationIdempotencyCoordinator(
+  () => createContinuationRequestId('agent-resume'),
+  {
+    storage: browserIdempotencyStorage(),
+  },
+)
+
 export const bridgeThemeSyncRequestSchema = z
   .object({
     themeId: z.string().trim().min(1),
@@ -1424,12 +1462,20 @@ export interface XeroDesktopAdapter {
     projectId: string,
     agentSessionId: string,
     prompt: string,
-    options?: { controls?: RuntimeRunControlInputDto | null },
+    options?: {
+      runId?: StartAgentTaskRequestDto['runId']
+      controls?: RuntimeRunControlInputDto | null
+      attachments?: StartAgentTaskRequestDto['attachments']
+    },
   ): Promise<AgentRunDto>
   sendAgentMessage?(
     runId: string,
     prompt: string,
-    options?: { autoCompact?: SendAgentMessageRequestDto['autoCompact'] },
+    options?: {
+      continuationRequestId?: SendAgentMessageRequestDto['continuationRequestId']
+      attachments?: SendAgentMessageRequestDto['attachments']
+      autoCompact?: SendAgentMessageRequestDto['autoCompact']
+    },
   ): Promise<AgentRunDto>
   cancelAgentRun?(runId: string): Promise<AgentRunDto>
   rejectAgentAction?(
@@ -1441,6 +1487,7 @@ export interface XeroDesktopAdapter {
     runId: string,
     response: string,
     options?: {
+      continuationRequestId?: ResumeAgentRunRequestDto['continuationRequestId']
       actionId?: ResumeAgentRunRequestDto['actionId']
       autoCompact?: ResumeAgentRunRequestDto['autoCompact']
     },
@@ -3356,26 +3403,54 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   },
 
   startAgentTask(projectId, agentSessionId, prompt, options) {
-    const request: StartAgentTaskRequestDto = startAgentTaskRequestSchema.parse({
-      projectId,
-      agentSessionId,
-      prompt,
-      controls: options?.controls ?? null,
-    })
-    return invokeTyped(COMMANDS.startAgentTask, agentRunSchema, {
-      request,
-    })
+    const invokeWithRunId = (runId: string) => {
+      const request: StartAgentTaskRequestDto = startAgentTaskRequestSchema.parse({
+        projectId,
+        agentSessionId,
+        runId,
+        prompt,
+        controls: options?.controls ?? null,
+        attachments: options?.attachments ?? [],
+      })
+      return invokeTyped(COMMANDS.startAgentTask, agentRunSchema, { request })
+    }
+    if (options?.runId) return invokeWithRunId(options.runId)
+    return agentStartCoordinator.run(
+      {
+        projectId,
+        agentSessionId,
+        prompt,
+        controls: options?.controls ?? null,
+        attachments: options?.attachments ?? [],
+      },
+      invokeWithRunId,
+    )
   },
 
   sendAgentMessage(runId, prompt, options) {
-    const request: SendAgentMessageRequestDto = sendAgentMessageRequestSchema.parse({
-      runId,
-      prompt,
-      autoCompact: options?.autoCompact ?? null,
-    })
-    return invokeTyped(COMMANDS.sendAgentMessage, agentRunSchema, {
-      request,
-    })
+    const invokeWithId = (continuationRequestId: string) => {
+      const request: SendAgentMessageRequestDto = sendAgentMessageRequestSchema.parse({
+        runId,
+        continuationRequestId,
+        prompt,
+        attachments: options?.attachments ?? [],
+        autoCompact: options?.autoCompact ?? null,
+      })
+      return invokeTyped(COMMANDS.sendAgentMessage, agentRunSchema, { request })
+    }
+    if (options?.continuationRequestId) return invokeWithId(options.continuationRequestId)
+    return agentMessageContinuationCoordinator.run(
+      {
+        channel: 'send',
+        targetId: runId,
+        payload: {
+          prompt,
+          attachments: options?.attachments ?? [],
+          autoCompact: options?.autoCompact ?? null,
+        },
+      },
+      invokeWithId,
+    )
   },
 
   cancelAgentRun(runId) {
@@ -3399,15 +3474,29 @@ export const XeroDesktopAdapter: XeroDesktopAdapter = {
   },
 
   resumeAgentRun(runId, response, options) {
-    const request: ResumeAgentRunRequestDto = resumeAgentRunRequestSchema.parse({
-      runId,
-      response,
-      actionId: options?.actionId ?? null,
-      autoCompact: options?.autoCompact ?? null,
-    })
-    return invokeTyped(COMMANDS.resumeAgentRun, agentRunSchema, {
-      request,
-    })
+    const invokeWithId = (continuationRequestId: string) => {
+      const request: ResumeAgentRunRequestDto = resumeAgentRunRequestSchema.parse({
+        runId,
+        continuationRequestId,
+        response,
+        actionId: options?.actionId ?? null,
+        autoCompact: options?.autoCompact ?? null,
+      })
+      return invokeTyped(COMMANDS.resumeAgentRun, agentRunSchema, { request })
+    }
+    if (options?.continuationRequestId) return invokeWithId(options.continuationRequestId)
+    return agentResumeContinuationCoordinator.run(
+      {
+        channel: 'resume',
+        targetId: runId,
+        payload: {
+          response,
+          actionId: options?.actionId ?? null,
+          autoCompact: options?.autoCompact ?? null,
+        },
+      },
+      invokeWithId,
+    )
   },
 
   getAgentRun(runId) {

@@ -3801,7 +3801,7 @@ fn custom_prompts_from_snapshot(
     {
         prompts.push(AgentPromptDto {
             id: "agent_definition.workflowContract".to_string(),
-            label: "Workflow contract".to_string(),
+            label: "Run contract".to_string(),
             role: AgentPromptRoleDto::Developer,
             policy: None,
             source: "agent_definition.snapshot.workflowContract".to_string(),
