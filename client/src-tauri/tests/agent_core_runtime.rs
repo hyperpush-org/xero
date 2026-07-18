@@ -4,7 +4,10 @@ use std::{
     io::{Read, Write},
     net::TcpListener,
     path::{Path, PathBuf},
-    sync::{LazyLock, Mutex, MutexGuard},
+    sync::{
+        atomic::{AtomicI64, Ordering as AtomicOrdering},
+        LazyLock, Mutex, MutexGuard,
+    },
     thread,
     time::{Duration, Instant},
 };
@@ -32,11 +35,12 @@ use xero_desktop_lib::{
     commands::{
         archive_agent_session, cancel_agent_run, compact_session_history,
         remote_bridge::RemoteBridgeRuntimeState, start_agent_task, start_runtime_run,
-        update_runtime_run_controls, ArchiveAgentSessionRequestDto, BrowserControlPreferenceDto,
-        CancelAgentRunRequestDto, CompactSessionHistoryRequestDto, RuntimeAgentIdDto,
-        RuntimeRunActiveControlSnapshotDto, RuntimeRunApprovalModeDto, RuntimeRunControlInputDto,
-        RuntimeRunControlStateDto, StartAgentTaskRequestDto, StartRuntimeRunRequestDto,
-        UpdateRuntimeRunControlsRequestDto,
+        update_runtime_run_controls, workspace_status, ArchiveAgentSessionRequestDto,
+        BrowserControlPreferenceDto, CancelAgentRunRequestDto, CompactSessionHistoryRequestDto,
+        ProjectIdRequestDto, RuntimeAgentIdDto, RuntimeRunActiveControlSnapshotDto,
+        RuntimeRunApprovalModeDto, RuntimeRunControlInputDto, RuntimeRunControlStateDto,
+        StartAgentTaskRequestDto, StartRuntimeRunRequestDto, UpdateRuntimeRunControlsRequestDto,
+        WorkspaceIndexStateDto,
     },
     configure_builder_with_state, db,
     git::repository::CanonicalRepository,
@@ -71,6 +75,7 @@ fn create_state(root: &TempDir) -> DesktopState {
 }
 
 static RUNTIME_RUN_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static WORKSPACE_INDEX_FIXTURE_GENERATION: AtomicI64 = AtomicI64::new(0);
 
 fn runtime_run_test_guard() -> MutexGuard<'static, ()> {
     RUNTIME_RUN_TEST_LOCK
@@ -188,7 +193,11 @@ fn seed_workspace_index_ready(repo_root: &Path, project_id: &str) {
 
     let database_path = db::database_path_for_repo(repo_root);
     let connection = Connection::open(&database_path).expect("open project database");
-    let now = "2026-05-05T12:00:00Z";
+    let fixture_generation =
+        WORKSPACE_INDEX_FIXTURE_GENERATION.fetch_add(1, AtomicOrdering::SeqCst) + 1;
+    let now = (OffsetDateTime::now_utc() + time::Duration::seconds(fixture_generation))
+        .format(&Rfc3339)
+        .expect("format workspace index timestamp");
     let storage_path = database_path
         .parent()
         .expect("project database parent")
@@ -235,7 +244,7 @@ fn seed_workspace_index_ready(repo_root: &Path, project_id: &str) {
                     .iter()
                     .map(|path| fs::metadata(repo_root.join(path)).expect("metadata").len())
                     .sum::<u64>() as i64,
-                now,
+                &now,
             ],
         )
         .expect("seed workspace index metadata");
@@ -358,6 +367,12 @@ fn yolo_controls() -> RuntimeRunControlStateDto {
     }
 }
 
+fn suggest_controls() -> RuntimeRunControlStateDto {
+    let mut controls = yolo_controls();
+    controls.active.approval_mode = RuntimeRunApprovalModeDto::Suggest;
+    controls
+}
+
 fn yolo_controls_input() -> RuntimeRunControlInputDto {
     RuntimeRunControlInputDto {
         runtime_agent_id: RuntimeAgentIdDto::Generalist,
@@ -446,16 +461,37 @@ fn production_readiness_focused_tests(
 
 struct MockOpenAiCompatibleSseServer {
     base_url: String,
-    handle: thread::JoinHandle<()>,
+    handle: thread::JoinHandle<usize>,
 }
 
 impl MockOpenAiCompatibleSseServer {
     fn start(responses: Vec<String>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0").expect("bind mock provider");
         let address = listener.local_addr().expect("mock provider address");
+        listener
+            .set_nonblocking(true)
+            .expect("configure nonblocking mock provider");
         let handle = thread::spawn(move || {
+            let mut served = 0;
             for response in responses {
-                let (mut stream, _) = listener.accept().expect("accept provider request");
+                let deadline = Instant::now() + Duration::from_secs(5);
+                let mut stream = loop {
+                    match listener.accept() {
+                        Ok((stream, _)) => {
+                            stream
+                                .set_nonblocking(false)
+                                .expect("configure blocking provider stream");
+                            break stream;
+                        }
+                        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                            if Instant::now() >= deadline {
+                                return served;
+                            }
+                            thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(error) => panic!("accept provider request: {error}"),
+                    }
+                };
                 read_http_request(&mut stream);
                 let reply = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -465,7 +501,9 @@ impl MockOpenAiCompatibleSseServer {
                 stream
                     .write_all(reply.as_bytes())
                     .expect("write provider response");
+                served += 1;
             }
+            served
         });
         Self {
             base_url: format!("http://{address}/v1"),
@@ -473,8 +511,8 @@ impl MockOpenAiCompatibleSseServer {
         }
     }
 
-    fn join(self) {
-        self.handle.join().expect("mock provider thread");
+    fn join(self) -> usize {
+        self.handle.join().expect("mock provider thread")
     }
 }
 
@@ -500,6 +538,94 @@ fn openai_chat_sse(chunks: Vec<serde_json::Value>) -> String {
         .collect::<Vec<_>>();
     lines.push("data: [DONE]\n\n".into());
     lines.join("")
+}
+
+#[test]
+fn rejected_provider_tool_batch_leaves_no_orphaned_running_calls() {
+    let root = tempfile::tempdir().expect("temp dir");
+    let app = build_mock_app(create_state(&root));
+    let (project_id, repo_root) = seed_project(&root, &app);
+    let provider_id = "openai_api";
+    let model_id = "test-model";
+    let server = MockOpenAiCompatibleSseServer::start(vec![openai_chat_sse(vec![json!({
+        "choices": [{
+            "delta": {
+                "tool_calls": [
+                    {
+                        "index": 0,
+                        "id": "call-valid-read",
+                        "function": {
+                            "name": "read",
+                            "arguments": json!({"path": "src/tracked.txt"}).to_string()
+                        }
+                    },
+                    {
+                        "index": 1,
+                        "id": "call-unavailable",
+                        "function": {
+                            "name": "definitely_unavailable_tool",
+                            "arguments": json!({}).to_string()
+                        }
+                    },
+                    {
+                        "index": 2,
+                        "id": "call-valid-hash",
+                        "function": {
+                            "name": "file_hash",
+                            "arguments": json!({"path": "src/tracked.txt"}).to_string()
+                        }
+                    }
+                ]
+            }
+        }]
+    })])]);
+    let tool_runtime = AutonomousToolRuntime::for_project(
+        &app.handle().clone(),
+        app.state::<DesktopState>().inner(),
+        &project_id,
+    )
+    .expect("build autonomous tool runtime");
+
+    let snapshot = run_owned_agent_task(OwnedAgentRunRequest {
+        repo_root,
+        project_id,
+        agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
+        run_id: "owned-run-atomic-tool-admission-1".into(),
+        prompt: "Read and hash the tracked file.".into(),
+        attachments: Vec::new(),
+        linked_paths: Vec::new(),
+        controls: Some(yolo_controls_input()),
+        tool_runtime,
+        provider_config: AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            base_url: server.base_url.clone(),
+            api_key: Some("fixture-key".into()),
+            api_version: None,
+            timeout_ms: 2_000,
+        }),
+        provider_preflight: Some(live_provider_preflight(provider_id, model_id)),
+    })
+    .expect("rejected provider batch should persist a terminal snapshot");
+    assert_eq!(server.join(), 1);
+
+    assert_eq!(
+        snapshot.run.status,
+        db::project_store::AgentRunStatus::Failed
+    );
+    assert!(snapshot
+        .tool_calls
+        .iter()
+        .all(|call| call.state != db::project_store::AgentToolCallState::Running));
+    assert_eq!(snapshot.tool_calls.len(), 1);
+    assert_eq!(snapshot.tool_calls[0].tool_call_id, "call-unavailable");
+    assert_eq!(
+        snapshot.tool_calls[0]
+            .error
+            .as_ref()
+            .map(|error| error.code.as_str()),
+        Some("agent_tool_call_unknown")
+    );
 }
 
 #[test]
@@ -589,14 +715,45 @@ fn wait_for_agent_run_status(
             Ok(snapshot) => {
                 assert!(
                     Instant::now() < deadline,
-                    "owned agent run {run_id} did not reach {status:?}; last status was {:?}",
-                    snapshot.run.status
+                    "owned agent run {run_id} did not reach {status:?}; last status was {:?}; last error was {:?}",
+                    snapshot.run.status,
+                    snapshot.run.last_error
                 );
             }
             Err(error) => {
                 assert!(
                     Instant::now() < deadline,
                     "owned agent run {run_id} was not persisted while waiting for {status:?}: {error:?}"
+                );
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_agent_run_matching(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    description: &str,
+    predicate: impl Fn(&db::project_store::AgentRunSnapshotRecord) -> bool,
+) -> db::project_store::AgentRunSnapshotRecord {
+    let deadline = Instant::now() + Duration::from_secs(90);
+    loop {
+        match db::project_store::load_agent_run(repo_root, project_id, run_id) {
+            Ok(snapshot) if predicate(&snapshot) => return snapshot,
+            Ok(snapshot) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "owned agent run {run_id} did not {description}; last status was {:?}; last error was {:?}",
+                    snapshot.run.status,
+                    snapshot.run.last_error
+                );
+            }
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "owned agent run {run_id} was not persisted while waiting to {description}: {error:?}"
                 );
             }
         }
@@ -649,6 +806,47 @@ fn wait_for_runtime_run_status(
                 assert!(
                     Instant::now() < deadline,
                     "runtime run for session {agent_session_id} could not be loaded while waiting for {status:?}: {error:?}"
+                );
+            }
+        }
+        thread::sleep(Duration::from_millis(25));
+    }
+}
+
+fn wait_for_runtime_run_matching(
+    repo_root: &Path,
+    project_id: &str,
+    agent_session_id: &str,
+    description: &str,
+    predicate: impl Fn(&db::project_store::RuntimeRunSnapshotRecord) -> bool,
+) -> db::project_store::RuntimeRunSnapshotRecord {
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match db::project_store::load_runtime_run(repo_root, project_id, agent_session_id) {
+            Ok(Some(snapshot)) if predicate(&snapshot) => return snapshot,
+            Ok(Some(snapshot)) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} did not {description}; last status was {:?}; active provider profile was {:?}; pending provider profile was {:?}",
+                    snapshot.run.status,
+                    snapshot.controls.active.provider_profile_id,
+                    snapshot
+                        .controls
+                        .pending
+                        .as_ref()
+                        .and_then(|pending| pending.provider_profile_id.as_deref())
+                );
+            }
+            Ok(None) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} was missing while waiting to {description}"
+                );
+            }
+            Err(error) => {
+                assert!(
+                    Instant::now() < deadline,
+                    "runtime run for session {agent_session_id} could not be loaded while waiting to {description}: {error:?}"
                 );
             }
         }
@@ -927,7 +1125,7 @@ fn provider_preflight_manifest_binding() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
-    let preflight = live_provider_preflight("fake_provider", "test-model");
+    let preflight = live_provider_preflight("openai_codex", "openai_codex");
     let tool_runtime = AutonomousToolRuntime::for_project(
         &app.handle().clone(),
         app.state::<DesktopState>().inner(),
@@ -1337,6 +1535,10 @@ fn owned_agent_tool_registry_exposes_provider_ready_schemas() {
         "code_intel",
         "lsp",
         "tool_search",
+        "action_required",
+        "runtime_wait",
+        "request_sensitive_input",
+        "suggest_routing",
         "web_search",
         "web_fetch",
         "browser_observe",
@@ -1735,7 +1937,13 @@ fn tool_registry_v2_validates_every_builtin_descriptor_sample() {
                 .and_then(serde_json::Value::as_array)
                 .and_then(|values| values.first())
                 .cloned()
-                .unwrap_or_else(|| json!("sample")),
+                .unwrap_or_else(|| {
+                    let min_length = schema
+                        .get("minLength")
+                        .and_then(serde_json::Value::as_u64)
+                        .unwrap_or(1) as usize;
+                    json!("a".repeat(min_length.max(1)))
+                }),
             _ => serde_json::Value::Null,
         }
     }
@@ -1962,6 +2170,113 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
+    let provider_id = "openai_api";
+    let model_id = "test-model";
+    let tracked_hash = format!("{:x}", Sha256::digest(b"alpha\nbeta\n"));
+    let generated_hash = format!("{:x}", Sha256::digest(b"hello"));
+    let server = MockOpenAiCompatibleSseServer::start(vec![
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-read-tracked",
+                        "function": {
+                            "name": "read",
+                            "arguments": json!({"path": "src/tracked.txt"}).to_string()
+                        }
+                    }]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [
+                        {
+                            "index": 0,
+                            "id": "call-patch-tracked",
+                            "function": {
+                                "name": "patch",
+                                "arguments": json!({
+                                    "path": "src/tracked.txt",
+                                    "search": "alpha",
+                                    "replace": "ALPHA",
+                                    "expectedHash": tracked_hash
+                                }).to_string()
+                            }
+                        },
+                        {
+                            "index": 1,
+                            "id": "call-hash-tracked",
+                            "function": {
+                                "name": "file_hash",
+                                "arguments": json!({"path": "src/tracked.txt"}).to_string()
+                            }
+                        },
+                        {
+                            "index": 2,
+                            "id": "call-mkdir-generated",
+                            "function": {
+                                "name": "mkdir",
+                                "arguments": json!({"path": "generated", "parents": true}).to_string()
+                            }
+                        },
+                        {
+                            "index": 3,
+                            "id": "call-write-generated",
+                            "function": {
+                                "name": "write",
+                                "arguments": json!({
+                                    "path": "generated/new.txt",
+                                    "content": "hello",
+                                    "createOnly": true
+                                }).to_string()
+                            }
+                        },
+                        {
+                            "index": 4,
+                            "id": "call-rename-generated",
+                            "function": {
+                                "name": "rename",
+                                "arguments": json!({
+                                    "fromPath": "generated/new.txt",
+                                    "toPath": "generated/renamed.txt",
+                                    "expectedHash": generated_hash
+                                }).to_string()
+                            }
+                        },
+                        {
+                            "index": 5,
+                            "id": "call-delete-generated",
+                            "function": {
+                                "name": "delete",
+                                "arguments": json!({
+                                    "path": "generated/renamed.txt",
+                                    "expectedHash": generated_hash
+                                }).to_string()
+                            }
+                        },
+                        {
+                            "index": 6,
+                            "id": "call-verify-file-tools",
+                            "function": {
+                                "name": "command_verify",
+                                "arguments": json!({"argv": ["git", "status", "--short"]}).to_string()
+                            }
+                        }
+                    ]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "content": "The guarded file operations and verification completed."
+                }
+            }]
+        })]),
+    ]);
     let tool_runtime = AutonomousToolRuntime::for_project(
         &app.handle().clone(),
         app.state::<DesktopState>().inner(),
@@ -1974,32 +2289,30 @@ fn owned_agent_file_tools_cover_patch_hash_mkdir_rename_and_delete() {
         project_id: project_id.clone(),
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-file-tools-1".into(),
-        prompt: [
-            "Exercise file tools.",
-            "tool:read src/tracked.txt",
-            "tool:patch src/tracked.txt alpha ALPHA",
-            "tool:hash src/tracked.txt",
-            "tool:mkdir generated",
-            "tool:write generated/new.txt hello",
-            "tool:rename generated/new.txt generated/renamed.txt",
-            "tool:delete generated/renamed.txt",
-            "tool:command_verify cargo test --help",
-        ]
-        .join("\n"),
+        prompt: "Read and patch the tracked file, hash the result, create a directory and file, rename and delete that file, then run a verification command.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
-        provider_config: AgentProviderConfig::Fake,
-        provider_preflight: None,
+        provider_config: AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            base_url: server.base_url.clone(),
+            api_key: Some("fixture-key".into()),
+            api_version: None,
+            timeout_ms: 2_000,
+        }),
+        provider_preflight: Some(live_provider_preflight(provider_id, model_id)),
     })
-    .expect("owned agent file tools should succeed");
+    .expect("fixture-backed owned agent file tools should succeed");
+    server.join();
 
     assert_eq!(
         snapshot.run.status,
         db::project_store::AgentRunStatus::Completed,
-        "last error: {:?}",
-        snapshot.run.last_error
+        "last error: {:?}; tool calls: {:#?}",
+        snapshot.run.last_error,
+        snapshot.tool_calls
     );
     assert_eq!(
         fs::read_to_string(repo_root.join("src").join("tracked.txt"))
@@ -2292,7 +2605,9 @@ fn owned_agent_loop_dispatches_tools_and_persists_journal() {
 
     assert_eq!(
         snapshot.run.status,
-        db::project_store::AgentRunStatus::Completed
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
     );
     assert!(snapshot.run.system_prompt.contains("xero-owned-agent-v1"));
     assert!(snapshot
@@ -2563,6 +2878,19 @@ fn workspace_index_required_blocks_lifecycle() {
     );
 
     seed_workspace_index_ready(&repo_root, &project_id);
+    let seeded_status = tauri::async_runtime::block_on(workspace_status(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ProjectIdRequestDto {
+            project_id: project_id.clone(),
+        },
+    ))
+    .expect("load seeded ready workspace status");
+    assert_eq!(
+        seeded_status.state,
+        WorkspaceIndexStateDto::Ready,
+        "seeded workspace status: {seeded_status:#?}"
+    );
     let ready_required = run_owned_agent_task(OwnedAgentRunRequest {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
@@ -2582,12 +2910,14 @@ fn workspace_index_required_blocks_lifecycle() {
         provider_preflight: None,
     })
     .expect("ready required run should proceed");
-    assert_eq!(
-        ready_required.run.status,
-        db::project_store::AgentRunStatus::Completed
-    );
     let ready_health =
         semantic_lifecycle_health_check(&repo_root, &project_id, &ready_required.run.run_id);
+    assert_eq!(
+        ready_required.run.status,
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}; semantic health: {ready_health:#}",
+        ready_required.run.last_error
+    );
     assert_eq!(ready_health["status"], "passed");
     let ready_lifecycle_event = ready_required
         .events
@@ -2647,7 +2977,9 @@ fn owned_agent_provider_loop_dispatches_read_only_batches_through_tool_registry_
 
     assert_eq!(
         snapshot.run.status,
-        db::project_store::AgentRunStatus::Completed
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
     );
     assert_eq!(
         snapshot
@@ -2877,6 +3209,7 @@ fn owned_agent_queues_user_messages_until_environment_ready() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: run_id.into(),
+        continuation_request_id: "continuation-environment-ready-queue-1".into(),
         prompt: "Queued while setup finishes.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -3014,6 +3347,7 @@ fn owned_agent_continuation_blocks_context_handoff_without_mutating_messages() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: run_id.into(),
+        continuation_request_id: "continuation-context-budget-1".into(),
         prompt: huge_prompt.clone(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -3102,6 +3436,7 @@ fn owned_agent_continuation_replays_compacted_history_with_raw_tail() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: run_id.into(),
+        continuation_request_id: "continuation-compacted-replay-1".into(),
         prompt: "Continue after compaction.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -3183,6 +3518,7 @@ fn provider_history_replay_preserves_tool_call_ids() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: run_id.into(),
+        continuation_request_id: "continuation-provider-history-replay-1".into(),
         prompt: "Continue from replayable provider history.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -3269,6 +3605,7 @@ fn owned_agent_compacted_replay_rejects_changed_covered_source() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: run_id.into(),
+        continuation_request_id: "continuation-compacted-mismatch-1".into(),
         prompt: "Continue after tamper.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -3349,6 +3686,7 @@ fn owned_agent_auto_compacts_before_continuation_when_threshold_is_reached() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: run_id.into(),
+        continuation_request_id: "continuation-auto-compact-1".into(),
         prompt: "Continue after automatic compaction.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -3479,6 +3817,7 @@ fn owned_agent_auto_compact_provider_failure_does_not_mutate_history() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: run_id.into(),
+        continuation_request_id: "continuation-auto-compact-failure-1".into(),
         prompt: "This should not be appended.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -3543,7 +3882,7 @@ fn owned_agent_plan_mode_allows_read_only_tool_call() {
         attachments: Vec::new(),
         linked_paths: Vec::new(),
         controls: Some(RuntimeRunControlInputDto {
-            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            runtime_agent_id: RuntimeAgentIdDto::Generalist,
             agent_definition_id: None,
             agent_definition_version: None,
             provider_profile_id: None,
@@ -3561,7 +3900,9 @@ fn owned_agent_plan_mode_allows_read_only_tool_call() {
 
     assert_eq!(
         snapshot.run.status,
-        db::project_store::AgentRunStatus::Completed
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
     );
     assert!(snapshot.tool_calls.iter().any(|tool_call| {
         tool_call.tool_name == "read"
@@ -3575,6 +3916,51 @@ fn owned_agent_write_tools_persist_file_change_hashes() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
+    let provider_id = "openai_api";
+    let model_id = "test-model";
+    let tracked_hash = format!("{:x}", Sha256::digest(b"alpha\nbeta\n"));
+    let server = MockOpenAiCompatibleSseServer::start(vec![
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-read-before-write",
+                        "function": {
+                            "name": "read",
+                            "arguments": json!({"path": "src/tracked.txt"}).to_string()
+                        }
+                    }]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [{
+                        "index": 0,
+                        "id": "call-write-tracked",
+                        "function": {
+                            "name": "write",
+                            "arguments": json!({
+                                "path": "src/tracked.txt",
+                                "content": "gamma",
+                                "expectedHash": tracked_hash,
+                                "overwrite": true
+                            }).to_string()
+                        }
+                    }]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "content": "The guarded write completed successfully."
+                }
+            }]
+        })]),
+    ]);
     let tool_runtime = AutonomousToolRuntime::for_project(
         &app.handle().clone(),
         app.state::<DesktopState>().inner(),
@@ -3587,17 +3973,36 @@ fn owned_agent_write_tools_persist_file_change_hashes() {
         project_id: project_id.clone(),
         agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
         run_id: "owned-run-write-1".into(),
-        prompt: "Please update the tracked file.\ntool:read src/tracked.txt\ntool:write src/tracked.txt gamma\n".into(),
+        prompt: "Read and safely update the tracked file.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
         controls: Some(yolo_controls_input()),
         tool_runtime,
-        provider_config: AgentProviderConfig::Fake,
-        provider_preflight: None,
+        provider_config: AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+            provider_id: provider_id.into(),
+            model_id: model_id.into(),
+            base_url: server.base_url.clone(),
+            api_key: Some("fixture-key".into()),
+            api_version: None,
+            timeout_ms: 2_000,
+        }),
+        provider_preflight: Some(live_provider_preflight(provider_id, model_id)),
     })
-    .expect("owned agent write task succeeds");
+    .expect("fixture-backed owned agent write succeeds");
+    server.join();
 
-    assert_eq!(snapshot.file_changes.len(), 1);
+    assert_eq!(
+        snapshot.run.status,
+        db::project_store::AgentRunStatus::Completed,
+        "last error: {:?}",
+        snapshot.run.last_error
+    );
+    assert_eq!(
+        snapshot.file_changes.len(),
+        1,
+        "tool calls: {:#?}",
+        snapshot.tool_calls
+    );
     let file_change = &snapshot.file_changes[0];
     assert_eq!(file_change.path, "src/tracked.txt");
     assert_eq!(file_change.operation, "write");
@@ -4191,6 +4596,7 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: "owned-run-approved-replay-1".into(),
+        continuation_request_id: "continuation-approved-file-replay-1".into(),
         prompt: "Approved. Continue.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -4223,7 +4629,11 @@ fn owned_agent_resume_replays_answered_file_safety_tool_call() {
     assert_eq!(
         fs::read_to_string(repo_root.join("src").join("tracked.txt"))
             .expect("tracked file after approved replay"),
-        "gamma"
+        "gamma",
+        "last error: {:?}; tool calls: {:#?}; file changes: {:#?}",
+        resumed.run.last_error,
+        resumed.tool_calls,
+        resumed.file_changes
     );
     let write_call = resumed
         .tool_calls
@@ -4292,6 +4702,7 @@ fn owned_agent_refuses_stale_file_writes_after_observation_changes() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: "owned-run-stale-write-1".into(),
+        continuation_request_id: "continuation-stale-write-1".into(),
         prompt: "Now update safely.\ntool:write src/tracked.txt gamma\n".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -4375,6 +4786,7 @@ fn owned_agent_resume_marks_interrupted_tool_calls_before_continuation() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: run_id.into(),
+        continuation_request_id: "continuation-interrupted-tool-call-1".into(),
         prompt: "Continue after restart.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -4527,6 +4939,7 @@ fn owned_agent_resume_replays_answered_command_approval_tool_call() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: "owned-run-command-approval-replay-1".into(),
+        continuation_request_id: "continuation-approved-command-replay-1".into(),
         prompt: "Approved. Run it now.".into(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),
@@ -4722,7 +5135,7 @@ fn owned_agent_shell_commands_with_sensitive_expansion_require_approval() {
         &project_id,
     )
     .expect("build autonomous tool runtime")
-    .with_runtime_run_controls(yolo_controls());
+    .with_runtime_run_controls(suggest_controls());
 
     let result = tool_runtime
         .command(AutonomousCommandRequest {
@@ -5019,6 +5432,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: runtime_run.run_id.clone(),
+            continuation_request_id: "runtime-controls-prompt-read-1".into(),
             controls: None,
             prompt: Some("Inspect the tracked file.\ntool:read src/tracked.txt".into()),
             attachments: Vec::new(),
@@ -5047,6 +5461,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: runtime_run.run_id.clone(),
+            continuation_request_id: "runtime-controls-prompt-summary-1".into(),
             controls: None,
             prompt: Some("Thanks, summarize the result.".into()),
             attachments: Vec::new(),
@@ -5055,11 +5470,18 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
     ))
     .expect("runtime prompt should continue owned agent run");
 
-    let continued = wait_for_agent_run_status(
+    let continued = wait_for_agent_run_matching(
         &repo_root,
         &project_id,
         &runtime_run.run_id,
-        db::project_store::AgentRunStatus::Completed,
+        "persist and complete the continuation prompt",
+        |snapshot| {
+            snapshot.run.status == db::project_store::AgentRunStatus::Completed
+                && snapshot.messages.iter().any(|message| {
+                    message.role == db::project_store::AgentMessageRole::User
+                        && message.content == "Thanks, summarize the result."
+                })
+        },
     );
     assert!(continued.messages.iter().any(|message| {
         message.role == db::project_store::AgentMessageRole::User
@@ -5071,7 +5493,105 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
 fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
     let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
-    let app = build_mock_app(create_state(&root));
+    let provider_id = "openai_api";
+    let model_id = "gpt-4.1";
+    let tool_call = |index: usize, id: &str, name: &str, arguments: serde_json::Value| {
+        json!({
+            "index": index,
+            "id": id,
+            "function": {
+                "name": name,
+                "arguments": arguments.to_string()
+            }
+        })
+    };
+    let server = MockOpenAiCompatibleSseServer::start(vec![
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [
+                        tool_call(0, "switch-read-instructions", "read", json!({
+                            "path": "AGENTS.md"
+                        })),
+                        tool_call(1, "switch-read-target", "read", json!({
+                            "path": "src/tracked.txt"
+                        }))
+                    ]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [tool_call(
+                        0,
+                        "switch-implementation-plan",
+                        "todo",
+                        json!({
+                            "action": "upsert",
+                            "id": "implementation_plan",
+                            "title": "Uppercase the tracked fixture",
+                            "status": "completed",
+                            "evidence": "The tracked file and repository instructions were inspected.",
+                            "phaseId": "plan",
+                            "phaseTitle": "Plan"
+                        })
+                    )]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [tool_call(0, "switch-edit", "edit", json!({
+                        "path": "src/tracked.txt",
+                        "startLine": 1,
+                        "endLine": 1,
+                        "expected": "alpha\n",
+                        "replacement": "ALPHA\n",
+                        "expectedHash": "e49c81e2d2f84e259d40e2fb8192f3bcd198b355184845d76d8f58807d0d78ee",
+                        "preview": false
+                    }))]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "tool_calls": [tool_call(
+                        0,
+                        "switch-verify",
+                        "command_verify",
+                        json!({
+                            "argv": ["git", "diff", "--check"],
+                            "timeoutMs": 5_000
+                        })
+                    )]
+                }
+            }]
+        })]),
+        openai_chat_sse(vec![json!({
+            "choices": [{
+                "delta": {
+                    "content": "The tracked fixture was updated and verified."
+                }
+            }]
+        })]),
+    ]);
+    let app = build_mock_app(
+        DesktopState::default()
+            .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
+            .with_owned_agent_provider_config_override(AgentProviderConfig::OpenAiCompatible(
+                OpenAiCompatibleProviderConfig {
+                    provider_id: provider_id.into(),
+                    model_id: model_id.into(),
+                    base_url: server.base_url.clone(),
+                    api_key: Some("runtime-switch-fixture-key".into()),
+                    api_version: None,
+                    timeout_ms: 2_000,
+                },
+            )),
+    );
     let (project_id, repo_root) = seed_project(&root, &app);
 
     let runtime_run = tauri::async_runtime::block_on(start_runtime_run(
@@ -5085,7 +5605,7 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
                 agent_definition_id: None,
                 agent_definition_version: None,
                 provider_profile_id: None,
-                model_id: "test-model".into(),
+                model_id: model_id.into(),
                 thinking_effort: None,
                 approval_mode: RuntimeRunApprovalModeDto::Suggest,
                 plan_mode_required: false,
@@ -5105,14 +5625,15 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: runtime_run.run_id.clone(),
+            continuation_request_id: "runtime-controls-agent-switch-1".into(),
             controls: Some(RuntimeRunControlInputDto {
                 runtime_agent_id: RuntimeAgentIdDto::Engineer,
                 agent_definition_id: None,
                 agent_definition_version: None,
                 provider_profile_id: None,
-                model_id: "test-model".into(),
+                model_id: model_id.into(),
                 thinking_effort: None,
-                approval_mode: RuntimeRunApprovalModeDto::Suggest,
+                approval_mode: RuntimeRunApprovalModeDto::Yolo,
                 plan_mode_required: false,
                 auto_compact_enabled: true,
             }),
@@ -5144,22 +5665,32 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
             project_id: project_id.clone(),
             agent_session_id: db::project_store::DEFAULT_AGENT_SESSION_ID.into(),
             run_id: runtime_run.run_id.clone(),
+            continuation_request_id: "runtime-controls-agent-switch-prompt-1".into(),
             controls: None,
-            prompt: Some("Summarize the tracked file.".into()),
+            prompt: Some("Uppercase the first line of the tracked file and verify it.".into()),
             attachments: Vec::new(),
             linked_paths: Vec::new(),
         },
     ))
     .expect("queued runtime agent switch should apply at the next prompt boundary");
 
-    let agent_run = wait_for_agent_run_status(
+    let agent_run = wait_for_agent_run_matching(
         &repo_root,
         &project_id,
         &runtime_run.run_id,
-        db::project_store::AgentRunStatus::Completed,
+        "apply the queued Engineer controls",
+        |snapshot| {
+            snapshot.run.status == db::project_store::AgentRunStatus::Completed
+                && snapshot.run.runtime_agent_id == RuntimeAgentIdDto::Engineer
+        },
     );
+    assert_eq!(server.join(), 5);
     assert_eq!(agent_run.run.runtime_agent_id, RuntimeAgentIdDto::Engineer);
     assert_eq!(agent_run.run.agent_definition_id, "engineer");
+    assert_eq!(
+        fs::read_to_string(repo_root.join("src/tracked.txt")).expect("read edited fixture"),
+        "ALPHA\nbeta\n"
+    );
 }
 
 #[test]
@@ -5209,6 +5740,7 @@ fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() 
             project_id: project_id.clone(),
             agent_session_id: agent_session_id.clone(),
             run_id: runtime_run.run_id.clone(),
+            continuation_request_id: "runtime-controls-provider-switch-1".into(),
             controls: Some(RuntimeRunControlInputDto {
                 runtime_agent_id: RuntimeAgentIdDto::Ask,
                 agent_definition_id: None,
@@ -5249,6 +5781,7 @@ fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() 
             project_id: project_id.clone(),
             agent_session_id: agent_session_id.clone(),
             run_id: runtime_run.run_id.clone(),
+            continuation_request_id: "runtime-controls-provider-switch-prompt-1".into(),
             controls: None,
             prompt: Some("Thanks, continue with the newly selected provider.".into()),
             attachments: Vec::new(),
@@ -5257,15 +5790,29 @@ fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() 
     ))
     .expect("queued provider profile switch should apply at the next prompt boundary");
 
-    wait_for_agent_run_status(
+    wait_for_agent_run_matching(
         &repo_root,
         &project_id,
         &runtime_run.run_id,
-        db::project_store::AgentRunStatus::Completed,
+        "persist the provider-switch continuation prompt",
+        |snapshot| {
+            snapshot.run.status == db::project_store::AgentRunStatus::Completed
+                && snapshot.messages.iter().any(|message| {
+                    message.role == db::project_store::AgentMessageRole::User
+                        && message.content == "Thanks, continue with the newly selected provider."
+                })
+        },
     );
-    let applied = db::project_store::load_runtime_run(&repo_root, &project_id, &agent_session_id)
-        .expect("load runtime run")
-        .expect("runtime run should remain persisted");
+    let applied = wait_for_runtime_run_matching(
+        &repo_root,
+        &project_id,
+        &agent_session_id,
+        "apply and consume the pending provider switch",
+        |snapshot| {
+            snapshot.controls.active.provider_profile_id.as_deref() == Some("openai_codex-default")
+                && snapshot.controls.pending.is_none()
+        },
+    );
     assert_eq!(
         applied.controls.active.provider_profile_id.as_deref(),
         Some("openai_codex-default")

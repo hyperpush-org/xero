@@ -329,6 +329,59 @@ describe('WorkflowsSidebar', () => {
     expect(onSelectWorkflow).toHaveBeenCalledWith('release-pipeline')
   })
 
+  it('sends a saved Workflow to the Chat composer from its action menu', async () => {
+    const onUseWorkflowInChat = vi.fn()
+    render(
+      <WorkflowsSidebar
+        open
+        agents={REAL_AGENTS}
+        workflowDefinitions={WORKFLOWS}
+        onUseWorkflowInChat={onUseWorkflowInChat}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'More actions for Release pipeline' }),
+      { button: 0, ctrlKey: false },
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use in Chat' }))
+
+    expect(onUseWorkflowInChat).toHaveBeenCalledWith({
+      kind: 'definition',
+      workflowId: 'release-pipeline',
+    })
+  })
+
+  it('sends a built-in Workflow template to Chat without replacing Use template', async () => {
+    const onUseWorkflowInChat = vi.fn()
+    const onCreateWorkflowFromTemplate = vi.fn()
+    render(
+      <WorkflowsSidebar
+        open
+        agents={REAL_AGENTS}
+        workflowDefinitions={[]}
+        onUseWorkflowInChat={onUseWorkflowInChat}
+        onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: /workflows/i }))
+    fireEvent.pointerDown(
+      screen.getByRole('button', { name: 'More actions for Plan, build, verify' }),
+      { button: 0, ctrlKey: false },
+    )
+    const menu = await screen.findByRole('menu')
+    expect(within(menu).getByRole('menuitem', { name: 'Use template' })).toBeVisible()
+    fireEvent.click(within(menu).getByRole('menuitem', { name: 'Use in Chat' }))
+
+    expect(onUseWorkflowInChat).toHaveBeenCalledWith({
+      kind: 'template',
+      templateId: 'continuous_delivery',
+    })
+    expect(onCreateWorkflowFromTemplate).not.toHaveBeenCalled()
+  })
+
   it('switches between the workflows and agents tabs', () => {
     render(<WorkflowsSidebar open agents={REAL_AGENTS} workflowDefinitions={WORKFLOWS} />)
 

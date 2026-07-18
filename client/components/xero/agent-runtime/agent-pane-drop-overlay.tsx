@@ -8,7 +8,7 @@ import { createSafeTauriUnlisten } from '@/src/lib/tauri-events'
 
 export interface AgentPaneDropOverlayProps {
   enabled: boolean
-  onFilesDropped: (files: File[]) => void
+  onFilesDropped?: (files: File[]) => void
   onPathsDropped?: (paths: string[]) => void
   children: ReactNode
   /**
@@ -120,7 +120,7 @@ export function AgentPaneDropOverlay({
       setIsOver(false)
       const files = Array.from(event.dataTransfer?.files ?? [])
       if (files.length > 0) {
-        onFilesDropped(files)
+        onFilesDropped?.(files)
       }
     },
     [enabled, onFilesDropped, onPathsDropped],

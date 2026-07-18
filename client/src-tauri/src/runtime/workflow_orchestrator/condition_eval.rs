@@ -175,11 +175,10 @@ pub fn evaluate_workflow_condition(
             node_id,
             failure_class,
         } => {
-            let actual = node_id
-                .as_ref()
-                .and_then(|node_id| context.failure_classes.get(node_id))
-                .cloned()
-                .or_else(|| context.latest_failure_class.clone());
+            let actual = match node_id {
+                Some(node_id) => context.failure_classes.get(node_id).cloned(),
+                None => context.latest_failure_class.clone(),
+            };
             let matched = actual.as_deref() == Some(failure_class.as_str());
             WorkflowConditionEvaluation {
                 matched,
@@ -306,7 +305,26 @@ pub fn json_path_lookup<'a>(value: &'a JsonValue, path: &str) -> Option<&'a Json
     if trimmed == "$" {
         return Some(cursor);
     }
-    let remainder = trimmed.strip_prefix("$.")?;
+    let mut remainder = trimmed.strip_prefix('$')?;
+    if remainder.starts_with('[') {
+        let segment_end = remainder.find('.').unwrap_or(remainder.len());
+        let indexes = parse_index_suffix(&remainder[..segment_end])?;
+        if indexes.is_empty() {
+            return None;
+        }
+        for index in indexes {
+            cursor = cursor.get(index)?;
+        }
+        if segment_end == remainder.len() {
+            return Some(cursor);
+        }
+        remainder = &remainder[segment_end + 1..];
+        if remainder.is_empty() {
+            return None;
+        }
+    } else {
+        remainder = remainder.strip_prefix('.')?;
+    }
     for segment in remainder.split('.') {
         if segment.is_empty() {
             return None;
@@ -320,14 +338,30 @@ pub fn json_path_lookup<'a>(value: &'a JsonValue, path: &str) -> Option<&'a Json
     Some(cursor)
 }
 
+pub(super) fn lookup_run_input_binding<'a>(
+    initial_input: Option<&'a JsonValue>,
+    name: &str,
+    path: Option<&str>,
+) -> Option<&'a JsonValue> {
+    let input = initial_input?;
+    match path {
+        Some(path) => json_path_lookup(input, path),
+        None => json_path_lookup(input, &format!("$.{name}")),
+    }
+}
+
 fn parse_path_segment(segment: &str) -> Option<(&str, Vec<usize>)> {
     let field_end = segment.find('[').unwrap_or(segment.len());
     let field = &segment[..field_end];
     if field.is_empty() {
         return None;
     }
+    let indexes = parse_index_suffix(&segment[field_end..])?;
+    Some((field, indexes))
+}
+
+fn parse_index_suffix(mut rest: &str) -> Option<Vec<usize>> {
     let mut indexes = Vec::new();
-    let mut rest = &segment[field_end..];
     while !rest.is_empty() {
         let inner = rest.strip_prefix('[')?;
         let close = inner.find(']')?;
@@ -335,7 +369,7 @@ fn parse_path_segment(segment: &str) -> Option<(&str, Vec<usize>)> {
         indexes.push(index);
         rest = &inner[close + 1..];
     }
-    Some((field, indexes))
+    Some(indexes)
 }
 
 #[cfg(test)]
@@ -426,5 +460,248 @@ mod tests {
         );
 
         assert!(result.matched);
+    }
+
+    #[test]
+    fn condition_eval_composes_all_any_and_not_conditions() {
+        let mut context = WorkflowConditionContext::default();
+        context.artifacts.insert("plan.output".into(), json!({}));
+
+        let result = evaluate_workflow_condition(
+            &WorkflowConditionDto::All {
+                conditions: vec![
+                    WorkflowConditionDto::Always,
+                    WorkflowConditionDto::Any {
+                        conditions: vec![
+                            WorkflowConditionDto::ArtifactExists {
+                                artifact_ref: "missing.output".into(),
+                            },
+                            WorkflowConditionDto::ArtifactExists {
+                                artifact_ref: "plan.output".into(),
+                            },
+                        ],
+                    },
+                    WorkflowConditionDto::Not {
+                        condition: Box::new(WorkflowConditionDto::ArtifactExists {
+                            artifact_ref: "missing.output".into(),
+                        }),
+                    },
+                ],
+            },
+            &context,
+        );
+
+        assert!(result.matched);
+        assert_eq!(result.evidence["kind"], "all");
+        assert_eq!(result.evidence["children"][1]["kind"], "any");
+        assert_eq!(result.evidence["children"][2]["kind"], "not");
+
+        let unmatched = evaluate_workflow_condition(
+            &WorkflowConditionDto::Any {
+                conditions: vec![WorkflowConditionDto::ArtifactExists {
+                    artifact_ref: "missing.output".into(),
+                }],
+            },
+            &context,
+        );
+        assert!(!unmatched.matched);
+    }
+
+    #[test]
+    fn condition_eval_matches_membership_human_decisions_and_state() {
+        let mut context = WorkflowConditionContext::default();
+        context
+            .artifacts
+            .insert("review.result".into(), json!({ "status": "needs_changes" }));
+        context
+            .human_decisions
+            .insert("approval".into(), "continue".into());
+        context.state_values.insert(
+            "state.items".into(),
+            json!({ "status": "ready", "records": [{}, {}] }),
+        );
+        context
+            .state_values
+            .insert("state.array".into(), json!([1, 2, 3]));
+
+        for condition in [
+            WorkflowConditionDto::ArtifactFieldIn {
+                artifact_ref: "review.result".into(),
+                path: "$.status".into(),
+                values: vec![json!("approved"), json!("needs_changes")],
+            },
+            WorkflowConditionDto::HumanDecisionIs {
+                checkpoint_node_id: "approval".into(),
+                decision: "continue".into(),
+            },
+            WorkflowConditionDto::StateFieldEquals {
+                state_ref: "state.items".into(),
+                path: "$.status".into(),
+                value: json!("ready"),
+            },
+            WorkflowConditionDto::StateCollectionCountCompare {
+                state_ref: "state.items".into(),
+                operator: WorkflowNumberCompareOperatorDto::Eq,
+                value: 2.0,
+            },
+            WorkflowConditionDto::StateCollectionCountCompare {
+                state_ref: "state.array".into(),
+                operator: WorkflowNumberCompareOperatorDto::Gte,
+                value: 3.0,
+            },
+        ] {
+            assert!(evaluate_workflow_condition(&condition, &context).matched);
+        }
+
+        assert!(
+            !evaluate_workflow_condition(
+                &WorkflowConditionDto::ArtifactFieldIn {
+                    artifact_ref: "review.result".into(),
+                    path: "$.missing".into(),
+                    values: vec![JsonValue::Null],
+                },
+                &context,
+            )
+            .matched
+        );
+        assert!(
+            !evaluate_workflow_condition(
+                &WorkflowConditionDto::StateCollectionCountCompare {
+                    state_ref: "missing".into(),
+                    operator: WorkflowNumberCompareOperatorDto::Eq,
+                    value: 0.0,
+                },
+                &context,
+            )
+            .matched
+        );
+    }
+
+    #[test]
+    fn failure_class_condition_respects_explicit_node_scope() {
+        let mut context = WorkflowConditionContext::default();
+        context
+            .failure_classes
+            .insert("build".into(), "compile_failed".into());
+        context.latest_failure_class = Some("compile_failed".into());
+
+        let unrelated_node = evaluate_workflow_condition(
+            &WorkflowConditionDto::FailureClassIs {
+                node_id: Some("test".into()),
+                failure_class: "compile_failed".into(),
+            },
+            &context,
+        );
+        assert!(!unrelated_node.matched);
+        assert!(unrelated_node.evidence["actual"].is_null());
+
+        let explicit_node = evaluate_workflow_condition(
+            &WorkflowConditionDto::FailureClassIs {
+                node_id: Some("build".into()),
+                failure_class: "compile_failed".into(),
+            },
+            &context,
+        );
+        assert!(explicit_node.matched);
+
+        let latest = evaluate_workflow_condition(
+            &WorkflowConditionDto::FailureClassIs {
+                node_id: None,
+                failure_class: "compile_failed".into(),
+            },
+            &context,
+        );
+        assert!(latest.matched);
+    }
+
+    #[test]
+    fn condition_eval_covers_loop_boundaries_and_number_operators() {
+        let mut context = WorkflowConditionContext::default();
+        context.loop_attempts.insert("retry".into(), 2);
+
+        assert!(
+            evaluate_workflow_condition(
+                &WorkflowConditionDto::LoopAttemptGte {
+                    loop_key: "retry".into(),
+                    value: 2,
+                },
+                &context,
+            )
+            .matched
+        );
+        assert!(
+            !evaluate_workflow_condition(
+                &WorkflowConditionDto::LoopAttemptLt {
+                    loop_key: "retry".into(),
+                    value: 2,
+                },
+                &context,
+            )
+            .matched
+        );
+        assert!(
+            evaluate_workflow_condition(
+                &WorkflowConditionDto::LoopAttemptLt {
+                    loop_key: "missing".into(),
+                    value: 1,
+                },
+                &context,
+            )
+            .matched
+        );
+
+        for (operator, expected, matched) in [
+            (WorkflowNumberCompareOperatorDto::Eq, 2.0, true),
+            (WorkflowNumberCompareOperatorDto::Neq, 3.0, true),
+            (WorkflowNumberCompareOperatorDto::Gt, 1.0, true),
+            (WorkflowNumberCompareOperatorDto::Gte, 2.0, true),
+            (WorkflowNumberCompareOperatorDto::Lt, 3.0, true),
+            (WorkflowNumberCompareOperatorDto::Lte, 2.0, true),
+            (WorkflowNumberCompareOperatorDto::Eq, 3.0, false),
+        ] {
+            assert_eq!(compare_numbers(2.0, operator, expected), matched);
+        }
+    }
+
+    #[test]
+    fn json_path_lookup_and_run_input_binding_reject_malformed_paths() {
+        let value = json!({
+            "goal": "ship",
+            "nested": { "items": [{ "name": "first" }] }
+        });
+
+        assert_eq!(json_path_lookup(&value, "$"), Some(&value));
+        assert_eq!(
+            json_path_lookup(&value, "$.nested.items[0].name"),
+            Some(&json!("first"))
+        );
+        assert_eq!(
+            json_path_lookup(&json!([{ "name": "first" }]), "$[0].name"),
+            Some(&json!("first"))
+        );
+        for path in [
+            "goal",
+            "$.nested..items",
+            "$.[0]",
+            "$.nested.items[nope]",
+            "$.nested.items[0",
+            "$.nested.items[0]tail",
+            "$.nested.items[9]",
+            "$[0].",
+            "$[nope]",
+            "$[0]tail",
+        ] {
+            assert_eq!(json_path_lookup(&value, path), None, "path {path}");
+        }
+
+        assert_eq!(
+            lookup_run_input_binding(Some(&value), "goal", None),
+            Some(&json!("ship"))
+        );
+        assert_eq!(
+            lookup_run_input_binding(Some(&value), "ignored", Some("$.nested.items[0]")),
+            Some(&json!({ "name": "first" }))
+        );
+        assert_eq!(lookup_run_input_binding(None, "goal", None), None);
     }
 }

@@ -7,6 +7,7 @@ import {
   Package,
   Search,
   Sparkles,
+  Workflow,
   Wrench,
 } from 'lucide-react'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -70,6 +71,12 @@ interface ComposerDictationControl {
   toggle: () => Promise<void>
 }
 
+export interface ComposerWorkflowOption {
+  id: string
+  label: string
+  sublabel?: string
+}
+
 interface ComposerDockProps {
   density?: 'comfortable' | 'compact'
   /** Tighten paddings, gaps, and control sizes for the narrower sidebar surface. */
@@ -91,6 +98,8 @@ interface ComposerDockProps {
   composerAgentDefinitionId?: string | null
   composerAgentSelectionKey?: string
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
+  workflowOptions?: readonly ComposerWorkflowOption[]
+  selectedWorkflowOptionId?: string | null
   composerModelId: string | null
   composerModelGroups: ComposerModelGroup[]
   composerThinkingLevel: ProviderModelThinkingEffortDto | null
@@ -136,9 +145,17 @@ interface ComposerDockProps {
   onAutoCompactEnabledChange: (value: boolean) => void
   onComposerRuntimeAgentChange: (value: RuntimeAgentIdDto) => void
   onComposerAgentSelectionChange?: (selectionKey: string) => void
+  onComposerWorkflowSelectionChange?: (workflowId: string | null) => void
   onComposerModelChange: (value: string) => void
   onComposerThinkingLevelChange: (value: ProviderModelThinkingEffortDto) => void
   onComposerApprovalModeChange: (value: RuntimeRunApprovalModeDto) => void
+}
+
+const WORKFLOW_SELECTION_PREFIX = 'workflow:'
+const EMPTY_WORKFLOW_OPTIONS: readonly ComposerWorkflowOption[] = []
+
+function buildComposerWorkflowSelectionKey(workflowId: string): string {
+  return `${WORKFLOW_SELECTION_PREFIX}${workflowId}`
 }
 
 function getBuiltinAgentIcon(agentId: RuntimeAgentIdDto) {
@@ -200,6 +217,8 @@ export function ComposerDock({
   composerAgentDefinitionId = null,
   composerAgentSelectionKey,
   customAgentDefinitions = [],
+  workflowOptions,
+  selectedWorkflowOptionId = null,
   composerModelId,
   composerModelGroups,
   composerThinkingLevel,
@@ -240,6 +259,7 @@ export function ComposerDock({
   onAutoCompactEnabledChange,
   onComposerRuntimeAgentChange,
   onComposerAgentSelectionChange,
+  onComposerWorkflowSelectionChange,
   onComposerModelChange,
   onComposerThinkingLevelChange,
   onComposerApprovalModeChange,
@@ -260,11 +280,25 @@ export function ComposerDock({
     if (!composerAgentDefinitionId) return null
     return customAgentDefinitions.find((agent) => agent.definitionId === composerAgentDefinitionId) ?? null
   }, [composerAgentDefinitionId, customAgentDefinitions])
+  const visibleWorkflowOptions = workflowOptions ?? EMPTY_WORKFLOW_OPTIONS
+  const activeWorkflow = useMemo(
+    () =>
+      selectedWorkflowOptionId
+        ? visibleWorkflowOptions.find((workflow) => workflow.id === selectedWorkflowOptionId) ?? null
+        : null,
+    [selectedWorkflowOptionId, visibleWorkflowOptions],
+  )
+  const workflowSelectionEnabled = Boolean(
+    workflowOptions || selectedWorkflowOptionId || onComposerWorkflowSelectionChange,
+  )
   const isCustomAgent = Boolean(activeCustomAgent)
-  const agentTriggerLabel = activeCustomAgent?.displayName ?? composerRuntimeAgentLabel
-  const agentSelectorValue =
-    composerAgentSelectionKey ??
-    buildComposerAgentSelectionKey(composerRuntimeAgentId, composerAgentDefinitionId)
+  const isWorkflowSelected = Boolean(activeWorkflow)
+  const agentTriggerLabel =
+    activeWorkflow?.label ?? activeCustomAgent?.displayName ?? composerRuntimeAgentLabel
+  const agentSelectorValue = activeWorkflow
+    ? buildComposerWorkflowSelectionKey(activeWorkflow.id)
+    : composerAgentSelectionKey ??
+      buildComposerAgentSelectionKey(composerRuntimeAgentId, composerAgentDefinitionId)
 
   const availableRuntimeAgentIdSet = useMemo(
     () => (availableRuntimeAgentIds ? new Set(availableRuntimeAgentIds) : null),
@@ -284,40 +318,65 @@ export function ComposerDock({
       ),
     [availableRuntimeAgentIdSet, composerAgentDefinitionId, customAgentDefinitions],
   )
-  const AgentTriggerIcon = isCustomAgent ? Package : getBuiltinAgentIcon(composerRuntimeAgentId)
+  const AgentTriggerIcon = isWorkflowSelected
+    ? Workflow
+    : isCustomAgent
+      ? Package
+      : getBuiltinAgentIcon(composerRuntimeAgentId)
 
   const agentGroups = useMemo<ComposerSelectGroup[]>(() => {
-    const groups: ComposerSelectGroup[] = []
-    if (selectableRuntimeAgents.length > 0) {
-      groups.push({
-        id: 'builtin',
-        options: selectableRuntimeAgents.map((agent) => {
-          const BuiltinAgentIcon = getBuiltinAgentIcon(agent.id)
-          return {
-            id: buildComposerAgentSelectionKey(agent.id, null),
-            label: agent.label,
-            icon: <BuiltinAgentIcon aria-hidden="true" className="size-3 text-muted-foreground" />,
-          }
-        }),
-      })
+    const builtinOptions = selectableRuntimeAgents.map((agent) => {
+      const BuiltinAgentIcon = getBuiltinAgentIcon(agent.id)
+      return {
+        id: buildComposerAgentSelectionKey(agent.id, null),
+        label: agent.label,
+        icon: (
+          <BuiltinAgentIcon aria-hidden="true" className="size-3 text-muted-foreground" />
+        ),
+      }
+    })
+    const customOptions = visibleCustomAgents.map((agent) => ({
+      id: buildComposerAgentSelectionKey(
+        runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile),
+        agent.definitionId,
+      ),
+      label: agent.displayName,
+      icon: <Package aria-hidden="true" className="size-3 text-primary" />,
+      sublabel: 'User',
+    }))
+
+    if (workflowSelectionEnabled) {
+      return [
+        {
+          id: 'agents',
+          label: 'Agents',
+          options: [...builtinOptions, ...customOptions],
+        },
+        {
+          id: 'workflows',
+          label: 'Workflows',
+          options: visibleWorkflowOptions.map((workflow) => ({
+            id: buildComposerWorkflowSelectionKey(workflow.id),
+            label: workflow.label,
+            icon: <Workflow aria-hidden="true" className="size-3 text-primary" />,
+            sublabel: workflow.sublabel,
+          })),
+        },
+      ]
     }
-    if (visibleCustomAgents.length > 0) {
-      groups.push({
-        id: 'custom',
-        label: 'User agents',
-        options: visibleCustomAgents.map((agent) => ({
-          id: buildComposerAgentSelectionKey(
-            runtimeAgentIdForCustomBaseCapability(agent.baseCapabilityProfile),
-            agent.definitionId,
-          ),
-          label: agent.displayName,
-          icon: <Package aria-hidden="true" className="size-3 text-primary" />,
-          sublabel: agent.lifecycleState !== 'active' ? agent.lifecycleState : undefined,
-        })),
-      })
+
+    const groups: ComposerSelectGroup[] = []
+    if (builtinOptions.length > 0) groups.push({ id: 'builtin', options: builtinOptions })
+    if (customOptions.length > 0) {
+      groups.push({ id: 'custom', label: 'User agents', options: customOptions })
     }
     return groups
-  }, [selectableRuntimeAgents, visibleCustomAgents])
+  }, [
+    selectableRuntimeAgents,
+    visibleCustomAgents,
+    visibleWorkflowOptions,
+    workflowSelectionEnabled,
+  ])
 
   const modelGroups = useMemo<ComposerSelectGroup[]>(
     () =>
@@ -346,6 +405,14 @@ export function ComposerDock({
 
   const handleAgentChange = useCallback(
     (value: string) => {
+      if (value.startsWith(WORKFLOW_SELECTION_PREFIX)) {
+        const workflowId = value.slice(WORKFLOW_SELECTION_PREFIX.length)
+        if (visibleWorkflowOptions.some((workflow) => workflow.id === workflowId)) {
+          onComposerWorkflowSelectionChange?.(workflowId)
+        }
+        return
+      }
+      onComposerWorkflowSelectionChange?.(null)
       if (onComposerAgentSelectionChange) {
         onComposerAgentSelectionChange(value)
         return
@@ -357,14 +424,22 @@ export function ComposerDock({
         }
       }
     },
-    [onComposerAgentSelectionChange, onComposerRuntimeAgentChange, selectableRuntimeAgents],
+    [
+      onComposerAgentSelectionChange,
+      onComposerRuntimeAgentChange,
+      onComposerWorkflowSelectionChange,
+      selectableRuntimeAgents,
+      visibleWorkflowOptions,
+    ],
   )
 
   const agentTooltip = runtimeAgentSwitchDisabled
     ? (runtimeAgentLockReason ?? 'Selected agent is fixed for the current run.')
-    : isCustomAgent
-      ? `${agentTriggerLabel} (user custom agent)`
-      : `${agentTriggerLabel} agent`
+    : activeWorkflow
+      ? `${activeWorkflow.label} Workflow`
+      : isCustomAgent
+        ? `${agentTriggerLabel} (user custom agent)`
+        : `${agentTriggerLabel} agent`
 
   const composerError = runtimeRunActionError
     ? {
@@ -386,6 +461,7 @@ export function ComposerDock({
       onSubmit={() => onSubmitDraftPrompt()}
       isPromptDisabled={isPromptDisabled}
       isSendDisabled={isSendDisabled}
+      allowEmptySubmit={isWorkflowSelected}
       sendButtonLabel={sendButtonLabel}
       isSendLoading={isUpdatingControls || isStartingRun}
       isStopVisible={isStopVisible}
@@ -394,6 +470,9 @@ export function ComposerDock({
       agentGroups={hideAgentSelector ? [] : agentGroups}
       selectedAgentId={agentSelectorValue}
       onAgentChange={handleAgentChange}
+      agentSelectorAriaLabel={
+        workflowSelectionEnabled ? 'Agent or Workflow selector' : 'Agent selector'
+      }
       agentDisabled={isAgentSelectorDisabled}
       agentTooltip={agentTooltip}
       agentTriggerIcon={AgentTriggerIcon ? <AgentTriggerIcon aria-hidden="true" className="size-3" /> : undefined}

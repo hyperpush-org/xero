@@ -393,9 +393,20 @@ fn start_persisted_lease_heartbeat(
                         &heartbeat_drive_token,
                         &now_timestamp(),
                     );
-                    if !matches!(renewed, Ok(true)) {
-                        cancellation.cancel();
-                        break;
+                    match renewed {
+                        Ok(true) => {}
+                        Ok(false) => {
+                            cancellation.cancel();
+                            break;
+                        }
+                        Err(_) => {
+                            // A transient database write failure does not prove that ownership
+                            // was lost. In particular, an isolated mutation worker can hold the
+                            // project database long enough for this heartbeat attempt to time
+                            // out. Keep the run alive and re-check the durable lease on the next
+                            // interval; a recovered database will then return `false` if another
+                            // owner actually replaced the lease.
+                        }
                     }
                 }
             }

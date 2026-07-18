@@ -1804,8 +1804,9 @@ mod tests {
             migrations::migrations,
             project_store::{
                 create_agent_session, insert_agent_run, list_project_records, project_record_lance,
-                upsert_agent_coordination_presence, AgentSessionCreateRecord, AgentSessionRecord,
-                NewAgentRunRecord, UpsertAgentCoordinationPresenceRecord,
+                update_agent_run_status, upsert_agent_coordination_presence, AgentRunStatus,
+                AgentSessionCreateRecord, AgentSessionRecord, NewAgentRunRecord,
+                UpsertAgentCoordinationPresenceRecord,
             },
         },
     };
@@ -2137,6 +2138,39 @@ mod tests {
 
         assert_eq!(inbox.len(), 1);
         assert_eq!(inbox[0].item.item_id, src_item.item_id);
+    }
+
+    #[test]
+    fn terminal_sibling_presence_does_not_require_a_mailbox_check_before_mutation() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("repo dir");
+        let project_id = "project-mailbox-terminal-sibling";
+        create_project_database(&repo_root, project_id);
+        seed_agent_run(&repo_root, project_id, "run-sender", "Sender");
+        seed_agent_run(&repo_root, project_id, "run-reader", "Reader");
+        mark_run_active(&repo_root, project_id, "run-sender", "2026-05-03T00:00:00Z");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            "run-sender",
+            AgentRunStatus::Completed,
+            None,
+            "2026-05-03T00:00:30Z",
+        )
+        .expect("complete sibling run while its presence projection remains");
+
+        let status = agent_mailbox_mutation_gate_status(
+            &repo_root,
+            project_id,
+            "run-reader",
+            "2026-05-03T00:01:00Z",
+            &["src/lib.rs".into()],
+        )
+        .expect("mutation status");
+
+        assert_eq!(status.active_sibling_count, 0);
+        assert!(!status.requires_mailbox_check());
     }
 
     #[test]

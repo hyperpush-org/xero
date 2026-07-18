@@ -203,34 +203,51 @@ pub(crate) fn stop_idle_owned_runtime_run_before_archive<R: Runtime>(
     project_id: &str,
     agent_session_id: &str,
 ) -> CommandResult<()> {
-    let before = load_persisted_runtime_run(repo_root, project_id, agent_session_id)?;
-    let Some(snapshot) = before.as_ref() else {
-        return Ok(());
-    };
+    const MAX_STOP_ATTEMPTS: usize = 3;
+    for _ in 0..MAX_STOP_ATTEMPTS {
+        let before = load_persisted_runtime_run(repo_root, project_id, agent_session_id)?;
+        let Some(snapshot) = before.as_ref() else {
+            return Ok(());
+        };
 
-    if snapshot.run.supervisor_kind != crate::runtime::OWNED_AGENT_SUPERVISOR_KIND {
-        return Ok(());
+        if snapshot.run.supervisor_kind != crate::runtime::OWNED_AGENT_SUPERVISOR_KIND
+            || !matches!(
+                snapshot.run.status,
+                project_store::RuntimeRunStatus::Starting
+                    | project_store::RuntimeRunStatus::Running
+                    | project_store::RuntimeRunStatus::Stale
+            )
+        {
+            return Ok(());
+        }
+
+        if state
+            .agent_run_supervisor()
+            .is_active(&snapshot.run.run_id)?
+        {
+            return Ok(());
+        }
+
+        match stop_owned_runtime_run(repo_root, snapshot) {
+            Ok(after) => {
+                emit_runtime_run_updated_if_changed(
+                    app,
+                    project_id,
+                    agent_session_id,
+                    &before,
+                    &Some(after),
+                )?;
+                return Ok(());
+            }
+            Err(error) if error.code == "runtime_run_write_conflict" => continue,
+            Err(error) => return Err(error),
+        }
     }
 
-    if !matches!(
-        snapshot.run.status,
-        project_store::RuntimeRunStatus::Starting
-            | project_store::RuntimeRunStatus::Running
-            | project_store::RuntimeRunStatus::Stale
-    ) {
-        return Ok(());
-    }
-
-    if state
-        .agent_run_supervisor()
-        .is_active(&snapshot.run.run_id)?
-    {
-        return Ok(());
-    }
-
-    let after = stop_owned_runtime_run(repo_root, snapshot)?;
-    emit_runtime_run_updated_if_changed(app, project_id, agent_session_id, &before, &Some(after))?;
-    Ok(())
+    Err(CommandError::retryable(
+        "runtime_run_write_conflict",
+        "Xero could not stop the idle owned runtime before archiving because its durable projection kept changing. Refresh and retry.",
+    ))
 }
 
 #[tauri::command]
@@ -343,5 +360,193 @@ pub(crate) fn agent_session_lineage_dto(
             }),
         created_at: record.created_at.clone(),
         source_deleted_at: record.source_deleted_at.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::project_store::AgentSessionLineageDiagnosticRecord;
+
+    fn create_request(
+        session_kind: Option<AgentSessionKindDto>,
+        runtime_agent_id: Option<RuntimeAgentIdDto>,
+    ) -> CreateAgentSessionRequestDto {
+        CreateAgentSessionRequestDto {
+            project_id: "project".into(),
+            title: None,
+            summary: String::new(),
+            selected: false,
+            session_kind,
+            runtime_agent_id,
+        }
+    }
+
+    fn lineage(boundary: AgentSessionLineageBoundaryKind) -> AgentSessionLineageRecord {
+        AgentSessionLineageRecord {
+            lineage_id: "lineage-1".into(),
+            project_id: "project".into(),
+            child_agent_session_id: "child".into(),
+            source_agent_session_id: Some("source".into()),
+            source_run_id: Some("run-1".into()),
+            source_boundary_kind: boundary,
+            source_message_id: Some(7),
+            source_checkpoint_id: Some(9),
+            source_compaction_id: Some("compaction-1".into()),
+            source_title: "Source".into(),
+            branch_title: "Branch".into(),
+            replay_run_id: "replay-1".into(),
+            file_change_summary: "one file".into(),
+            diagnostic: Some(AgentSessionLineageDiagnosticRecord {
+                code: "partial_replay".into(),
+                message: "Replay omitted an unavailable event".into(),
+            }),
+            created_at: "2026-07-17T00:00:00Z".into(),
+            source_deleted_at: Some("2026-07-18T00:00:00Z".into()),
+        }
+    }
+
+    fn session(
+        kind: AgentSessionKind,
+        status: AgentSessionStatus,
+        lineage: Option<AgentSessionLineageRecord>,
+    ) -> AgentSessionRecord {
+        AgentSessionRecord {
+            project_id: "project".into(),
+            agent_session_id: "session".into(),
+            session_kind: kind,
+            title: "Title".into(),
+            summary: "Summary".into(),
+            status,
+            selected: true,
+            remote_visible: false,
+            created_at: "2026-07-17T00:00:00Z".into(),
+            updated_at: "2026-07-17T01:00:00Z".into(),
+            archived_at: None,
+            last_run_id: Some("run-1".into()),
+            last_runtime_kind: Some("owned_agent".into()),
+            last_provider_id: Some("openai".into()),
+            lineage,
+        }
+    }
+
+    #[test]
+    fn create_request_infers_compatible_session_kinds() {
+        for (session_kind, runtime_agent_id, expected) in [
+            (None, None, AgentSessionKind::Standard),
+            (
+                None,
+                Some(RuntimeAgentIdDto::ComputerUse),
+                AgentSessionKind::ComputerUse,
+            ),
+            (
+                Some(AgentSessionKindDto::ComputerUse),
+                None,
+                AgentSessionKind::ComputerUse,
+            ),
+            (
+                Some(AgentSessionKindDto::ComputerUse),
+                Some(RuntimeAgentIdDto::ComputerUse),
+                AgentSessionKind::ComputerUse,
+            ),
+            (
+                Some(AgentSessionKindDto::Standard),
+                Some(RuntimeAgentIdDto::Engineer),
+                AgentSessionKind::Standard,
+            ),
+        ] {
+            assert_eq!(
+                create_request_session_kind(&create_request(session_kind, runtime_agent_id))
+                    .expect("compatible request"),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn create_request_rejects_cross_kind_agents() {
+        let error = create_request_session_kind(&create_request(
+            Some(AgentSessionKindDto::ComputerUse),
+            Some(RuntimeAgentIdDto::Engineer),
+        ))
+        .expect_err("standard agent cannot start computer-use session");
+        assert_eq!(error.code, "computer_use_agent_required");
+
+        let error = create_request_session_kind(&create_request(
+            Some(AgentSessionKindDto::Standard),
+            Some(RuntimeAgentIdDto::ComputerUse),
+        ))
+        .expect_err("computer-use agent cannot start standard session");
+        assert_eq!(error.code, "computer_use_session_required");
+    }
+
+    #[test]
+    fn session_dto_projects_visibility_status_and_lineage() {
+        let active = agent_session_dto(&session(
+            AgentSessionKind::Standard,
+            AgentSessionStatus::Active,
+            Some(lineage(AgentSessionLineageBoundaryKind::Message)),
+        ));
+        assert_eq!(active.session_kind, AgentSessionKindDto::Standard);
+        assert_eq!(active.status, AgentSessionStatusDto::Active);
+        assert!(active.remote_visible);
+        assert_eq!(
+            active
+                .lineage
+                .as_ref()
+                .map(|lineage| &lineage.source_boundary_kind),
+            Some(&AgentSessionLineageBoundaryKindDto::Message)
+        );
+        assert_eq!(
+            active
+                .lineage
+                .as_ref()
+                .and_then(|lineage| lineage.diagnostic.as_ref())
+                .map(|diagnostic| diagnostic.code.as_str()),
+            Some("partial_replay")
+        );
+
+        let archived = agent_session_dto(&session(
+            AgentSessionKind::Standard,
+            AgentSessionStatus::Archived,
+            None,
+        ));
+        assert_eq!(archived.status, AgentSessionStatusDto::Archived);
+        assert!(!archived.remote_visible);
+
+        let computer_use = agent_session_dto(&session(
+            AgentSessionKind::ComputerUse,
+            AgentSessionStatus::Active,
+            None,
+        ));
+        assert_eq!(computer_use.session_kind, AgentSessionKindDto::ComputerUse);
+        assert!(!computer_use.remote_visible);
+    }
+
+    #[test]
+    fn lineage_dto_maps_every_boundary_kind() {
+        for (boundary, expected) in [
+            (
+                AgentSessionLineageBoundaryKind::Run,
+                AgentSessionLineageBoundaryKindDto::Run,
+            ),
+            (
+                AgentSessionLineageBoundaryKind::Message,
+                AgentSessionLineageBoundaryKindDto::Message,
+            ),
+            (
+                AgentSessionLineageBoundaryKind::Checkpoint,
+                AgentSessionLineageBoundaryKindDto::Checkpoint,
+            ),
+        ] {
+            let dto = agent_session_lineage_dto(&lineage(boundary));
+            assert_eq!(dto.source_boundary_kind, expected);
+            assert_eq!(dto.source_message_id, Some(7));
+            assert_eq!(dto.source_checkpoint_id, Some(9));
+            assert_eq!(
+                dto.source_deleted_at.as_deref(),
+                Some("2026-07-18T00:00:00Z")
+            );
+        }
     }
 }

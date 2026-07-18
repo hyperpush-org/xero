@@ -101,6 +101,10 @@ import type {
   WorkflowRunNodeDto,
 } from '@/src/lib/xero-model/workflow-run'
 import {
+  buildWorkflowInitialInput,
+  getWorkflowStartInputPlan,
+} from '@/src/lib/xero-model/workflow-start-input'
+import {
   agentRefKey,
   type AgentRefDto,
   type WorkflowAgentSummaryDto,
@@ -171,6 +175,7 @@ interface WorkflowDefinitionCanvasProps {
   onCanvasStatusChange?: (status: WorkflowDefinitionCanvasStatus | null) => void
   onStartRun?: (workflowId: string, initialInput: unknown) => Promise<WorkflowRunDto | void>
   startRunRequestToken?: number
+  onWorkflowStartRequestHandled?: (requestToken: number) => void
   onCancelRun?: (runId: string) => Promise<WorkflowRunDto | void>
   onRetryNodeRun?: (runId: string, nodeRunId: string) => Promise<WorkflowRunDto | void>
   onSkipBranch?: (
@@ -219,11 +224,6 @@ type WorkflowEdgeTone = {
   labelBackground: string
   labelBorderColor: string
   labelTextColor: string
-}
-type WorkflowRunInputField = {
-  key: string
-  label: string
-  required: boolean
 }
 type WorkflowRunPreview = {
   stateReads: string[]
@@ -392,6 +392,7 @@ function WorkflowDefinitionCanvasInner({
   onCanvasStatusChange,
   onStartRun,
   startRunRequestToken = 0,
+  onWorkflowStartRequestHandled,
   onCancelRun,
   onRetryNodeRun,
   onSkipBranch,
@@ -427,17 +428,29 @@ function WorkflowDefinitionCanvasInner({
     setDraft(autoLayoutWorkflowDefinition(cloneDefinition(definition)))
     setSelection(null)
     setLocalError(null)
+    setStartDialogOpen(false)
+    setStartInputs({})
   }, [definition.id, definition.version, definition.updatedAt, initialMode])
 
   // A bumped token is an external request (e.g. the sidebar's "Start run"
   // action) to collect run inputs and start this workflow.
-  const handledStartRunRequestTokenRef = useRef(startRunRequestToken)
+  const handledStartRunRequestTokenRef = useRef(0)
   useEffect(() => {
-    if (startRunRequestToken === handledStartRunRequestTokenRef.current) return
+    if (startRunRequestToken <= 0) {
+      handledStartRunRequestTokenRef.current = 0
+      return
+    }
+    if (
+      startRunRequestToken === handledStartRunRequestTokenRef.current ||
+      !onStartRun ||
+      mode === 'edit'
+    ) {
+      return
+    }
     handledStartRunRequestTokenRef.current = startRunRequestToken
-    if (startRunRequestToken <= 0 || !onStartRun || mode === 'edit') return
     setStartDialogOpen(true)
-  }, [mode, onStartRun, startRunRequestToken])
+    onWorkflowStartRequestHandled?.(startRunRequestToken)
+  }, [mode, onStartRun, onWorkflowStartRequestHandled, startRunRequestToken])
 
   useEffect(
     () => () => {
@@ -469,15 +482,17 @@ function WorkflowDefinitionCanvasInner({
     () => validateWorkflowDefinition(effectiveDefinition),
     [effectiveDefinition],
   )
-  const startInputFields = useMemo(() => workflowRunInputFields(definition), [definition])
+  const startInputPlan = useMemo(() => getWorkflowStartInputPlan(definition), [definition])
+  const startInputFields = startInputPlan.fields
+  const firstStartInputKey = startInputPlan.requiredFields[0]?.key ?? startInputFields[0]?.key ?? null
   const startPreview = useMemo(() => buildWorkflowRunPreview(definition), [definition])
   const startInputValid = useMemo(
     () =>
-      startInputFields.every((field) => {
-        if (!field.required) return true
-        return (startInputs[field.key] ?? '').trim().length > 0
-      }),
-    [startInputFields, startInputs],
+      !startInputPlan.hasRequiredInput ||
+      startInputPlan.requiredFields.every(
+        (field) => (startInputs[field.key] ?? '').trim().length > 0,
+      ),
+    [startInputPlan, startInputs],
   )
   const selectedNode = selection?.kind === 'node'
     ? effectiveDefinition.nodes.find((node) => node.id === selection.id) ?? null
@@ -809,7 +824,7 @@ function WorkflowDefinitionCanvasInner({
     if (!onStartRun) return
     setLocalError(null)
     try {
-      await onStartRun(definition.id, buildInitialWorkflowInput(startInputFields, startInputs))
+      await onStartRun(definition.id, buildWorkflowInitialInput(startInputFields, startInputs))
       setStartDialogOpen(false)
       setStartInputs({})
     } catch (error) {
@@ -1219,6 +1234,7 @@ function WorkflowDefinitionCanvasInner({
                     </Label>
                     <Textarea
                       id={`workflow-start-${field.key}`}
+                      autoFocus={field.key === firstStartInputKey}
                       value={startInputs[field.key] ?? ''}
                       onChange={(event) =>
                         setStartInputs((current) => ({
@@ -4090,67 +4106,6 @@ function stateFilterFromText(
     value: text,
     values: [],
   }
-}
-
-function workflowRunInputFields(definition: WorkflowDefinitionDto): WorkflowRunInputField[] {
-  const fields = new Map<string, WorkflowRunInputField>()
-  const visitBindings = (bindings: readonly WorkflowInputBindingDto[]) => {
-    for (const binding of bindings) {
-      if (!isRunInputBinding(binding)) continue
-      const key = inputFieldKey(binding.name, binding.path ?? null)
-      const previous = fields.get(key)
-      fields.set(key, {
-        key,
-        label: binding.promptLabel ?? humanize(binding.name),
-        required: Boolean(previous?.required || binding.required),
-      })
-    }
-  }
-  for (const node of definition.nodes) {
-    if (
-      node.type === 'agent' ||
-      node.type === 'state_write' ||
-      node.type === 'state_patch' ||
-      node.type === 'subgraph'
-    ) {
-      visitBindings(node.inputBindings)
-    }
-  }
-  for (const subgraph of definition.subgraphs) {
-    visitBindings(subgraph.inputBindings)
-    for (const node of subgraph.nodes) {
-      if (
-        node.type === 'agent' ||
-        node.type === 'state_write' ||
-        node.type === 'state_patch' ||
-        node.type === 'subgraph'
-      ) {
-        visitBindings(node.inputBindings)
-      }
-    }
-  }
-  return [...fields.values()].sort((left, right) => Number(right.required) - Number(left.required) || left.label.localeCompare(right.label))
-}
-
-function isRunInputBinding(binding: unknown): binding is WorkflowInputBindingDto & { source: 'run_input' } {
-  return isRecord(binding) && binding.source === 'run_input' && typeof binding.name === 'string'
-}
-
-function inputFieldKey(name: string, path: string | null): string {
-  const field = path?.match(/^\$\.([A-Za-z0-9_-]+)$/)?.[1]
-  return (field || name).replace(/[^A-Za-z0-9_-]+/g, '_')
-}
-
-function buildInitialWorkflowInput(
-  fields: readonly WorkflowRunInputField[],
-  values: Record<string, string>,
-): Record<string, string> {
-  const input: Record<string, string> = {}
-  for (const field of fields) {
-    const value = (values[field.key] ?? '').trim()
-    if (value) input[field.key] = value
-  }
-  return input
 }
 
 function buildWorkflowRunPreview(definition: WorkflowDefinitionDto): WorkflowRunPreview {

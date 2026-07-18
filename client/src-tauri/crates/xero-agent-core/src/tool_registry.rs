@@ -908,6 +908,14 @@ impl Default for ToolExecutionControl {
 pub trait ToolHandler: Send + Sync {
     fn descriptor(&self) -> ToolDescriptorV2;
 
+    /// Returns true when the handler controls process-local runtime state that
+    /// cannot survive execution in a short-lived mutation worker. The handler
+    /// still runs through policy, sandbox, checkpoint, rollback, budget, and
+    /// cancellation gates, but executes in the supervising process.
+    fn requires_parent_process_execution(&self, _call: &ToolCallInput) -> bool {
+        false
+    }
+
     fn validate_input(&self, input: &JsonValue) -> ToolRegistryResult<()> {
         validate_input_against_schema(&self.descriptor(), input)
     }
@@ -1362,6 +1370,14 @@ impl ToolPolicy for StaticToolPolicy {
 }
 
 pub trait ToolRollback: Send + Sync {
+    /// Returns true when checkpoint and rollback callbacks depend on process-local state that is
+    /// not safe to enter after `fork` (for example SQLite, async runtimes, or shared mutexes).
+    /// The mutation handler remains isolated, while these bookkeeping callbacks run in the
+    /// supervising parent process.
+    fn requires_parent_process(&self) -> bool {
+        false
+    }
+
     fn checkpoint_before(
         &self,
         call: &ToolCallInput,
@@ -1828,6 +1844,32 @@ impl ToolRegistryV2 {
         calls: &[ToolCallInput],
         config: &ToolDispatchConfig,
     ) -> ToolBatchDispatchReport {
+        match self.dispatch_batch_with_group_hook::<std::convert::Infallible, _>(
+            calls,
+            config,
+            |_| Ok(()),
+        ) {
+            Ok(report) => report,
+            Err(error) => match error {},
+        }
+    }
+
+    /// Dispatch a batch and run a synchronous hook after each execution group.
+    ///
+    /// Mutating calls are isolated into individual sequential groups. Consumers
+    /// that persist parent-process state for isolated mutations can use this
+    /// hook to make each successful mutation observable before the next group
+    /// starts, without giving up parallel dispatch for read-only groups or
+    /// resetting the shared batch budget.
+    pub fn dispatch_batch_with_group_hook<E, F>(
+        &self,
+        calls: &[ToolCallInput],
+        config: &ToolDispatchConfig,
+        mut after_group: F,
+    ) -> Result<ToolBatchDispatchReport, E>
+    where
+        F: FnMut(&mut ToolGroupDispatchReport) -> Result<(), E>,
+    {
         let mut tracker = ToolBudgetTracker::new(config.budget.clone());
         let mut reports = Vec::new();
 
@@ -1849,15 +1891,17 @@ impl ToolRegistryV2 {
             let elapsed = started.elapsed();
             let group_timed_out = outcomes.iter().any(outcome_is_timeout);
             let timeout_error = timeout_error_for_elapsed(elapsed, &config.budget, group_timed_out);
-            reports.push(ToolGroupDispatchReport {
+            let mut report = ToolGroupDispatchReport {
                 mode: group.mode,
                 elapsed_ms: elapsed.as_millis(),
                 outcomes,
                 timeout_error,
-            });
+            };
+            after_group(&mut report)?;
+            reports.push(report);
         }
 
-        ToolBatchDispatchReport { groups: reports }
+        Ok(ToolBatchDispatchReport { groups: reports })
     }
 
     fn dispatch_read_only_group(
@@ -1981,7 +2025,12 @@ impl ToolRegistryV2 {
         let cancellation_token = ToolCancellationToken::new();
         match self.prepare_call(&call, tracker, config, deadline, cancellation_token) {
             Ok(prepared) => {
-                let mut outcome = if prepared.descriptor.mutability == ToolMutability::Mutating {
+                let parent_process_execution = prepared
+                    .handler
+                    .requires_parent_process_execution(&prepared.call);
+                let mut outcome = if parent_process_execution {
+                    execute_prepared_call(prepared, &config.context, config.rollback.as_deref())
+                } else if prepared.descriptor.mutability == ToolMutability::Mutating {
                     match self.mutation_boundary {
                         MutationBoundary::TerminableProcess => {
                             let mut mutation_state = self
@@ -2346,6 +2395,33 @@ fn execute_mutating_call_in_boundary(
             }
         }
     }
+    let rollback_in_parent = config
+        .rollback
+        .as_deref()
+        .is_some_and(ToolRollback::requires_parent_process);
+    let parent_checkpoint = if rollback_in_parent {
+        match config.rollback.as_deref() {
+            Some(recorder) => match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                recorder.checkpoint_before(&prepared.call, &prepared.descriptor)
+            })) {
+                Ok(Ok(checkpoint)) => Some(checkpoint),
+                Ok(Err(error)) => return checkpoint_failure_outcome(prepared, error),
+                Err(_) => {
+                    let error = ToolExecutionError::retryable(
+                        "agent_tool_checkpoint_panicked",
+                        format!(
+                            "Mutation checkpoint for tool `{}` panicked in the supervising process.",
+                            prepared.call.tool_name
+                        ),
+                    );
+                    return checkpoint_failure_outcome(prepared, error);
+                }
+            },
+            None => Some(None),
+        }
+    } else {
+        None
+    };
     let (parent_stream, child_stream) = match UnixStream::pair() {
         Ok(streams) => streams,
         Err(error) => {
@@ -2383,7 +2459,12 @@ fn execute_mutating_call_in_boundary(
         execute_mutation_worker(
             prepared,
             &config.context,
-            config.rollback.as_deref(),
+            if rollback_in_parent {
+                None
+            } else {
+                config.rollback.as_deref()
+            },
+            parent_checkpoint.clone(),
             &mut child_stream,
         );
         // SAFETY: this is the fork child. `_exit` avoids unwinding parent-owned Rust state.
@@ -2398,7 +2479,7 @@ fn execute_mutating_call_in_boundary(
     let (message_tx, message_rx) = mpsc::channel();
     let reader = thread::spawn(move || read_mutation_worker_messages(parent_stream, message_tx));
     let mut phase = MutationWorkerPhase::Starting;
-    let mut checkpoint = None;
+    let mut checkpoint = parent_checkpoint.flatten();
     let mut outcome = None;
     let mut cancelled = false;
     let mut worker_disconnected = false;
@@ -2445,6 +2526,36 @@ fn execute_mutating_call_in_boundary(
         let _ = wait_for_mutation_worker(child_pid, None);
         cleanup_mutation_process_group(child_pid);
         let _ = reader.join();
+        if rollback_in_parent {
+            if let (ToolDispatchOutcome::Failed(failure), Some(recorder), Some(checkpoint)) = (
+                &mut outcome,
+                config.rollback.as_deref(),
+                checkpoint.as_ref(),
+            ) {
+                phase = MutationWorkerPhase::Rollback;
+                audit_events.push("mutation_phase_rollback".to_string());
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    recorder.rollback_after_failure(
+                        &pending.call,
+                        &pending.descriptor,
+                        checkpoint,
+                        &failure.error,
+                    )
+                })) {
+                    Ok(Ok(payload)) => failure.rollback_payload = Some(payload),
+                    Ok(Err(error)) => failure.rollback_error = Some(error),
+                    Err(_) => {
+                        failure.rollback_error = Some(ToolExecutionError::retryable(
+                            "agent_tool_rollback_panicked",
+                            format!(
+                                "Rollback for mutating tool `{}` panicked in the supervising process.",
+                                pending.call.tool_name
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
         let affected_paths = mutation_affected_paths(&pending.call.input, checkpoint.as_ref());
         if let ToolDispatchOutcome::Failed(failure) = &mut outcome {
             if failure.rollback_error.is_some() {
@@ -2564,6 +2675,7 @@ fn execute_mutation_worker(
     prepared: PreparedToolCall,
     context: &ToolExecutionContext,
     rollback: Option<&dyn ToolRollback>,
+    parent_checkpoint: Option<Option<JsonValue>>,
     stream: &mut UnixStream,
 ) {
     let _ = send_mutation_worker_message(
@@ -2580,38 +2692,41 @@ fn execute_mutation_worker(
         return;
     }
 
-    let checkpoint = match rollback {
-        Some(recorder) => {
-            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                recorder.checkpoint_before(&prepared.call, &prepared.descriptor)
-            })) {
-                Ok(Ok(checkpoint)) => checkpoint,
-                Ok(Err(error)) => {
-                    let outcome = checkpoint_failure_outcome(prepared, error);
-                    let _ = send_mutation_worker_message(
-                        stream,
-                        &MutationWorkerMessage::Outcome(Box::new(outcome)),
-                    );
-                    return;
-                }
-                Err(_) => {
-                    let error = ToolExecutionError::retryable(
+    let checkpoint = match parent_checkpoint {
+        Some(checkpoint) => checkpoint,
+        None => match rollback {
+            Some(recorder) => {
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    recorder.checkpoint_before(&prepared.call, &prepared.descriptor)
+                })) {
+                    Ok(Ok(checkpoint)) => checkpoint,
+                    Ok(Err(error)) => {
+                        let outcome = checkpoint_failure_outcome(prepared, error);
+                        let _ = send_mutation_worker_message(
+                            stream,
+                            &MutationWorkerMessage::Outcome(Box::new(outcome)),
+                        );
+                        return;
+                    }
+                    Err(_) => {
+                        let error = ToolExecutionError::retryable(
                         "agent_tool_checkpoint_panicked",
                         format!(
                             "Mutation checkpoint for tool `{}` panicked inside its isolated worker.",
                             prepared.call.tool_name
                         ),
                     );
-                    let outcome = checkpoint_failure_outcome(prepared, error);
-                    let _ = send_mutation_worker_message(
-                        stream,
-                        &MutationWorkerMessage::Outcome(Box::new(outcome)),
-                    );
-                    return;
+                        let outcome = checkpoint_failure_outcome(prepared, error);
+                        let _ = send_mutation_worker_message(
+                            stream,
+                            &MutationWorkerMessage::Outcome(Box::new(outcome)),
+                        );
+                        return;
+                    }
                 }
             }
-        }
-        None => None,
+            None => None,
+        },
     };
     if let Err(error) = send_mutation_worker_message(
         stream,
@@ -2836,6 +2951,25 @@ fn recover_mutation_quarantine(
                 ),
             )
         })?;
+    if rollback.requires_parent_process() {
+        return std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            rollback.recover_after_termination(
+                &quarantine.call,
+                &quarantine.descriptor,
+                quarantine.checkpoint.as_ref(),
+                &quarantine.error,
+            )
+        }))
+        .unwrap_or_else(|_| {
+            Err(ToolExecutionError::retryable(
+                "agent_tool_rollback_panicked",
+                format!(
+                    "Recovery rollback for tool `{}` panicked in the supervising process.",
+                    quarantine.call.tool_name
+                ),
+            ))
+        });
+    }
     let (parent_stream, child_stream) = UnixStream::pair().map_err(|error| {
         ToolExecutionError::retryable(
             "agent_tool_recovery_boundary_socket_failed",
@@ -5800,6 +5934,90 @@ mod tests {
         assert!(!*executed.lock().unwrap());
     }
 
+    #[cfg(unix)]
+    #[test]
+    fn process_local_mutation_bookkeeping_runs_in_the_supervising_parent() {
+        #[derive(Debug)]
+        struct ParentProcessRollback {
+            checkpoint_pid: Arc<AtomicU64>,
+            rollback_pid: Arc<AtomicU64>,
+        }
+
+        impl ToolRollback for ParentProcessRollback {
+            fn requires_parent_process(&self) -> bool {
+                true
+            }
+
+            fn checkpoint_before(
+                &self,
+                call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+            ) -> ToolRegistryResult<Option<JsonValue>> {
+                self.checkpoint_pid
+                    .store(u64::from(std::process::id()), Ordering::SeqCst);
+                Ok(Some(json!({ "checkpointFor": call.tool_call_id })))
+            }
+
+            fn rollback_after_failure(
+                &self,
+                call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+                checkpoint: &JsonValue,
+                _error: &ToolExecutionError,
+            ) -> ToolRegistryResult<JsonValue> {
+                self.rollback_pid
+                    .store(u64::from(std::process::id()), Ordering::SeqCst);
+                Ok(json!({ "rolledBack": call.tool_call_id, "checkpoint": checkpoint }))
+            }
+        }
+
+        let checkpoint_pid = Arc::new(AtomicU64::new(0));
+        let rollback_pid = Arc::new(AtomicU64::new(0));
+        let rollback = Arc::new(ParentProcessRollback {
+            checkpoint_pid: Arc::clone(&checkpoint_pid),
+            rollback_pid: Arc::clone(&rollback_pid),
+        });
+        let mut registry = ToolRegistryV2::with_read_only_worker_limit(1);
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("parent_bookkeeping", ToolMutability::Mutating),
+                |_context, _call| {
+                    Err(ToolExecutionError::retryable(
+                        "expected_mutation_failure",
+                        "exercise parent-side rollback",
+                    ))
+                },
+            ))
+            .expect("register parent-bookkeeping mutation");
+        let config = ToolDispatchConfig {
+            rollback: Some(rollback),
+            ..ToolDispatchConfig::default()
+        };
+
+        let outcome = registry.dispatch_call(
+            call(
+                "call-parent-bookkeeping",
+                "parent_bookkeeping",
+                "src/lib.rs",
+            ),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+
+        let parent_pid = u64::from(std::process::id());
+        assert_eq!(checkpoint_pid.load(Ordering::SeqCst), parent_pid);
+        assert_eq!(rollback_pid.load(Ordering::SeqCst), parent_pid);
+        assert_eq!(
+            outcome
+                .failure()
+                .and_then(|failure| failure.rollback_payload.as_ref()),
+            Some(&json!({
+                "rolledBack": "call-parent-bookkeeping",
+                "checkpoint": { "checkpointFor": "call-parent-bookkeeping" }
+            }))
+        );
+    }
+
     #[test]
     fn repeated_failing_tool_sets_doom_loop_signal() {
         let mut registry = ToolRegistryV2::new();
@@ -6181,6 +6399,68 @@ mod tests {
                 ToolGroupExecutionMode::ParallelReadOnly,
                 ToolGroupExecutionMode::SequentialMutating,
                 ToolGroupExecutionMode::ParallelReadOnly,
+            ]
+        );
+    }
+
+    #[test]
+    fn group_hook_runs_before_the_next_mutating_group() {
+        let lifecycle = Arc::new(Mutex::new(Vec::<String>::new()));
+        let mut registry = ToolRegistryV2::new().with_cooperative_mutation_boundary_for_tests();
+        for (tool_name, expected_prior_hook) in
+            [("write_first", None), ("write_second", Some("hook:call-1"))]
+        {
+            let lifecycle = Arc::clone(&lifecycle);
+            registry
+                .register(StaticToolHandler::new(
+                    descriptor(tool_name, ToolMutability::Mutating),
+                    move |_context, call| {
+                        if let Some(expected) = expected_prior_hook {
+                            assert!(lifecycle
+                                .lock()
+                                .unwrap()
+                                .iter()
+                                .any(|item| item == expected));
+                        }
+                        lifecycle
+                            .lock()
+                            .unwrap()
+                            .push(format!("execute:{}", call.tool_call_id));
+                        Ok(ToolHandlerOutput::new("write", json!({})))
+                    },
+                ))
+                .expect("register mutating tool");
+        }
+
+        let lifecycle_for_hook = Arc::clone(&lifecycle);
+        let report = registry
+            .dispatch_batch_with_group_hook(
+                &[
+                    call("call-1", "write_first", "a"),
+                    call("call-2", "write_second", "b"),
+                ],
+                &ToolDispatchConfig::default(),
+                move |group| {
+                    let ToolDispatchOutcome::Succeeded(success) = &group.outcomes[0] else {
+                        panic!("mutation should succeed");
+                    };
+                    lifecycle_for_hook
+                        .lock()
+                        .unwrap()
+                        .push(format!("hook:{}", success.tool_call_id));
+                    Ok::<(), ()>(())
+                },
+            )
+            .expect("group hook succeeds");
+
+        assert_eq!(report.groups.len(), 2);
+        assert_eq!(
+            *lifecycle.lock().unwrap(),
+            vec![
+                "execute:call-1",
+                "hook:call-1",
+                "execute:call-2",
+                "hook:call-2",
             ]
         );
     }

@@ -1460,6 +1460,11 @@ impl AutonomousToolRuntime {
     }
 
     fn changed_files_after_command(&self) -> (Vec<RepositoryStatusEntryDto>, bool) {
+        if xero_agent_core::mutation_boundary_child_active() {
+            // The supervising parent completes broad code capture after the isolated command.
+            // Avoid entering git2 and its process-global caches in a post-fork child.
+            return (Vec::new(), false);
+        }
         let Ok(response) = status::load_repository_status_from_root(&self.repo_root) else {
             return (Vec::new(), false);
         };

@@ -385,9 +385,21 @@ impl DesktopAgentCoreRuntime {
             &request.run_id,
         )?;
         let supervisor = self.supervisor.clone();
+        let failure_repo_root = request.repo_root.clone();
+        let failure_project_id = request.project_id.clone();
+        let failure_run_id = request.run_id.clone();
         thread::spawn(move || {
             let token = lease.token();
-            let _ = drive_owned_agent_continuation(continuation, token, Some(supervisor));
+            if let Err(error) =
+                drive_owned_agent_continuation(continuation, token, Some(supervisor))
+            {
+                let _ = record_unhandled_owned_agent_drive_error(
+                    &failure_repo_root,
+                    &failure_project_id,
+                    &failure_run_id,
+                    &error,
+                );
+            }
             drop(lease);
         });
         Ok(())
@@ -419,9 +431,19 @@ impl DesktopAgentCoreRuntime {
             }
         };
         let supervisor = self.supervisor.clone();
+        let failure_repo_root = request.repo_root.clone();
+        let failure_project_id = request.project_id.clone();
+        let failure_run_id = request.run_id.clone();
         thread::spawn(move || {
             let token = lease.token();
-            let _ = drive_owned_agent_continuation(request, token, Some(supervisor));
+            if let Err(error) = drive_owned_agent_continuation(request, token, Some(supervisor)) {
+                let _ = record_unhandled_owned_agent_drive_error(
+                    &failure_repo_root,
+                    &failure_project_id,
+                    &failure_run_id,
+                    &error,
+                );
+            }
             drop(lease);
         });
         Ok(())
@@ -899,5 +921,307 @@ fn core_event_kind_from_desktop(kind: &AgentRunEventKind) -> CoreRuntimeEventKin
         AgentRunEventKind::RunCompleted => CoreRuntimeEventKind::RunCompleted,
         AgentRunEventKind::RunFailed => CoreRuntimeEventKind::RunFailed,
         AgentRunEventKind::SubagentLifecycle => CoreRuntimeEventKind::SubagentLifecycle,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_session_operation_run_ids_are_validated_without_storage_lookup() {
+        assert_eq!(
+            run_id_for_session_operation(
+                Path::new("/unused"),
+                "project",
+                "session",
+                Some("run-1".into()),
+            )
+            .expect("explicit run id"),
+            "run-1"
+        );
+        assert_eq!(
+            source_run_id_for_session_fork(
+                Path::new("/unused"),
+                "project",
+                "session",
+                Some("run-2".into()),
+            )
+            .expect("explicit source run id"),
+            "run-2"
+        );
+        assert!(run_id_for_session_operation(
+            Path::new("/unused"),
+            "project",
+            "session",
+            Some("   ".into()),
+        )
+        .is_err());
+        assert!(source_run_id_for_session_fork(
+            Path::new("/unused"),
+            "project",
+            "session",
+            Some(String::new()),
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn desktop_export_request_converts_to_core_contract() {
+        let request = ExportTraceRequest::from(DesktopExportTraceRequest {
+            repo_root: PathBuf::from("/unused"),
+            project_id: "project".into(),
+            run_id: "run-1".into(),
+        });
+        assert_eq!(request.project_id, "project");
+        assert_eq!(request.run_id, "run-1");
+    }
+
+    #[test]
+    fn every_desktop_run_status_maps_to_the_core_protocol() {
+        for (desktop, core) in [
+            (AgentRunStatus::Starting, CoreRunStatus::Starting),
+            (AgentRunStatus::Running, CoreRunStatus::Running),
+            (AgentRunStatus::Paused, CoreRunStatus::Paused),
+            (AgentRunStatus::Cancelling, CoreRunStatus::Cancelling),
+            (AgentRunStatus::Cancelled, CoreRunStatus::Cancelled),
+            (AgentRunStatus::HandedOff, CoreRunStatus::HandedOff),
+            (AgentRunStatus::Completed, CoreRunStatus::Completed),
+            (AgentRunStatus::Failed, CoreRunStatus::Failed),
+        ] {
+            assert_eq!(core_status_from_desktop(&desktop), core);
+        }
+    }
+
+    #[test]
+    fn every_desktop_message_role_maps_to_the_core_protocol() {
+        for (desktop, core) in [
+            (AgentMessageRole::System, CoreMessageRole::System),
+            (AgentMessageRole::Developer, CoreMessageRole::Developer),
+            (AgentMessageRole::User, CoreMessageRole::User),
+            (AgentMessageRole::Assistant, CoreMessageRole::Assistant),
+            (AgentMessageRole::Tool, CoreMessageRole::Tool),
+        ] {
+            assert_eq!(core_message_role_from_desktop(&desktop), core);
+        }
+    }
+
+    #[test]
+    fn every_desktop_event_kind_maps_to_the_core_protocol() {
+        for (desktop, core) in [
+            (
+                AgentRunEventKind::RunStarted,
+                CoreRuntimeEventKind::RunStarted,
+            ),
+            (
+                AgentRunEventKind::AssistantCandidate,
+                CoreRuntimeEventKind::AssistantCandidate,
+            ),
+            (
+                AgentRunEventKind::MessageDelta,
+                CoreRuntimeEventKind::MessageDelta,
+            ),
+            (
+                AgentRunEventKind::ReasoningSummary,
+                CoreRuntimeEventKind::ReasoningSummary,
+            ),
+            (
+                AgentRunEventKind::ToolStarted,
+                CoreRuntimeEventKind::ToolStarted,
+            ),
+            (
+                AgentRunEventKind::ToolDelta,
+                CoreRuntimeEventKind::ToolDelta,
+            ),
+            (
+                AgentRunEventKind::ToolCompleted,
+                CoreRuntimeEventKind::ToolCompleted,
+            ),
+            (
+                AgentRunEventKind::FileChanged,
+                CoreRuntimeEventKind::FileChanged,
+            ),
+            (
+                AgentRunEventKind::CommandOutput,
+                CoreRuntimeEventKind::CommandOutput,
+            ),
+            (
+                AgentRunEventKind::ValidationStarted,
+                CoreRuntimeEventKind::ValidationStarted,
+            ),
+            (
+                AgentRunEventKind::ValidationCompleted,
+                CoreRuntimeEventKind::ValidationCompleted,
+            ),
+            (
+                AgentRunEventKind::ToolRegistrySnapshot,
+                CoreRuntimeEventKind::ToolRegistrySnapshot,
+            ),
+            (
+                AgentRunEventKind::PolicyDecision,
+                CoreRuntimeEventKind::PolicyDecision,
+            ),
+            (
+                AgentRunEventKind::StateTransition,
+                CoreRuntimeEventKind::StateTransition,
+            ),
+            (
+                AgentRunEventKind::PlanUpdated,
+                CoreRuntimeEventKind::PlanUpdated,
+            ),
+            (
+                AgentRunEventKind::RouteRequested,
+                CoreRuntimeEventKind::RouteRequested,
+            ),
+            (
+                AgentRunEventKind::VerificationGate,
+                CoreRuntimeEventKind::VerificationGate,
+            ),
+            (
+                AgentRunEventKind::ContextManifestRecorded,
+                CoreRuntimeEventKind::ContextManifestRecorded,
+            ),
+            (
+                AgentRunEventKind::RetrievalPerformed,
+                CoreRuntimeEventKind::RetrievalPerformed,
+            ),
+            (
+                AgentRunEventKind::MemoryCandidateCaptured,
+                CoreRuntimeEventKind::MemoryCandidateCaptured,
+            ),
+            (
+                AgentRunEventKind::EnvironmentLifecycleUpdate,
+                CoreRuntimeEventKind::EnvironmentLifecycleUpdate,
+            ),
+            (
+                AgentRunEventKind::SandboxLifecycleUpdate,
+                CoreRuntimeEventKind::SandboxLifecycleUpdate,
+            ),
+            (
+                AgentRunEventKind::ActionRequired,
+                CoreRuntimeEventKind::ActionRequired,
+            ),
+            (
+                AgentRunEventKind::ApprovalRequired,
+                CoreRuntimeEventKind::ApprovalRequired,
+            ),
+            (
+                AgentRunEventKind::ToolPermissionGrant,
+                CoreRuntimeEventKind::ToolPermissionGrant,
+            ),
+            (
+                AgentRunEventKind::ProviderModelChanged,
+                CoreRuntimeEventKind::ProviderModelChanged,
+            ),
+            (
+                AgentRunEventKind::RuntimeSettingsChanged,
+                CoreRuntimeEventKind::RuntimeSettingsChanged,
+            ),
+            (
+                AgentRunEventKind::RunPaused,
+                CoreRuntimeEventKind::RunPaused,
+            ),
+            (
+                AgentRunEventKind::RunCompleted,
+                CoreRuntimeEventKind::RunCompleted,
+            ),
+            (
+                AgentRunEventKind::RunFailed,
+                CoreRuntimeEventKind::RunFailed,
+            ),
+            (
+                AgentRunEventKind::SubagentLifecycle,
+                CoreRuntimeEventKind::SubagentLifecycle,
+            ),
+        ] {
+            assert_eq!(core_event_kind_from_desktop(&desktop), core);
+        }
+    }
+
+    #[test]
+    fn message_conversion_decodes_valid_metadata_and_discards_malformed_metadata() {
+        let message = |metadata: &str| AgentMessageRecord {
+            id: 1,
+            project_id: "project".into(),
+            run_id: "run-1".into(),
+            role: AgentMessageRole::Assistant,
+            content: "done".into(),
+            provider_metadata_json: Some(metadata.into()),
+            created_at: "2026-07-17T00:00:00Z".into(),
+            attachments: Vec::new(),
+        };
+
+        let converted = core_message_from_desktop(message(r#"{"providerMessageId":"msg-1"}"#));
+        assert_eq!(converted.role, CoreMessageRole::Assistant);
+        assert_eq!(
+            converted
+                .provider_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.provider_message_id.as_deref()),
+            Some("msg-1")
+        );
+        assert_eq!(
+            core_message_from_desktop(message("not-json")).provider_metadata,
+            None
+        );
+    }
+
+    #[test]
+    fn event_conversion_preserves_valid_payload_and_nulls_malformed_payload() {
+        let event = |payload_json: &str| AgentEventRecord {
+            id: 4,
+            project_id: "project".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::PolicyDecision,
+            payload_json: payload_json.into(),
+            created_at: "2026-07-17T00:00:00Z".into(),
+        };
+
+        let converted = core_event_from_desktop(event(r#"{"allowed":true}"#));
+        assert_eq!(converted.event_kind, CoreRuntimeEventKind::PolicyDecision);
+        assert_eq!(converted.payload, json!({ "allowed": true }));
+        assert_eq!(
+            core_event_from_desktop(event("not-json")).payload,
+            JsonValue::Null
+        );
+    }
+
+    #[test]
+    fn context_manifest_conversion_supplies_defaults_and_turn_index() {
+        let converted =
+            core_context_manifest_from_desktop(project_store::AgentContextManifestRecord {
+                id: 1,
+                manifest_id: "manifest-1".into(),
+                project_id: "project".into(),
+                agent_session_id: "session".into(),
+                run_id: None,
+                runtime_agent_id: crate::commands::RuntimeAgentIdDto::Engineer,
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                provider_id: None,
+                model_id: None,
+                request_kind: project_store::AgentContextManifestRequestKind::Test,
+                policy_action: project_store::AgentContextPolicyAction::ContinueNow,
+                policy_reason_code: "test".into(),
+                budget_tokens: None,
+                estimated_tokens: 1,
+                pressure: project_store::AgentContextBudgetPressure::Low,
+                context_hash: "hash".into(),
+                included_contributors: Vec::new(),
+                excluded_contributors: Vec::new(),
+                retrieval_query_ids: Vec::new(),
+                retrieval_result_ids: Vec::new(),
+                compaction_id: None,
+                handoff_id: None,
+                redaction_state: project_store::AgentContextRedactionState::Clean,
+                manifest: json!({ "turnIndex": 3 }),
+                created_at: "2026-07-17T00:00:00Z".into(),
+            });
+
+        assert_eq!(converted.run_id, "");
+        assert_eq!(converted.provider_id, "");
+        assert_eq!(converted.model_id, "");
+        assert_eq!(converted.turn_index, 3);
+        assert_eq!(converted.context_hash, "hash");
     }
 }

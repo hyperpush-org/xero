@@ -13,7 +13,7 @@ use crate::{
     db::project_store::{AgentMessageRole, AgentRunSnapshotRecord},
 };
 
-use super::condition_eval::json_path_lookup;
+use super::condition_eval::{json_path_lookup, lookup_run_input_binding};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WorkflowArtifactValidationDiagnostic {
@@ -147,11 +147,7 @@ pub fn build_agent_node_prompt(
                 path,
                 prompt_label,
             } => {
-                let value = match (initial_input, path.as_deref()) {
-                    (Some(value), Some(path)) => json_path_lookup(value, path).cloned(),
-                    (Some(value), None) => Some(value.clone()),
-                    (None, _) => None,
-                };
+                let value = lookup_run_input_binding(initial_input, name, path.as_deref()).cloned();
                 (
                     name,
                     *required,
@@ -166,11 +162,13 @@ pub fn build_agent_node_prompt(
                 path,
                 prompt_label,
             } => {
-                let value = artifact_index.get(artifact_ref).and_then(|artifact| {
-                    path.as_deref()
-                        .and_then(|path| json_path_lookup(&artifact.payload, path).cloned())
-                        .or_else(|| Some(artifact.payload.clone()))
-                });
+                let value =
+                    artifact_index
+                        .get(artifact_ref)
+                        .and_then(|artifact| match path.as_deref() {
+                            Some(path) => json_path_lookup(&artifact.payload, path).cloned(),
+                            None => Some(artifact.payload.clone()),
+                        });
                 (
                     name,
                     *required,
@@ -185,11 +183,13 @@ pub fn build_agent_node_prompt(
                 path,
                 prompt_label,
             } => {
-                let value = artifact_index.get(state_ref).and_then(|artifact| {
-                    path.as_deref()
-                        .and_then(|path| json_path_lookup(&artifact.payload, path).cloned())
-                        .or_else(|| Some(artifact.payload.clone()))
-                });
+                let value =
+                    artifact_index
+                        .get(state_ref)
+                        .and_then(|artifact| match path.as_deref() {
+                            Some(path) => json_path_lookup(&artifact.payload, path).cloned(),
+                            None => Some(artifact.payload.clone()),
+                        });
                 (
                     name,
                     *required,
@@ -537,6 +537,23 @@ mod tests {
         WorkflowOutputContractDto, WorkflowOutputExtractionDto,
     };
 
+    fn artifact(
+        node_id: &str,
+        artifact_type: &str,
+        payload: JsonValue,
+    ) -> WorkflowArtifactRecordDto {
+        WorkflowArtifactRecordDto {
+            id: format!("artifact-{node_id}-{artifact_type}"),
+            workflow_run_id: "workflow-run".into(),
+            producer_node_run_id: format!("workflow-run:node:{node_id}:attempt:1"),
+            artifact_type: artifact_type.into(),
+            schema_version: 1,
+            payload,
+            render_text: None,
+            created_at: "2026-07-17T00:00:00Z".into(),
+        }
+    }
+
     #[test]
     fn artifact_extraction_accepts_generic_text() {
         let (payload, render_text, diagnostics) =
@@ -604,5 +621,301 @@ mod tests {
 
         assert_eq!(error.code, "workflow_artifact_extraction_failed");
         assert!(error.message.contains("$.summary"));
+    }
+
+    #[test]
+    fn agent_prompt_resolves_omitted_run_input_path_from_binding_name() {
+        let prompt = build_agent_node_prompt(
+            "Release",
+            "Plan",
+            None,
+            &WorkflowOutputContractDto::default(),
+            None,
+            Some(&json!({
+                "goal": "Ship it",
+                "internal": "must not leak into this binding"
+            })),
+            &[WorkflowInputBindingDto::RunInput {
+                name: "goal".into(),
+                required: true,
+                path: None,
+                prompt_label: Some("Goal".into()),
+            }],
+            &[],
+        )
+        .expect("build agent prompt");
+
+        assert_eq!(
+            prompt,
+            "Workflow: Release\nCurrent node: Plan\n\nUse the Workflow inputs below as the contract for this handoff.\n\n## Goal\nShip it\n\n## Final response contract\nReturn exactly one `text_output` artifact, schema version 1.\nRespond with the final user-facing text only."
+        );
+    }
+
+    #[test]
+    fn artifact_extraction_covers_array_shape_and_invalid_json_errors() {
+        let array_contract = WorkflowOutputContractDto {
+            extraction: WorkflowOutputExtractionDto::JsonArray,
+            render_text_path: Some("$[0]".into()),
+            ..WorkflowOutputContractDto::default()
+        };
+        let (payload, render_text, diagnostics) = extract_workflow_artifact_payload(
+            &array_contract,
+            Some(&json!({ "type": "array", "minItems": 1, "items": { "type": "string" } })),
+            "[\"first\"]",
+        )
+        .expect("extract JSON array");
+        assert_eq!(payload, json!(["first"]));
+        assert_eq!(render_text.as_deref(), Some("first"));
+        assert!(diagnostics.is_empty());
+
+        let object_contract = WorkflowOutputContractDto {
+            extraction: WorkflowOutputExtractionDto::JsonObject,
+            ..WorkflowOutputContractDto::default()
+        };
+        for (contract, output) in [(&object_contract, "[]"), (&array_contract, "{}")] {
+            assert_eq!(
+                extract_workflow_artifact_payload(contract, None, output)
+                    .expect_err("wrong JSON shape must fail")
+                    .code,
+                "workflow_artifact_extraction_failed"
+            );
+        }
+        assert_eq!(
+            extract_workflow_artifact_payload(&object_contract, None, "not json")
+                .expect_err("invalid JSON must fail")
+                .code,
+            "workflow_artifact_extraction_failed"
+        );
+        assert_eq!(
+            extract_workflow_artifact_payload(&object_contract, None, "```json\n{invalid}\n```",)
+                .expect_err("invalid fenced JSON must fail")
+                .code,
+            "workflow_artifact_extraction_failed"
+        );
+    }
+
+    #[test]
+    fn artifact_payload_validation_enforces_shapes_and_render_paths() {
+        let object_contract = WorkflowOutputContractDto {
+            extraction: WorkflowOutputExtractionDto::JsonObject,
+            render_text_path: Some("$.summary".into()),
+            ..WorkflowOutputContractDto::default()
+        };
+        assert_eq!(
+            validate_workflow_artifact_payload(&object_contract, None, &json!([]))
+                .expect_err("object contract rejects arrays")
+                .code,
+            "workflow_artifact_schema_invalid"
+        );
+
+        let array_contract = WorkflowOutputContractDto {
+            extraction: WorkflowOutputExtractionDto::JsonArray,
+            ..WorkflowOutputContractDto::default()
+        };
+        assert_eq!(
+            validate_workflow_artifact_payload(&array_contract, None, &json!({}))
+                .expect_err("array contract rejects objects")
+                .code,
+            "workflow_artifact_schema_invalid"
+        );
+
+        let (render_text, diagnostics) = validate_workflow_artifact_payload(
+            &object_contract,
+            None,
+            &json!({ "summary": { "status": "ok" } }),
+        )
+        .expect("valid object payload");
+        assert_eq!(render_text.as_deref(), Some("{\n  \"status\": \"ok\"\n}"));
+        assert!(diagnostics.is_empty());
+
+        assert_eq!(
+            render_text_for_payload(&json!({ "value": null }), Some("$.value")),
+            None
+        );
+        assert_eq!(render_text_for_payload(&json!({}), None), None);
+    }
+
+    #[test]
+    fn agent_prompt_honors_explicit_artifact_and_state_paths() {
+        let artifacts = vec![
+            artifact(
+                "plan",
+                "plan_output",
+                json!({ "summary": "Ship it", "private": "secret" }),
+            ),
+            artifact("state", "state_items", json!({ "records": [1, 2] })),
+        ];
+        let contract = WorkflowOutputContractDto {
+            artifact_type: "verification_result".into(),
+            extraction: WorkflowOutputExtractionDto::JsonArray,
+            render_text_path: Some("$[0].summary".into()),
+            ..WorkflowOutputContractDto::default()
+        };
+        let schema = json!({ "type": "array" });
+        let prompt = build_agent_node_prompt(
+            "Release",
+            "Verify",
+            Some("  Check the implementation.  "),
+            &contract,
+            Some(&schema),
+            None,
+            &[
+                WorkflowInputBindingDto::Artifact {
+                    name: "plan".into(),
+                    required: true,
+                    artifact_ref: "plan.plan_output".into(),
+                    path: Some("$.summary".into()),
+                    prompt_label: Some("Plan summary".into()),
+                },
+                WorkflowInputBindingDto::State {
+                    name: "items".into(),
+                    required: true,
+                    state_ref: "state.state_items".into(),
+                    path: None,
+                    prompt_label: None,
+                },
+                WorkflowInputBindingDto::RunInput {
+                    name: "optional".into(),
+                    required: false,
+                    path: None,
+                    prompt_label: None,
+                },
+            ],
+            &artifacts,
+        )
+        .expect("build typed prompt");
+
+        assert!(prompt.starts_with("Check the implementation.\n\nWorkflow: Release"));
+        assert!(prompt.contains("## Plan summary\nShip it"));
+        assert!(!prompt.contains("secret"));
+        assert!(prompt.contains("## items\n{\n  \"records\": ["));
+        assert!(prompt.contains("Respond with a single JSON array"));
+        assert!(prompt.contains("The JSON must satisfy this JSON Schema"));
+        assert!(prompt.contains("render text path `$[0].summary`"));
+    }
+
+    #[test]
+    fn agent_prompt_rejects_missing_explicit_binding_path_without_payload_fallback() {
+        let artifacts = vec![artifact(
+            "plan",
+            "plan_output",
+            json!({ "private": "must not become the requested summary" }),
+        )];
+
+        for binding in [
+            WorkflowInputBindingDto::Artifact {
+                name: "summary".into(),
+                required: true,
+                artifact_ref: "plan.plan_output".into(),
+                path: Some("$.summary".into()),
+                prompt_label: None,
+            },
+            WorkflowInputBindingDto::State {
+                name: "summary".into(),
+                required: true,
+                state_ref: "plan.plan_output".into(),
+                path: Some("$.summary".into()),
+                prompt_label: None,
+            },
+        ] {
+            let error = build_agent_node_prompt(
+                "Release",
+                "Verify",
+                None,
+                &WorkflowOutputContractDto::default(),
+                None,
+                None,
+                &[binding],
+                &artifacts,
+            )
+            .expect_err("missing explicit path must remain missing");
+            assert_eq!(error.code, "workflow_required_input_missing");
+        }
+    }
+
+    #[test]
+    fn agent_prompt_includes_unbound_workflow_input() {
+        let prompt = build_agent_node_prompt(
+            "Release",
+            "Plan",
+            Some("   "),
+            &WorkflowOutputContractDto::default(),
+            None,
+            Some(&json!({ "goal": "ship" })),
+            &[],
+            &[],
+        )
+        .expect("build prompt");
+
+        assert!(prompt.contains("## Workflow input\n{\n  \"goal\": \"ship\"\n}"));
+    }
+
+    #[test]
+    fn artifact_references_require_known_producer_runs() {
+        let record = artifact("plan", "plan_output", json!({}));
+        let mut node_ids = BTreeMap::new();
+        assert_eq!(artifact_ref_for_record(&node_ids, &record), None);
+        node_ids.insert(record.producer_node_run_id.clone(), "plan".into());
+        assert_eq!(
+            artifact_ref_for_record(&node_ids, &record).as_deref(),
+            Some("plan.plan_output")
+        );
+        assert_eq!(node_id_from_node_run_id("malformed"), None);
+    }
+
+    #[test]
+    fn schema_validation_reports_each_supported_constraint() {
+        let contract = WorkflowOutputContractDto {
+            extraction: WorkflowOutputExtractionDto::JsonObject,
+            ..WorkflowOutputContractDto::default()
+        };
+        let schema = json!({
+            "type": "object",
+            "required": ["name", "items"],
+            "properties": {
+                "name": { "type": "string", "minLength": 3 },
+                "items": {
+                    "type": "array",
+                    "minItems": 2,
+                    "items": { "type": ["string", "null"] }
+                }
+            },
+            "additionalProperties": false
+        });
+        let error = validate_workflow_artifact_payload(
+            &contract,
+            Some(&schema),
+            &json!({ "name": "x", "items": [false], "extra": true }),
+        )
+        .expect_err("all schema constraints should be enforced");
+        assert_eq!(error.code, "workflow_artifact_schema_invalid");
+        assert!(error.message.contains("$.name"));
+        assert!(error.message.contains("$.items"));
+
+        let missing_error = validate_workflow_artifact_payload(
+            &contract,
+            Some(&schema),
+            &json!({ "name": "valid" }),
+        )
+        .expect_err("required property should be enforced");
+        assert!(missing_error.message.contains("$.items"));
+
+        assert!(validate_workflow_artifact_payload(
+            &contract,
+            Some(&json!(true)),
+            &json!({ "anything": true }),
+        )
+        .is_ok());
+        assert!(validate_workflow_artifact_payload(
+            &contract,
+            Some(&json!({ "type": "future_type" })),
+            &json!({}),
+        )
+        .is_ok());
+        assert_eq!(schema_type_label(&json!([])), "the declared type");
+        assert_eq!(
+            schema_type_label(&json!(["string", "null"])),
+            "string or null"
+        );
     }
 }

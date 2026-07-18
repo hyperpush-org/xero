@@ -85,6 +85,8 @@ export interface AgentDockSidebarProps {
   toolCallGroupingPreference?: AgentRuntimeProps["toolCallGroupingPreference"]
   agentRoutingAutoSwitchEnabled?: AgentRuntimeProps["agentRoutingAutoSwitchEnabled"]
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
+  workflowDefinitions?: AgentRuntimeProps["workflowDefinitions"]
+  onStartWorkflowFromComposer?: AgentRuntimeProps["onStartWorkflowFromComposer"]
   onOpenAgentManagement?: () => void
   onCreateAgentByHand?: AgentRuntimeProps["onCreateAgentByHand"]
   onStartWorkflowAgentCreate?: AgentRuntimeProps["onStartWorkflowAgentCreate"]

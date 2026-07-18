@@ -23,8 +23,9 @@ use crate::{
         refresh_provider_auth_session, StoredXaiSession,
     },
     commands::{
-        get_runtime_settings::runtime_settings_snapshot_for_provider_profile, CommandError,
-        CommandResult, SessionContextLimitConfidenceDto, SessionContextLimitSourceDto,
+        get_runtime_settings::runtime_settings_snapshot_for_provider_profile,
+        resolve_context_limit, CommandError, CommandResult, SessionContextLimitConfidenceDto,
+        SessionContextLimitSourceDto,
     },
     provider_credentials::{
         ProviderCredentialLink, ProviderCredentialProfile, ProviderCredentialsView,
@@ -454,6 +455,7 @@ pub(crate) fn static_provider_preflight_snapshot(
     required_features: ProviderPreflightRequiredFeatures,
 ) -> ProviderPreflightSnapshot {
     let now = crate::auth::now_timestamp();
+    let context_limit = resolve_context_limit(provider_id, model_id);
     provider_preflight_snapshot(ProviderPreflightInput {
         profile_id: provider_id.into(),
         provider_id: provider_id.into(),
@@ -472,10 +474,14 @@ pub(crate) fn static_provider_preflight_snapshot(
             cache_age_seconds: None,
             cache_ttl_seconds: Some(DEFAULT_PROVIDER_CATALOG_TTL_SECONDS),
             credential_proof: None,
-            context_window_tokens: None,
-            max_output_tokens: None,
-            context_limit_source: Some("unknown".into()),
-            context_limit_confidence: Some("unknown".into()),
+            context_window_tokens: context_limit.context_window_tokens,
+            max_output_tokens: context_limit.max_output_tokens,
+            context_limit_source: Some(
+                session_context_limit_source_name(&context_limit.source).into(),
+            ),
+            context_limit_confidence: Some(
+                session_context_limit_confidence_name(&context_limit.confidence).into(),
+            ),
             thinking_supported: false,
             thinking_efforts: Vec::new(),
             thinking_default_effort: None,
@@ -492,6 +498,27 @@ pub(crate) fn static_provider_preflight_snapshot(
         context_limit_known: None,
         provider_error: None,
     })
+}
+
+fn session_context_limit_source_name(source: &SessionContextLimitSourceDto) -> &'static str {
+    match source {
+        SessionContextLimitSourceDto::LiveCatalog => "live_catalog",
+        SessionContextLimitSourceDto::AppProfile => "app_profile",
+        SessionContextLimitSourceDto::BuiltInRegistry => "built_in_registry",
+        SessionContextLimitSourceDto::Heuristic => "heuristic",
+        SessionContextLimitSourceDto::Unknown => "unknown",
+    }
+}
+
+fn session_context_limit_confidence_name(
+    confidence: &SessionContextLimitConfidenceDto,
+) -> &'static str {
+    match confidence {
+        SessionContextLimitConfidenceDto::High => "high",
+        SessionContextLimitConfidenceDto::Medium => "medium",
+        SessionContextLimitConfidenceDto::Low => "low",
+        SessionContextLimitConfidenceDto::Unknown => "unknown",
+    }
 }
 
 fn live_xai_preflight_for_profile(
@@ -1046,10 +1073,12 @@ fn classify_provider_preflight_error(code: &str, message: &str) -> ProviderPrefl
         || xero_agent_core::provider_preflight_message_indicates_credit_limit(&text)
     {
         ProviderPreflightErrorClass::CreditLimit
-    } else if text.contains("401") || text.contains("unauthorized") || text.contains("auth") {
-        ProviderPreflightErrorClass::Authentication
     } else if text.contains("403") || text.contains("forbidden") {
         ProviderPreflightErrorClass::Authorization
+    } else if text.contains("authorization") || text.contains("not authorized") {
+        ProviderPreflightErrorClass::Authorization
+    } else if text.contains("401") || text.contains("unauthorized") || text.contains("auth") {
+        ProviderPreflightErrorClass::Authentication
     } else if text.contains("404") || text.contains("model") && text.contains("not") {
         ProviderPreflightErrorClass::ModelUnavailable
     } else if text.contains("429") || text.contains("rate") {
@@ -1067,10 +1096,81 @@ fn classify_provider_preflight_error(code: &str, message: &str) -> ProviderPrefl
 mod tests {
     use super::*;
     use crate::commands::SessionContextLimitConfidenceDto;
-    use crate::provider_credentials::{ProviderCredentialLink, ProviderCredentialsView};
-    use crate::provider_models::{
-        ProviderModelRecord, ProviderModelThinkingCapability, ProviderModelThinkingEffort,
+    use crate::provider_credentials::{
+        ProviderApiKeyCredentialEntry, ProviderCredentialKind, ProviderCredentialLink,
+        ProviderCredentialRecord, ProviderCredentialsView,
     };
+    use crate::provider_models::{
+        ProviderModelCatalogDiagnostic, ProviderModelRecord, ProviderModelThinkingCapability,
+        ProviderModelThinkingEffort,
+    };
+
+    fn profile(provider_id: &str) -> ProviderCredentialProfile {
+        ProviderCredentialProfile {
+            profile_id: format!("{provider_id}-default"),
+            provider_id: provider_id.into(),
+            runtime_kind: provider_id.into(),
+            label: provider_id.into(),
+            model_id: "model-1".into(),
+            preset_id: None,
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            credential_link: None,
+            updated_at: "2026-07-17T00:00:00Z".into(),
+        }
+    }
+
+    fn model(model_id: &str) -> ProviderModelRecord {
+        ProviderModelRecord {
+            model_id: model_id.into(),
+            display_name: model_id.into(),
+            thinking: ProviderModelThinkingCapability {
+                supported: true,
+                effort_options: vec![
+                    ProviderModelThinkingEffort::Low,
+                    ProviderModelThinkingEffort::High,
+                ],
+                default_effort: Some(ProviderModelThinkingEffort::High),
+            },
+            input_modalities: vec!["text".into()],
+            input_modalities_source: "test".into(),
+            context_window_tokens: Some(128_000),
+            max_output_tokens: Some(4_096),
+            context_limit_source: Some(SessionContextLimitSourceDto::LiveCatalog),
+            context_limit_confidence: Some(SessionContextLimitConfidenceDto::High),
+            context_limit_fetched_at: Some("2026-07-17T00:00:00Z".into()),
+        }
+    }
+
+    fn catalog(provider_id: &str, source: ProviderModelCatalogSource) -> ProviderModelCatalog {
+        ProviderModelCatalog {
+            profile_id: format!("{provider_id}-default"),
+            provider_id: provider_id.into(),
+            configured_model_id: "model-1".into(),
+            source,
+            fetched_at: Some("2026-07-17T00:00:00Z".into()),
+            last_success_at: Some("2026-07-17T00:00:00Z".into()),
+            last_refresh_error: None,
+            models: vec![model("model-1")],
+        }
+    }
+
+    #[test]
+    fn static_preflight_advertises_builtin_context_limits_for_known_models() {
+        let snapshot = static_provider_preflight_snapshot(
+            OPENAI_API_PROVIDER_ID,
+            "gpt-4.1",
+            ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        );
+        let limits = snapshot.capabilities.capabilities.context_limits;
+
+        assert_eq!(limits.context_window_tokens, Some(128_000));
+        assert!(limits.max_output_tokens.is_some_and(|tokens| tokens > 0));
+        assert_eq!(limits.source, "built_in_registry");
+        assert_eq!(limits.confidence, "medium");
+    }
 
     #[test]
     fn manual_catalog_preflight_does_not_report_live_tool_schema_success() {
@@ -1434,5 +1534,319 @@ mod tests {
             .iter()
             .any(|check| check.code == "provider_preflight_credentials"
                 && check.status == xero_agent_core::ProviderPreflightStatus::Failed));
+    }
+
+    #[test]
+    fn provider_error_classifier_distinguishes_every_failure_class() {
+        for (code, message, expected) in [
+            (
+                "payment_required",
+                "HTTP 402 insufficient credits",
+                ProviderPreflightErrorClass::CreditLimit,
+            ),
+            (
+                "authentication_failed",
+                "bad credential",
+                ProviderPreflightErrorClass::Authentication,
+            ),
+            (
+                "authorization_error",
+                "access denied",
+                ProviderPreflightErrorClass::Authorization,
+            ),
+            (
+                "provider_error",
+                "403 forbidden",
+                ProviderPreflightErrorClass::Authorization,
+            ),
+            (
+                "model_error",
+                "model is not available",
+                ProviderPreflightErrorClass::ModelUnavailable,
+            ),
+            (
+                "rate_limit",
+                "HTTP 429",
+                ProviderPreflightErrorClass::RateLimited,
+            ),
+            (
+                "transport_error",
+                "connection timeout",
+                ProviderPreflightErrorClass::EndpointUnreachable,
+            ),
+            (
+                "decode_error",
+                "invalid JSON",
+                ProviderPreflightErrorClass::Decode,
+            ),
+            (
+                "provider_error",
+                "unexpected response",
+                ProviderPreflightErrorClass::Unknown,
+            ),
+        ] {
+            assert_eq!(classify_provider_preflight_error(code, message), expected);
+        }
+    }
+
+    #[test]
+    fn catalog_sources_map_to_preflight_evidence_strength() {
+        for (provider_id, source, expected) in [
+            (
+                XAI_PROVIDER_ID,
+                ProviderModelCatalogSource::Live,
+                ProviderPreflightSource::LiveCatalog,
+            ),
+            (
+                OPENAI_CODEX_PROVIDER_ID,
+                ProviderModelCatalogSource::Live,
+                ProviderPreflightSource::StaticManual,
+            ),
+            (
+                XAI_PROVIDER_ID,
+                ProviderModelCatalogSource::Cache,
+                ProviderPreflightSource::CachedProbe,
+            ),
+            (
+                XAI_PROVIDER_ID,
+                ProviderModelCatalogSource::Manual,
+                ProviderPreflightSource::StaticManual,
+            ),
+            (
+                XAI_PROVIDER_ID,
+                ProviderModelCatalogSource::Unavailable,
+                ProviderPreflightSource::Unavailable,
+            ),
+        ] {
+            assert_eq!(
+                preflight_source_for_catalog(&catalog(provider_id, source)),
+                expected
+            );
+        }
+    }
+
+    #[test]
+    fn catalog_preflight_reports_missing_models_credentials_and_refresh_errors() {
+        let mut unavailable = catalog(XAI_PROVIDER_ID, ProviderModelCatalogSource::Unavailable);
+        unavailable.last_refresh_error = Some(ProviderModelCatalogDiagnostic {
+            code: "authorization_error".into(),
+            message: "403 forbidden".into(),
+            retryable: false,
+        });
+        let snapshot = provider_preflight_from_catalog(
+            &unavailable,
+            "missing-model",
+            ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+            false,
+        );
+        assert_eq!(snapshot.source, ProviderPreflightSource::Unavailable);
+        assert!(snapshot.checks.iter().any(|check| {
+            check.code == "provider_preflight_provider_error"
+                && check.message.contains("authorization")
+        }));
+        assert!(snapshot.checks.iter().any(|check| {
+            check.code == "provider_preflight_model"
+                && check.status == xero_agent_core::ProviderPreflightStatus::Failed
+        }));
+
+        let cached = provider_preflight_from_catalog(
+            &catalog(XAI_PROVIDER_ID, ProviderModelCatalogSource::Cache),
+            "missing-model",
+            ProviderPreflightRequiredFeatures::default(),
+            true,
+        );
+        assert_eq!(cached.source, ProviderPreflightSource::CachedProbe);
+        assert!(cached.checks.iter().any(|check| {
+            check.code == "provider_preflight_model"
+                && check.status == xero_agent_core::ProviderPreflightStatus::Failed
+        }));
+
+        let manual = provider_preflight_from_catalog(
+            &catalog(XAI_PROVIDER_ID, ProviderModelCatalogSource::Manual),
+            "missing-model",
+            ProviderPreflightRequiredFeatures::default(),
+            true,
+        );
+        assert_eq!(manual.source, ProviderPreflightSource::StaticManual);
+        assert!(!manual.checks.iter().any(|check| {
+            check.code == "provider_preflight_model"
+                && check.status == xero_agent_core::ProviderPreflightStatus::Failed
+        }));
+    }
+
+    #[test]
+    fn context_and_thinking_labels_cover_all_wire_values() {
+        for (source, expected) in [
+            (SessionContextLimitSourceDto::LiveCatalog, "live_catalog"),
+            (SessionContextLimitSourceDto::AppProfile, "app_profile"),
+            (
+                SessionContextLimitSourceDto::BuiltInRegistry,
+                "built_in_registry",
+            ),
+            (SessionContextLimitSourceDto::Heuristic, "heuristic"),
+            (SessionContextLimitSourceDto::Unknown, "unknown"),
+        ] {
+            assert_eq!(session_context_limit_source_name(&source), expected);
+            assert_eq!(context_limit_source_label(&source), expected);
+        }
+        for (confidence, expected) in [
+            (SessionContextLimitConfidenceDto::High, "high"),
+            (SessionContextLimitConfidenceDto::Medium, "medium"),
+            (SessionContextLimitConfidenceDto::Low, "low"),
+            (SessionContextLimitConfidenceDto::Unknown, "unknown"),
+        ] {
+            assert_eq!(session_context_limit_confidence_name(&confidence), expected);
+            assert_eq!(context_limit_confidence_label(&confidence), expected);
+        }
+        for (effort, expected) in [
+            (ProviderModelThinkingEffort::None, "none"),
+            (ProviderModelThinkingEffort::Minimal, "minimal"),
+            (ProviderModelThinkingEffort::Low, "low"),
+            (ProviderModelThinkingEffort::Medium, "medium"),
+            (ProviderModelThinkingEffort::High, "high"),
+            (ProviderModelThinkingEffort::XHigh, "x_high"),
+        ] {
+            assert_eq!(thinking_effort_label(&effort), expected);
+        }
+    }
+
+    #[test]
+    fn xai_bearer_token_prefers_profile_api_key_then_oauth_record() {
+        let profile = profile(XAI_PROVIDER_ID);
+        let api_key_view = ProviderCredentialsView::from_projected_profiles_for_tests(
+            profile.profile_id.clone(),
+            vec![profile.clone()],
+            vec![ProviderApiKeyCredentialEntry {
+                profile_id: profile.profile_id.clone(),
+                api_key: "  api-key  ".into(),
+                updated_at: "2026-07-17T00:00:00Z".into(),
+            }],
+        );
+        assert_eq!(
+            xai_preflight_bearer_token(&api_key_view, &profile).as_deref(),
+            Some("api-key")
+        );
+
+        let oauth_view = ProviderCredentialsView::from_records(vec![ProviderCredentialRecord {
+            provider_id: XAI_PROVIDER_ID.into(),
+            kind: ProviderCredentialKind::OAuthSession,
+            api_key: None,
+            oauth_account_id: Some("account".into()),
+            oauth_session_id: Some("session".into()),
+            oauth_access_token: Some("  oauth-token  ".into()),
+            oauth_refresh_token: Some("refresh".into()),
+            oauth_expires_at: Some(i64::MAX),
+            base_url: None,
+            api_version: None,
+            region: None,
+            project_id: None,
+            default_model_id: Some("model-1".into()),
+            updated_at: "2026-07-17T00:00:00Z".into(),
+        }]);
+        let oauth_profile = oauth_view
+            .active_profile()
+            .expect("synthesized xAI profile");
+        assert_eq!(
+            xai_preflight_bearer_token(&oauth_view, oauth_profile).as_deref(),
+            Some("oauth-token")
+        );
+    }
+
+    #[test]
+    fn non_xai_and_missing_model_skip_xai_live_probe() {
+        let profiles = ProviderCredentialsView::from_projected_profiles_for_tests(
+            "openai_api-default".into(),
+            vec![profile(OPENAI_API_PROVIDER_ID)],
+            Vec::new(),
+        );
+        assert!(live_xai_preflight_for_profile(
+            &profiles,
+            &profile(OPENAI_API_PROVIDER_ID),
+            "model-1",
+            ProviderPreflightRequiredFeatures::default(),
+            &catalog(OPENAI_API_PROVIDER_ID, ProviderModelCatalogSource::Manual),
+        )
+        .expect("non-xAI provider")
+        .is_none());
+
+        let xai_profile = profile(XAI_PROVIDER_ID);
+        let xai_profiles = ProviderCredentialsView::from_projected_profiles_for_tests(
+            xai_profile.profile_id.clone(),
+            vec![xai_profile.clone()],
+            Vec::new(),
+        );
+        assert!(live_xai_preflight_for_profile(
+            &xai_profiles,
+            &xai_profile,
+            "missing-model",
+            ProviderPreflightRequiredFeatures::default(),
+            &catalog(XAI_PROVIDER_ID, ProviderModelCatalogSource::Manual),
+        )
+        .expect("missing model")
+        .is_none());
+    }
+
+    #[test]
+    fn preflight_snapshot_persistence_round_trips_upserts_and_rejects_corruption() {
+        let temp = tempfile::tempdir().expect("temp directory");
+        let database_path = temp.path().join("global.sqlite");
+        let mut snapshot = static_provider_preflight_snapshot(
+            OPENAI_API_PROVIDER_ID,
+            "gpt-4.1",
+            ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+        );
+        snapshot.profile_id = "profile-1".into();
+        persist_provider_preflight_snapshot(&database_path, &snapshot).expect("persist snapshot");
+        assert_eq!(
+            load_provider_preflight_snapshot(
+                &database_path,
+                "profile-1",
+                OPENAI_API_PROVIDER_ID,
+                "gpt-4.1",
+            )
+            .expect("load snapshot"),
+            Some(snapshot.clone())
+        );
+        assert!(load_provider_preflight_snapshot(
+            &database_path,
+            "missing-profile",
+            OPENAI_API_PROVIDER_ID,
+            "gpt-4.1",
+        )
+        .expect("missing snapshot")
+        .is_none());
+
+        snapshot.checked_at = "2026-07-18T00:00:00Z".into();
+        persist_provider_preflight_snapshot(&database_path, &snapshot).expect("upsert snapshot");
+        assert_eq!(
+            load_provider_preflight_snapshot(
+                &database_path,
+                "profile-1",
+                OPENAI_API_PROVIDER_ID,
+                "gpt-4.1",
+            )
+            .expect("load updated snapshot")
+            .map(|snapshot| snapshot.checked_at),
+            Some("2026-07-18T00:00:00Z".into())
+        );
+
+        crate::global_db::open_global_database(&database_path)
+            .expect("open global database")
+            .execute(
+                "UPDATE provider_preflight_results SET payload = '{}' WHERE profile_id = 'profile-1'",
+                [],
+            )
+            .expect("corrupt persisted payload");
+        assert_eq!(
+            load_provider_preflight_snapshot(
+                &database_path,
+                "profile-1",
+                OPENAI_API_PROVIDER_ID,
+                "gpt-4.1",
+            )
+            .expect_err("corrupt snapshot must fail")
+            .code,
+            "provider_preflight_decode_failed"
+        );
     }
 }

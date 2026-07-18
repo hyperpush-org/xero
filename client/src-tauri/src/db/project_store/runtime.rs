@@ -467,12 +467,7 @@ pub fn list_runtime_runs_for_project(
 ) -> Result<Vec<RuntimeRunSnapshotRecord>, CommandError> {
     let database_path = database_path_for_repo(repo_root);
     let connection = open_runtime_database(repo_root, &database_path)?;
-    read_project_row(
-        &connection,
-        &database_path,
-        repo_root,
-        expected_project_id,
-    )?;
+    read_project_row(&connection, &database_path, repo_root, expected_project_id)?;
     let mut statement = connection
         .prepare(
             r#"
@@ -586,7 +581,8 @@ pub fn upsert_runtime_run(
         .and_then(|row| row.control_state_json.clone());
 
     if let Some(expected) = payload.expected_snapshot.as_ref() {
-        let expected_control_state_json = serialize_runtime_run_control_state(&expected.control_state)?;
+        let expected_control_state_json =
+            serialize_runtime_run_control_state(&expected.control_state)?;
         let matches = existing.as_ref().is_some_and(|row| {
             row.run_id == expected.run_id
                 && row.status == runtime_run_status_sql_value(&expected.status)
@@ -2053,8 +2049,8 @@ fn validate_runtime_run_pending_control_snapshot(
         pending.queued_prompt_continuation_request_id.as_ref(),
     ) {
         (None, None) => {}
-        (Some(_), Some(request_id))
-            if !request_id.trim().is_empty() && request_id.len() <= 200 => {}
+        (Some(_), Some(request_id)) if !request_id.trim().is_empty() && request_id.len() <= 200 => {
+        }
         _ => {
             return Err(CommandError::system_fault(
                 "runtime_run_request_invalid",
@@ -2838,6 +2834,9 @@ mod queued_prompt_identity_tests {
         fs::create_dir_all(&repo_root).expect("create repo");
         let project_id = "runtime-status-cas";
         create_project_database(&repo_root, project_id);
+        let fresh_heartbeat_at = OffsetDateTime::now_utc()
+            .format(&Rfc3339)
+            .expect("format fresh heartbeat");
         let controls = build_runtime_run_control_state_with_profile(
             RuntimeAgentIdDto::Engineer,
             Some("engineer"),
@@ -2868,7 +2867,7 @@ mod queued_prompt_identity_tests {
                         liveness: RuntimeRunTransportLiveness::Reachable,
                     },
                     started_at: "2026-07-15T12:00:00Z".into(),
-                    last_heartbeat_at: Some("2026-07-15T12:00:00Z".into()),
+                    last_heartbeat_at: Some(fresh_heartbeat_at),
                     stopped_at: None,
                     last_error: None,
                     updated_at: "2026-07-15T12:00:00Z".into(),

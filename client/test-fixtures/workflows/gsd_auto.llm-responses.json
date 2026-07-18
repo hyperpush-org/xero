@@ -1,0 +1,71 @@
+{
+  "schema": "xero.workflow_llm_response_fixtures.v1",
+  "responses": [
+    {
+      "nodeTitle": "GSD start",
+      "agentRole": "plan",
+      "expectedCalls": 1,
+      "content": "{\"summary\":\"Accepted the GSD goal and prepared the durable run.\",\"goal\":\"Deliver the fixture-backed GSD workflow end to end.\",\"constraints\":[\"Use deterministic provider responses.\"],\"acceptanceCriteria\":[\"Every delivery phase completes.\",\"The milestone is audited and archived.\"]}"
+    },
+    {
+      "nodeTitle": "Project ideation",
+      "agentRole": "plan",
+      "expectedCalls": 1,
+      "content": "{\"summary\":\"Shape the requested goal into a small, verifiable delivery milestone.\",\"goal\":\"Prove the complete GSD orchestration path.\",\"constraints\":[\"Keep execution deterministic.\"],\"acceptanceCriteria\":[\"Persist phase evidence.\"]}"
+    },
+    {
+      "nodeTitle": "Requirements",
+      "agentRole": "plan",
+      "expectedCalls": 1,
+      "content": "{\"summary\":\"The workflow must plan, execute, verify, review, audit, and archive its milestone.\",\"goal\":\"Complete every GSD delivery state transition.\",\"constraints\":[\"No external LLM calls.\"],\"acceptanceCriteria\":[\"Three phases are marked complete.\",\"Audit status is passed.\"]}"
+    },
+    {
+      "nodeTitle": "Roadmap",
+      "agentRole": "plan",
+      "expectedCalls": 1,
+      "content": "{\"summary\":\"Deliver the milestone through the seeded three-phase loop.\",\"steps\":[{\"id\":\"phase-1\",\"title\":\"Discuss and plan\",\"status\":\"pending\"},{\"id\":\"phase-2\",\"title\":\"Implement\",\"status\":\"pending\"},{\"id\":\"phase-3\",\"title\":\"Verify and polish\",\"status\":\"pending\"}],\"risks\":[\"A broken loop or artifact binding would stall the run.\"]}"
+    },
+    {
+      "nodeTitle": "Create milestone",
+      "agentRole": "plan",
+      "expectedCalls": 1,
+      "content": "{\"summary\":\"Create a milestone containing the complete deterministic GSD delivery loop.\",\"goal\":\"Archive a verified milestone.\",\"constraints\":[\"Retain durable evidence.\"],\"acceptanceCriteria\":[\"All seeded phases complete.\"]}"
+    },
+    {
+      "nodeTitle": "Smart discuss",
+      "agentRole": "plan",
+      "expectedCalls": 3,
+      "content": "{\"summary\":\"Clarified the current delivery phase, its risks, and its observable completion contract.\",\"goal\":\"Complete the selected phase safely.\",\"constraints\":[\"Use the selected collection item.\"],\"acceptanceCriteria\":[\"Verification and review pass.\"]}"
+    },
+    {
+      "nodeTitle": "Phase plan",
+      "agentRole": "plan",
+      "expectedCalls": 3,
+      "content": "{\"summary\":\"Execute one vertical phase and verify its result before recording state.\",\"steps\":[{\"id\":\"implement\",\"title\":\"Implement the selected phase\",\"status\":\"in_progress\"},{\"id\":\"verify\",\"title\":\"Verify and review the result\",\"status\":\"pending\"}],\"risks\":[]}"
+    },
+    {
+      "nodeTitle": "Phase execute",
+      "agentRole": "engineer",
+      "expectedCalls": 3,
+      "content": "{\"summary\":\"Completed the selected phase without requiring recovery.\",\"changedFiles\":[],\"testsRun\":[\"fixture-backed workflow execution\"],\"followUps\":[]}"
+    },
+    {
+      "nodeTitle": "Verification review",
+      "agentRole": "ask",
+      "expectedCalls": 3,
+      "content": "{\"status\":\"passed\",\"summary\":\"The command evidence and implementation summary satisfy the phase contract.\",\"evidence\":[{\"command\":\"git status --short\",\"status\":\"passed\",\"output\":\"Command completed successfully.\"}],\"gaps\":[]}"
+    },
+    {
+      "nodeTitle": "Code review",
+      "agentRole": "ask",
+      "expectedCalls": 3,
+      "content": "{\"summary\":\"No high-severity findings remain for the selected phase.\",\"high_count\":0,\"findings\":[]}"
+    },
+    {
+      "nodeTitle": "Audit milestone",
+      "agentRole": "generalist",
+      "expectedCalls": 1,
+      "content": "{\"status\":\"passed\",\"summary\":\"All delivery phases and the seeded requirement have complete verification evidence.\",\"unsatisfiedRequirements\":[],\"evidence\":[\"Three phase summaries persisted.\",\"Three verification evidence records persisted.\"]}"
+    }
+  ]
+}

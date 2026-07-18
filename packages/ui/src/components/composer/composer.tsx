@@ -145,10 +145,13 @@ export interface ComposerProps {
 	promptInputLabel?: string;
 	isPromptDisabled?: boolean;
 	isSendDisabled?: boolean;
+	/** Allow an explicit submit intent without text or attached context. */
+	allowEmptySubmit?: boolean;
 
 	agentGroups: readonly ComposerSelectGroup[];
 	selectedAgentId: string | null;
 	onAgentChange: (id: string) => void;
+	agentSelectorAriaLabel?: string;
 	agentDisabled?: boolean;
 	agentTooltip?: ReactNode;
 	agentTriggerIcon?: ReactNode;
@@ -368,9 +371,11 @@ export function Composer({
 	promptInputLabel,
 	isPromptDisabled = false,
 	isSendDisabled = false,
+	allowEmptySubmit = false,
 	agentGroups,
 	selectedAgentId,
 	onAgentChange,
+	agentSelectorAriaLabel = "Agent selector",
 	agentDisabled,
 	agentTooltip,
 	agentTriggerIcon,
@@ -468,7 +473,7 @@ export function Composer({
 	const sendDisabled =
 		isSendDisabled ||
 		Boolean(pendingAttachmentCompatibilityError) ||
-		(!hasText && !hasPendingAttachments && !hasPendingContexts);
+		(!allowEmptySubmit && !hasText && !hasPendingAttachments && !hasPendingContexts);
 	const contextMentionOpen = Boolean(
 		contextMentionToken &&
 			!isPromptDisabled &&
@@ -598,11 +603,12 @@ export function Composer({
 		}
 		const hasContent =
 			nextDraft.trim().length > 0 || hasPendingAttachments || hasPendingContexts;
-		if (isSendDisabled || !hasContent) return;
+		if (isSendDisabled || (!allowEmptySubmit && !hasContent)) return;
 		if (pendingAttachmentCompatibilityError) return;
 		onSubmit(nextDraft);
 	}, [
 		draftPrompt,
+		allowEmptySubmit,
 		hasPendingAttachments,
 		hasPendingContexts,
 		internalDictation,
@@ -847,7 +853,7 @@ export function Composer({
 
 	const agentPill = hasAgents ? (
 		<GroupedPillSelect
-			ariaLabel="Agent selector"
+			ariaLabel={agentSelectorAriaLabel}
 			triggerIcon={resolvedAgentTriggerIcon}
 			triggerLabel={resolvedAgentTriggerLabel}
 			groups={agentGroups}

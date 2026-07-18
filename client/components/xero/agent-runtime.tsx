@@ -60,6 +60,11 @@ import type {
   ReturnSessionToHereResponseDto,
   SelectiveUndoResponseDto,
 } from '@/src/lib/xero-model'
+import type { WorkflowDefinitionSummaryDto } from '@/src/lib/xero-model/workflow-definition'
+import {
+  WORKFLOW_TEMPLATE_LIBRARY,
+  type WorkflowTemplateIdDto,
+} from '@/src/lib/xero-model/workflow-templates'
 import type { SessionContextSnapshotDto } from '@/src/lib/xero-model/session-context'
 import type { AgentHandoffContextSummaryDto } from '@/src/lib/xero-model/agent-reports'
 import {
@@ -107,6 +112,7 @@ import {
   type ComposerContextMentionOption,
   type ComposerPendingAttachment,
   type ComposerPendingContext,
+  type ComposerWorkflowOption,
 } from './agent-runtime/composer-dock'
 import { PlanTray } from './agent-runtime/plan-tray'
 import {
@@ -180,6 +186,29 @@ export type AgentRuntimeDesktopAdapter = SpeechDictationAdapter &
     >
   >
 
+export type ComposerWorkflowTarget =
+  | { kind: 'definition'; workflowId: string }
+  | { kind: 'template'; templateId: WorkflowTemplateIdDto }
+
+interface ResolvedComposerWorkflowTarget {
+  key: string
+  name: string
+  option: ComposerWorkflowOption
+  target: ComposerWorkflowTarget
+}
+
+function workflowDefinitionTargetKey(workflowId: string): string {
+  return `definition:${workflowId}`
+}
+
+function workflowTemplateTargetKey(templateId: WorkflowTemplateIdDto): string {
+  return `template:${templateId}`
+}
+
+function capitalizeLabel(value: string): string {
+  return value.length > 0 ? `${value[0].toUpperCase()}${value.slice(1)}` : value
+}
+
 export interface AgentRuntimeProps {
   agent: AgentPaneView
   /** True while this pane belongs to the foreground app view. */
@@ -227,6 +256,10 @@ export interface AgentRuntimeProps {
   customAgentDefinitions?: readonly AgentDefinitionSummaryDto[]
   /** Per-agent default models keyed by composer agent selection key. */
   agentDefaultModels?: Readonly<Record<string, AgentDefaultModelDto | null | undefined>>
+  /** Saved project Workflows available as composer run targets. */
+  workflowDefinitions?: readonly WorkflowDefinitionSummaryDto[]
+  /** Materialize or select the target, then start it or collect its configured inputs. */
+  onStartWorkflowFromComposer?: (target: ComposerWorkflowTarget) => Promise<unknown> | unknown
   /** Open the Settings → Agents tab so the user can manage custom agents. */
   onOpenAgentManagement?: () => void
   /** Open the by-hand agent builder form. */
@@ -300,6 +333,10 @@ export interface AgentRuntimeProps {
   pendingInitialAgentDefinitionId?: string | null
   /** Called once the pending initial runtime agent has been applied. */
   onPendingInitialRuntimeAgentIdConsumed?: () => void
+  /** One-shot Workflow target to preselect in the composer without starting it. */
+  pendingInitialWorkflowTarget?: ComposerWorkflowTarget | null
+  /** Called once the pending initial Workflow target has been applied. */
+  onPendingInitialWorkflowTargetConsumed?: () => void
   /** One-shot text/image context to append to the visible composer without submitting it. */
   pendingComposerInsert?: AgentComposerInsert | null
   /** Called once the pending composer insert has been applied locally. */
@@ -2562,6 +2599,8 @@ export const AgentRuntime = memo(function AgentRuntime({
   isCreatingSession = false,
   customAgentDefinitions = [],
   agentDefaultModels = {},
+  workflowDefinitions = [],
+  onStartWorkflowFromComposer,
   onOpenAgentManagement,
   onCreateAgentByHand,
   onStartWorkflowAgentCreate,
@@ -2589,6 +2628,8 @@ export const AgentRuntime = memo(function AgentRuntime({
   pendingInitialRuntimeAgentId = null,
   pendingInitialAgentDefinitionId = null,
   onPendingInitialRuntimeAgentIdConsumed,
+  pendingInitialWorkflowTarget = null,
+  onPendingInitialWorkflowTargetConsumed,
   pendingComposerInsert = null,
   onPendingComposerInsertConsumed,
   toolCallGroupingPreference = 'grouped',
@@ -2744,17 +2785,88 @@ export const AgentRuntime = memo(function AgentRuntime({
 
     return changed ? stableTurns : rawVisibleTurnsWithPendingPrompt
   }, [pendingPromptForStableId, rawVisibleTurnsWithPendingPrompt, runtimeStreamItems])
-  const [promptSubmissionPending, setPromptSubmissionPending] = useState(false)
+  const composerWorkflowTargets = useMemo<ResolvedComposerWorkflowTarget[]>(
+    () => [
+      ...workflowDefinitions.map((workflow) => {
+        const key = workflowDefinitionTargetKey(workflow.id)
+        return {
+          key,
+          name: workflow.name,
+          option: { id: key, label: workflow.name, sublabel: `v${workflow.activeVersionNumber}` },
+          target: { kind: 'definition' as const, workflowId: workflow.id },
+        }
+      }),
+      ...(onStartWorkflowFromComposer
+        ? WORKFLOW_TEMPLATE_LIBRARY.map((template) => {
+            const key = workflowTemplateTargetKey(template.id)
+            return {
+              key,
+              name: template.name,
+              option: {
+                id: key,
+                label: template.name,
+                sublabel: `${capitalizeLabel(template.difficulty)} template`,
+              },
+              target: { kind: 'template' as const, templateId: template.id },
+            }
+          })
+        : []),
+    ],
+    [onStartWorkflowFromComposer, workflowDefinitions],
+  )
+  const composerWorkflowOptions = useMemo(
+    () => composerWorkflowTargets.map((workflow) => workflow.option),
+    [composerWorkflowTargets],
+  )
+  const [composerWorkflowSelection, setComposerWorkflowSelection] = useState<{
+    sessionKey: string
+    targetKey: string
+  } | null>(null)
+  const pendingInitialWorkflowTargetKey = pendingInitialWorkflowTarget
+    ? pendingInitialWorkflowTarget.kind === 'definition'
+      ? workflowDefinitionTargetKey(pendingInitialWorkflowTarget.workflowId)
+      : workflowTemplateTargetKey(pendingInitialWorkflowTarget.templateId)
+    : null
+  const selectedComposerWorkflowTargetKey =
+    composerWorkflowSelection?.sessionKey === conversationSessionKey
+      ? composerWorkflowSelection.targetKey
+      : null
+  const selectedComposerWorkflow = useMemo(
+    () =>
+      selectedComposerWorkflowTargetKey
+        ? composerWorkflowTargets.find(
+            (workflow) => workflow.key === selectedComposerWorkflowTargetKey,
+          ) ?? null
+        : null,
+    [composerWorkflowTargets, selectedComposerWorkflowTargetKey],
+  )
+  const [workflowStartErrorState, setWorkflowStartErrorState] = useState<{
+    sessionKey: string
+    message: string
+  } | null>(null)
+  const workflowStartError =
+    workflowStartErrorState?.sessionKey === conversationSessionKey
+      ? workflowStartErrorState.message
+      : null
+  const [promptSubmissionPendingSessionKey, setPromptSubmissionPendingSessionKey] =
+    useState<string | null>(null)
+  const promptSubmissionPending =
+    promptSubmissionPendingSessionKey === conversationSessionKey
   const promptSubmissionCancelRef = useRef<(() => void) | null>(null)
   useEffect(() => {
+    setPromptSubmissionPendingSessionKey((current) =>
+      current === conversationSessionKey ? current : null,
+    )
     return () => {
       promptSubmissionCancelRef.current?.()
       promptSubmissionCancelRef.current = null
     }
-  }, [])
+  }, [conversationSessionKey])
   const pendingRuntimeRunAction =
     promptSubmissionPending
-      ? renderableRuntimeRun && !renderableRuntimeRun.isTerminal
+      ? selectedComposerWorkflow
+        ? 'start'
+        : renderableRuntimeRun && !renderableRuntimeRun.isTerminal
         ? 'update_controls'
         : 'start'
       : agent.pendingRuntimeRunAction ?? null
@@ -3316,6 +3428,66 @@ export const AgentRuntime = memo(function AgentRuntime({
     getPendingLinkedPaths,
     onSubmitAttachmentsSettled: handleSubmitAttachmentsSettled,
   })
+
+  const workflowDictationCancellationRef = useRef<Promise<void> | null>(null)
+  const cancelDictationForWorkflow = useCallback(() => {
+    const pendingCancellation = workflowDictationCancellationRef.current
+    if (pendingCancellation) return pendingCancellation
+
+    const cancellation = controller.dictation.cancel()
+    workflowDictationCancellationRef.current = cancellation
+    void cancellation.finally(() => {
+      if (workflowDictationCancellationRef.current === cancellation) {
+        workflowDictationCancellationRef.current = null
+      }
+    })
+    return cancellation
+  }, [controller.dictation.cancel])
+
+  const handleComposerWorkflowSelectionChange = useCallback(
+    (targetKey: string | null) => {
+      setWorkflowStartErrorState(null)
+      if (targetKey) {
+        void cancelDictationForWorkflow()
+      }
+      setComposerWorkflowSelection(
+        targetKey ? { sessionKey: conversationSessionKey, targetKey } : null,
+      )
+    },
+    [cancelDictationForWorkflow, conversationSessionKey],
+  )
+  const handleComposerAgentSelectionChange = useCallback(
+    (selectionKey: string) => {
+      setWorkflowStartErrorState(null)
+      setComposerWorkflowSelection(null)
+      controller.handleComposerAgentSelectionChange(selectionKey)
+    },
+    [controller.handleComposerAgentSelectionChange],
+  )
+
+  useEffect(() => {
+    if (!pendingInitialWorkflowTargetKey) return
+    if (
+      !composerWorkflowTargets.some(
+        (workflow) => workflow.key === pendingInitialWorkflowTargetKey,
+      )
+    ) {
+      return
+    }
+    handleComposerWorkflowSelectionChange(pendingInitialWorkflowTargetKey)
+    onPendingInitialWorkflowTargetConsumed?.()
+  }, [
+    composerWorkflowTargets,
+    handleComposerWorkflowSelectionChange,
+    onPendingInitialWorkflowTargetConsumed,
+    pendingInitialWorkflowTargetKey,
+  ])
+
+  useEffect(() => {
+    if (!pendingInitialRuntimeAgentId) return
+    setWorkflowStartErrorState(null)
+    setComposerWorkflowSelection(null)
+  }, [pendingInitialRuntimeAgentId])
 
   const handleRemoveContextCard = useCallback(
     (id: string) => {
@@ -3886,8 +4058,16 @@ export const AgentRuntime = memo(function AgentRuntime({
       runtimeStream?.failure ||
       visibleTurnsWithPendingPrompt.length > 0,
   )
-  const promptInputLabel = controller.promptInputAvailable ? 'Agent input' : 'Agent input unavailable'
-  const sendButtonLabel = controller.promptInputAvailable ? 'Send message' : 'Send message unavailable'
+  const promptInputLabel = selectedComposerWorkflow
+    ? 'Workflow start'
+    : controller.promptInputAvailable
+      ? 'Agent input'
+      : 'Agent input unavailable'
+  const sendButtonLabel = selectedComposerWorkflow
+    ? `Start ${selectedComposerWorkflow.name}`
+    : controller.promptInputAvailable
+      ? 'Send message'
+      : 'Send message unavailable'
   const [pendingOwnedAgentActionIntent, setPendingOwnedAgentActionIntent] = useState<{
     actionId: string
     kind: ActionPromptDecision
@@ -3896,6 +4076,13 @@ export const AgentRuntime = memo(function AgentRuntime({
     useState<ActionPromptError | null>(null)
   const latestActionPromptError = ownedAgentActionPromptError ?? controller.operatorActionPromptError
   const composerRuntimeRunActionError =
+    (workflowStartError
+      ? {
+          code: 'workflow_start_failed',
+          message: workflowStartError,
+          retryable: true,
+        }
+      : null) ??
     controller.runtimeRunActionError ??
     (latestActionPromptError
       ? {
@@ -3904,11 +4091,13 @@ export const AgentRuntime = memo(function AgentRuntime({
           retryable: true,
         }
       : null)
-  const composerRuntimeRunActionErrorTitle = controller.runtimeRunActionError
-    ? controller.runtimeRunActionErrorTitle
-    : latestActionPromptError
-      ? 'Action failed'
-      : controller.runtimeRunActionErrorTitle
+  const composerRuntimeRunActionErrorTitle = workflowStartError
+    ? 'Workflow start failed'
+    : controller.runtimeRunActionError
+      ? controller.runtimeRunActionErrorTitle
+      : latestActionPromptError
+        ? 'Action failed'
+        : controller.runtimeRunActionErrorTitle
   const actionPromptDispatchValue = useMemo<ActionPromptDispatchValue>(() => {
     const pendingOperatorIntent = pendingOwnedAgentActionIntent ?? controller.pendingOperatorIntent
     return {
@@ -4601,6 +4790,45 @@ export const AgentRuntime = memo(function AgentRuntime({
     if (promptSubmissionPending) {
       return
     }
+    const submissionSessionKey = conversationSessionKey
+
+    if (selectedComposerWorkflow && onStartWorkflowFromComposer) {
+      setWorkflowStartErrorState(null)
+      setPromptSubmissionPendingSessionKey(submissionSessionKey)
+      promptSubmissionCancelRef.current?.()
+      let cancelled = false
+      const cancelSubmission = () => {
+        cancelled = true
+      }
+      promptSubmissionCancelRef.current = cancelSubmission
+      void Promise.resolve()
+        .then(async () => {
+          await cancelDictationForWorkflow()
+          if (cancelled) return
+          await onStartWorkflowFromComposer(selectedComposerWorkflow.target)
+        })
+        .catch((error: unknown) => {
+          if (cancelled) return
+          setWorkflowStartErrorState({
+            sessionKey: conversationSessionKey,
+            message:
+              error instanceof Error
+                ? error.message
+                : `Xero could not start ${selectedComposerWorkflow.name}.`,
+          })
+        })
+        .finally(() => {
+          if (!cancelled) {
+            setPromptSubmissionPendingSessionKey((current) =>
+              current === submissionSessionKey ? null : current,
+            )
+          }
+          if (promptSubmissionCancelRef.current === cancelSubmission) {
+            promptSubmissionCancelRef.current = null
+          }
+        })
+      return
+    }
 
     const submittedText = controller.getDraftPromptWithHiddenContext().trim()
     const submittedAttachments = pendingComposerAttachmentsToConversation(pendingAttachmentsRef.current)
@@ -4634,7 +4862,7 @@ export const AgentRuntime = memo(function AgentRuntime({
       setConversationJumpToLatest(false)
       scrollToLatest('auto', { defer: true })
     }
-    setPromptSubmissionPending(true)
+    setPromptSubmissionPendingSessionKey(submissionSessionKey)
     promptSubmissionCancelRef.current?.()
     let cancelled = false
     const cancelSubmission = () => {
@@ -4658,7 +4886,9 @@ export const AgentRuntime = memo(function AgentRuntime({
       }
     }).finally(() => {
       if (!cancelled) {
-        setPromptSubmissionPending(false)
+        setPromptSubmissionPendingSessionKey((current) =>
+          current === submissionSessionKey ? null : current,
+        )
         if (shouldAnchorSubmittedPrompt && followUpAnchorId) {
           followUpAnchorPendingBehaviorRef.current ??= 'smooth'
         } else {
@@ -4670,12 +4900,16 @@ export const AgentRuntime = memo(function AgentRuntime({
       }
     })
   }, [
+    cancelDictationForWorkflow,
     clearFollowUpAnchor,
+    conversationSessionKey,
     controller,
     hasConversationViewportContent,
     hasUserMessage,
+    onStartWorkflowFromComposer,
     promptSubmissionPending,
     scrollToLatest,
+    selectedComposerWorkflow,
     setConversationJumpToLatest,
     setFollowUpAnchorSpacerHeight,
   ])
@@ -4820,9 +5054,13 @@ export const AgentRuntime = memo(function AgentRuntime({
 
   return (
     <AgentPaneDropOverlay
-      enabled={Boolean(stageAgentAttachment || stageAgentAttachmentPath)}
-      onFilesDropped={handleAddFiles}
-      onPathsDropped={stageAgentAttachmentPath ? handleDroppedPaths : undefined}
+      enabled={
+        !selectedComposerWorkflow && Boolean(stageAgentAttachment || stageAgentAttachmentPath)
+      }
+      onFilesDropped={selectedComposerWorkflow ? undefined : handleAddFiles}
+      onPathsDropped={
+        !selectedComposerWorkflow && stageAgentAttachmentPath ? handleDroppedPaths : undefined
+      }
     >
       <div ref={paneRootRef} className="flex min-h-0 min-w-0 flex-1">
         <div className="relative flex min-w-0 flex-1 flex-col">
@@ -5153,8 +5391,8 @@ export const AgentRuntime = memo(function AgentRuntime({
           availableRuntimeAgentIds={availableRuntimeAgentIds}
           hideAgentSelector={isComputerUseSession}
           hideAutoCompact={isComputerUseSession}
-          hideContextMeter={isComputerUseSession}
-          hideDictation={isComputerUseSession}
+          hideContextMeter={isComputerUseSession || Boolean(selectedComposerWorkflow)}
+          hideDictation={isComputerUseSession || Boolean(selectedComposerWorkflow)}
           runtimeAgentLockReason={
             isComputerUseSession
               ? 'Computer Use sessions always run with the Computer Use agent.'
@@ -5163,6 +5401,8 @@ export const AgentRuntime = memo(function AgentRuntime({
           composerAgentDefinitionId={controller.composerAgentDefinitionId}
           composerAgentSelectionKey={controller.composerAgentSelectionKey}
           customAgentDefinitions={customAgentDefinitions}
+          workflowOptions={composerWorkflowOptions}
+          selectedWorkflowOptionId={selectedComposerWorkflow?.key ?? null}
           composerApprovalMode={controller.composerApprovalMode}
           composerApprovalOptions={composerApprovalOptions}
           autoCompactEnabled={controller.autoCompactEnabled}
@@ -5175,34 +5415,61 @@ export const AgentRuntime = memo(function AgentRuntime({
           runtimeAgentSwitchDisabled={controller.isRuntimeAgentSwitchDisabled}
           dictation={controller.dictation}
           contextMeter={contextMeter}
-          draftPrompt={controller.draftPrompt}
-          isPromptDisabled={controller.isPromptDisabled || promptSubmissionPending}
-          isSendDisabled={!controller.canSubmitPrompt || promptSubmissionPending}
-          isStopVisible={isStopComposerMode}
+          draftPrompt={selectedComposerWorkflow ? '' : controller.draftPrompt}
+          isPromptDisabled={
+            Boolean(selectedComposerWorkflow) || controller.isPromptDisabled || promptSubmissionPending
+          }
+          isSendDisabled={
+            selectedComposerWorkflow
+              ? promptSubmissionPending || !onStartWorkflowFromComposer
+              : !controller.canSubmitPrompt || promptSubmissionPending
+          }
+          isStopVisible={!selectedComposerWorkflow && isStopComposerMode}
           isStopDisabled={isStoppingRuntimeRun}
           onStopRuntimeRun={() => void controller.handleStopRuntimeRun()}
           onComposerApprovalModeChange={controller.handleComposerApprovalModeChange}
           onComposerRuntimeAgentChange={controller.handleComposerRuntimeAgentChange}
-          onComposerAgentSelectionChange={controller.handleComposerAgentSelectionChange}
+          onComposerAgentSelectionChange={handleComposerAgentSelectionChange}
+          onComposerWorkflowSelectionChange={handleComposerWorkflowSelectionChange}
           onAutoCompactEnabledChange={controller.handleAutoCompactEnabledChange}
           onComposerModelChange={handleComposerModelChangeWithCreditDismiss}
           onComposerThinkingLevelChange={controller.handleComposerThinkingLevelChange}
           onDraftPromptChange={controller.handleDraftPromptChange}
           onSubmitDraftPrompt={handleSubmitDraftPrompt}
-          pendingAttachments={pendingAttachments}
-          pendingContexts={pendingContextCards}
-          attachmentCompatibility={selectedComposerModel}
-          onAddFiles={handleAddFiles}
-          onAddFolders={pickComposerFolders ? handlePickComposerFolders : undefined}
-          onRemoveAttachment={handleRemoveAttachment}
-          onRemoveContext={handleRemoveContextCard}
-          contextMentionOptions={composerContextMentionOptions}
-          contextMentionStatus={composerPathIndexState.status}
-          contextMentionError={composerPathIndexState.error}
-          onContextMentionQueryChange={listProjectFileIndex ? setComposerContextMentionQuery : undefined}
-          onSelectContextMention={listProjectFileIndex ? handleSelectComposerContextMention : undefined}
+          pendingAttachments={selectedComposerWorkflow ? [] : pendingAttachments}
+          pendingContexts={selectedComposerWorkflow ? [] : pendingContextCards}
+          attachmentCompatibility={selectedComposerWorkflow ? null : selectedComposerModel}
+          onAddFiles={selectedComposerWorkflow ? undefined : handleAddFiles}
+          onAddFolders={
+            selectedComposerWorkflow
+              ? undefined
+              : pickComposerFolders
+                ? handlePickComposerFolders
+                : undefined
+          }
+          onRemoveAttachment={selectedComposerWorkflow ? undefined : handleRemoveAttachment}
+          onRemoveContext={selectedComposerWorkflow ? undefined : handleRemoveContextCard}
+          contextMentionOptions={selectedComposerWorkflow ? [] : composerContextMentionOptions}
+          contextMentionStatus={
+            selectedComposerWorkflow ? 'idle' : composerPathIndexState.status
+          }
+          contextMentionError={selectedComposerWorkflow ? null : composerPathIndexState.error}
+          onContextMentionQueryChange={
+            selectedComposerWorkflow || !listProjectFileIndex
+              ? undefined
+              : setComposerContextMentionQuery
+          }
+          onSelectContextMention={
+            selectedComposerWorkflow || !listProjectFileIndex
+              ? undefined
+              : handleSelectComposerContextMention
+          }
           pendingRuntimeRunAction={pendingRuntimeRunAction}
-          placeholder={composerPlaceholder}
+          placeholder={
+            selectedComposerWorkflow
+              ? 'No prompt needed — send to start this Workflow.'
+              : composerPlaceholder
+          }
           promptInputRef={controller.promptInputRef}
           promptInputLabel={promptInputLabel}
           runtimeSessionBindInFlight={controller.runtimeSessionBindInFlight}

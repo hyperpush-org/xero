@@ -23,17 +23,20 @@ const { fontFamily: monoFamily } = loadMono("normal", {
 
 // The app screenshots are 2000x1199; keep that aspect when fitting to frame.
 const SCREEN_RATIO = 2000 / 1199;
-export const APPFLOW_FRAMES = 1060;
+export const APPFLOW_FRAMES = 955;
 
 // Head-turn exit at the very end.
 const HEAD_TURN_START = 589;
 const HEAD_TURN_END = 613;
 
-const CLOSEOUT_PULLBACK_START = 755;
-const CLOSEOUT_PULLBACK_END = 785;
-const CLOSEOUT_START = 747;
+// After the head turn the closing card settles in one continuous move (no
+// push-in/pull-back detour): the card eases down and the lockup is revealed
+// above it, holds a beat, then the final zoom pushes into the title.
+const CLOSEOUT_SETTLE_START = 607;
+const CLOSEOUT_SETTLE_END = 650;
+const CLOSEOUT_START = CLOSEOUT_SETTLE_START;
 const CLOSEOUT_LAYER_TOP = -400;
-const FINAL_ZOOM_START = CLOSEOUT_PULLBACK_END + 10;
+const FINAL_ZOOM_START = CLOSEOUT_SETTLE_END + 40;
 const FINAL_ZOOM_END = FINAL_ZOOM_START + 36;
 const FINAL_SHOVE_START = FINAL_ZOOM_END + 10;
 const FINAL_DOMAIN_REVEAL_START = FINAL_SHOVE_START + 28;
@@ -701,11 +704,13 @@ const Closeout: React.FC = () => {
   );
   const domainGlitch = Math.max(domainRevealGlitch, domainExitGlitch);
   const xeroGlitch = Math.max(domainRevealGlitch * 0.3, domainExitGlitch);
+  // Periodic glitch tick that fully resolves between pulses — the tagline
+  // reads as clean white text most of the time instead of constant shimmer.
   const taglineGlitchCycle = (frame - CLOSEOUT_START + 9999) % 16;
   const taglineGlitch = interpolate(
     taglineGlitchCycle,
-    [0, 5, 16],
-    [0.95, 0.3, 0.3],
+    [0, 4, 16],
+    [0.85, 0, 0],
     {
       extrapolateLeft: "clamp",
       extrapolateRight: "clamp",
@@ -2180,21 +2185,17 @@ export const AppFlow: React.FC = () => {
   const turnTx = turn * -2300;
   const turnRy = turn * 58;
 
-  // The final product view follows the head-turn transition, pulls back to
-  // reveal the closeout layer, and then pushes into the closing title.
-  const closeoutZoom = interpolate(frame, [607, 641], [0, 1], {
-    extrapolateLeft: "clamp",
-    extrapolateRight: "clamp",
-    easing: CAM_EASE,
-  });
-  const closeoutPullback = interpolate(
+  // The closing card arrives from the head turn face-on and full-frame, then
+  // makes one continuous move: it eases down (a light pull-back rides along)
+  // until the lockup above it is framed, ready for the final zoom.
+  const closeoutSettle = interpolate(
     frame,
-    [CLOSEOUT_PULLBACK_START, CLOSEOUT_PULLBACK_END],
+    [CLOSEOUT_SETTLE_START, CLOSEOUT_SETTLE_END],
     [0, 1],
     {
       extrapolateLeft: "clamp",
       extrapolateRight: "clamp",
-      easing: CAM_EASE,
+      easing: Easing.inOut(Easing.cubic),
     },
   );
   const finalZoom = interpolate(
@@ -2207,32 +2208,19 @@ export const AppFlow: React.FC = () => {
       easing: CAM_EASE,
     },
   );
-  const activeCloseoutScale = 0.6 + closeoutZoom * 1.55;
-  const activeCloseoutFx = 0.5 + closeoutZoom * 0.258;
-  const activeCloseoutFy = 0.5 - closeoutZoom * 0.32;
   const settledCloseoutScale = interpolate(
-    closeoutPullback,
+    closeoutSettle,
     [0, 1],
-    [activeCloseoutScale, 0.88],
+    [0.95, 0.88],
   );
-  const settledCloseoutFx = interpolate(
-    closeoutPullback,
-    [0, 1],
-    [activeCloseoutFx, 0.5],
-  );
-  const settledCloseoutFy = interpolate(
-    closeoutPullback,
-    [0, 1],
-    [activeCloseoutFy, 0.04],
-  );
+  const settledCloseoutFy = interpolate(closeoutSettle, [0, 1], [0.5, 0.04]);
   const closeoutScale = interpolate(
     finalZoom,
     [0, 1],
     [settledCloseoutScale, 1.72],
   );
-  const closeoutFx = interpolate(finalZoom, [0, 1], [settledCloseoutFx, 0.5]);
   const closeoutFy = interpolate(finalZoom, [0, 1], [settledCloseoutFy, -0.32]);
-  const closeoutTx = width / 2 - closeoutFx * width * closeoutScale;
+  const closeoutTx = width / 2 - 0.5 * width * closeoutScale;
   const closeoutTy = height / 2 - closeoutFy * height * closeoutScale;
   // Camera: zoom into "Create agent", pan to the modal, then zoom out to reveal
   // the whole canvas.
@@ -2644,6 +2632,15 @@ export const AppFlow: React.FC = () => {
       {/* single Enter/Return press as the prompt sends and the empty state is covered */}
       <Sequence from={REVEAL_START - 4} durationInFrames={5} layout="none">
         <Audio src={staticFile("keyboard.mp3")} volume={1} />
+      </Sequence>
+
+      {/* whoosh as the head turn sweeps the workspace off-screen */}
+      <Sequence
+        from={HEAD_TURN_START - 4}
+        durationInFrames={34}
+        layout="none"
+      >
+        <Audio src={staticFile("whoosh.mp3")} trimBefore={6} volume={0.18} />
       </Sequence>
 
       <Sequence from={FINAL_SHOVE_START} durationInFrames={27} layout="none">

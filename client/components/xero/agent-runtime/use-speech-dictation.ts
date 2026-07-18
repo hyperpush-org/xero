@@ -53,6 +53,7 @@ interface SpeechDictationController {
   error: OperatorActionErrorView | null
   toggle: () => Promise<void>
   stopBeforeSubmit: () => Promise<boolean>
+  cancel: () => Promise<void>
 }
 
 const DEFAULT_CONTEXTUAL_PHRASES = [
@@ -525,5 +526,6 @@ export function useSpeechDictation({
     error,
     toggle,
     stopBeforeSubmit: stop,
+    cancel,
   }
 }

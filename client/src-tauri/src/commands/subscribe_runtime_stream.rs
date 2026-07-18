@@ -3538,13 +3538,28 @@ mod tests {
         );
     }
 
-    fn seed_replay_project(root: &tempfile::TempDir) -> std::path::PathBuf {
+    struct ReplayProjectFixture {
+        repo_root: std::path::PathBuf,
+        project_id: String,
+        run_id: String,
+        session_id: String,
+    }
+
+    fn seed_replay_project(root: &tempfile::TempDir) -> ReplayProjectFixture {
         let repo_root = root.path().join("repo");
         std::fs::create_dir_all(&repo_root).expect("create replay repo root");
         let canonical_root = std::fs::canonicalize(&repo_root).expect("canonical replay repo root");
+        let fixture_id = root
+            .path()
+            .file_name()
+            .expect("temporary replay root name")
+            .to_string_lossy()
+            .replace('.', "");
+        let project_id = format!("replay-project-{fixture_id}");
+        let run_id = format!("replay-run-{fixture_id}");
         let repository = crate::git::repository::CanonicalRepository {
-            project_id: "project-1".into(),
-            repository_id: "repo-1".into(),
+            project_id: project_id.clone(),
+            repository_id: format!("replay-repo-{fixture_id}"),
             root_path: canonical_root.clone(),
             root_path_string: canonical_root.to_string_lossy().into_owned(),
             common_git_dir: canonical_root.join(".git"),
@@ -3564,14 +3579,19 @@ mod tests {
         crate::db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
         let state = crate::state::DesktopState::default();
         crate::db::import_project(&repository, state.import_failpoints()).expect("import project");
-        canonical_root
+        ReplayProjectFixture {
+            repo_root: canonical_root,
+            project_id,
+            run_id: run_id.clone(),
+            session_id: format!("owned-agent:{run_id}"),
+        }
     }
 
-    fn seed_replay_run(repo_root: &std::path::Path, event_count: usize) {
+    fn seed_replay_run(fixture: &ReplayProjectFixture, event_count: usize) {
         let session = project_store::create_agent_session(
-            repo_root,
+            &fixture.repo_root,
             &project_store::AgentSessionCreateRecord {
-                project_id: "project-1".into(),
+                project_id: fixture.project_id.clone(),
                 title: "Replay test session".into(),
                 summary: String::new(),
                 selected: true,
@@ -3581,14 +3601,14 @@ mod tests {
         .expect("create replay test session");
 
         project_store::insert_agent_run(
-            repo_root,
+            &fixture.repo_root,
             &project_store::NewAgentRunRecord {
                 runtime_agent_id: crate::commands::RuntimeAgentIdDto::Engineer,
                 agent_definition_id: Some("engineer".into()),
                 agent_definition_version: Some(project_store::BUILTIN_AGENT_DEFINITION_VERSION),
-                project_id: "project-1".into(),
+                project_id: fixture.project_id.clone(),
                 agent_session_id: session.agent_session_id,
-                run_id: "run-1".into(),
+                run_id: fixture.run_id.clone(),
                 provider_id: "fake".into(),
                 model_id: "fake-model".into(),
                 prompt: "test prompt".into(),
@@ -3600,10 +3620,10 @@ mod tests {
 
         for index in 0..event_count {
             project_store::append_agent_event(
-                repo_root,
+                &fixture.repo_root,
                 &project_store::NewAgentEventRecord {
-                    project_id: "project-1".into(),
-                    run_id: "run-1".into(),
+                    project_id: fixture.project_id.clone(),
+                    run_id: fixture.run_id.clone(),
                     event_kind: AgentRunEventKind::MessageDelta,
                     payload_json: serde_json::json!({
                         "delta": format!("chunk-{index}")
@@ -3617,15 +3637,15 @@ mod tests {
     }
 
     fn append_replay_event(
-        repo_root: &Path,
+        fixture: &ReplayProjectFixture,
         event_kind: AgentRunEventKind,
         payload_json: serde_json::Value,
     ) -> AgentEventRecord {
         project_store::append_agent_event(
-            repo_root,
+            &fixture.repo_root,
             &project_store::NewAgentEventRecord {
-                project_id: "project-1".into(),
-                run_id: "run-1".into(),
+                project_id: fixture.project_id.clone(),
+                run_id: fixture.run_id.clone(),
                 event_kind,
                 payload_json: payload_json.to_string(),
                 created_at: "2026-04-24T00:00:00Z".into(),
@@ -3654,20 +3674,20 @@ mod tests {
     #[test]
     fn persisted_live_catchup_fills_gap_in_order_without_duplicates_and_keeps_filters() {
         let root = tempfile::tempdir().expect("temp dir");
-        let repo_root = seed_replay_project(&root);
-        seed_replay_run(&repo_root, 0);
+        let fixture = seed_replay_project(&root);
+        seed_replay_run(&fixture, 0);
         let hidden = append_replay_event(
-            &repo_root,
+            &fixture,
             AgentRunEventKind::ReasoningSummary,
             serde_json::json!({"summary": "hidden activity"}),
         );
         let missing = append_replay_event(
-            &repo_root,
+            &fixture,
             AgentRunEventKind::MessageDelta,
             serde_json::json!({"role": "assistant", "text": "missing"}),
         );
         let received = append_replay_event(
-            &repo_root,
+            &fixture,
             AgentRunEventKind::MessageDelta,
             serde_json::json!({"role": "assistant", "text": "received"}),
         );
@@ -3677,10 +3697,10 @@ mod tests {
         let asset_state = ProjectAssetState::default();
 
         let outcome = stream_persisted_owned_agent_events_after(
-            &repo_root,
-            "project-1",
-            "run-1",
-            "owned-agent:run-1",
+            &fixture.repo_root,
+            &fixture.project_id,
+            &fixture.run_id,
+            &fixture.session_id,
             &item_kinds,
             &channel,
             &mut projection,
@@ -3690,10 +3710,10 @@ mod tests {
         )
         .expect("catch up persisted gap");
         send_live_owned_agent_event(
-            &repo_root,
-            "project-1",
+            &fixture.repo_root,
+            &fixture.project_id,
             received.clone(),
-            "owned-agent:run-1",
+            &fixture.session_id,
             &item_kinds,
             &channel,
             &mut projection,
@@ -3723,22 +3743,22 @@ mod tests {
     #[test]
     fn persisted_idle_catchup_delivers_unpublished_terminal_event() {
         let root = tempfile::tempdir().expect("temp dir");
-        let repo_root = seed_replay_project(&root);
-        seed_replay_run(&repo_root, 0);
+        let fixture = seed_replay_project(&root);
+        seed_replay_run(&fixture, 0);
         let before = append_replay_event(
-            &repo_root,
+            &fixture,
             AgentRunEventKind::MessageDelta,
             serde_json::json!({"role": "assistant", "text": "done"}),
         );
         let completed = append_replay_event(
-            &repo_root,
+            &fixture,
             AgentRunEventKind::RunCompleted,
             serde_json::json!({"summary": "complete"}),
         );
         project_store::update_agent_run_status(
-            &repo_root,
-            "project-1",
-            "run-1",
+            &fixture.repo_root,
+            &fixture.project_id,
+            &fixture.run_id,
             AgentRunStatus::Completed,
             None,
             "2026-04-24T00:00:01Z",
@@ -3748,10 +3768,10 @@ mod tests {
         let mut projection = RuntimeStreamProjection::new(projection_context());
 
         let outcome = stream_persisted_owned_agent_events_after(
-            &repo_root,
-            "project-1",
-            "run-1",
-            "owned-agent:run-1",
+            &fixture.repo_root,
+            &fixture.project_id,
+            &fixture.run_id,
+            &fixture.session_id,
             &[RuntimeStreamItemKind::Transcript],
             &channel,
             &mut projection,
@@ -3776,31 +3796,31 @@ mod tests {
     #[test]
     fn persisted_catchup_crosses_prior_completion_for_running_continuation() {
         let root = tempfile::tempdir().expect("temp dir");
-        let repo_root = seed_replay_project(&root);
-        seed_replay_run(&repo_root, 0);
+        let fixture = seed_replay_project(&root);
+        seed_replay_run(&fixture, 0);
         let completed = append_replay_event(
-            &repo_root,
+            &fixture,
             AgentRunEventKind::RunCompleted,
             serde_json::json!({"summary": "first turn complete"}),
         );
         project_store::update_agent_run_status(
-            &repo_root,
-            "project-1",
-            "run-1",
+            &fixture.repo_root,
+            &fixture.project_id,
+            &fixture.run_id,
             AgentRunStatus::Completed,
             None,
             "2026-04-24T00:00:01Z",
         )
         .expect("complete first turn");
         let continued = append_replay_event(
-            &repo_root,
+            &fixture,
             AgentRunEventKind::MessageDelta,
             serde_json::json!({"role": "user", "text": "continue"}),
         );
         project_store::reopen_agent_run_for_continuation(
-            &repo_root,
-            "project-1",
-            "run-1",
+            &fixture.repo_root,
+            &fixture.project_id,
+            &fixture.run_id,
             "2026-04-24T00:00:02Z",
         )
         .expect("reopen continued run");
@@ -3808,10 +3828,10 @@ mod tests {
         let mut projection = RuntimeStreamProjection::new(projection_context());
 
         let outcome = stream_persisted_owned_agent_events_after(
-            &repo_root,
-            "project-1",
-            "run-1",
-            "owned-agent:run-1",
+            &fixture.repo_root,
+            &fixture.project_id,
+            &fixture.run_id,
+            &fixture.session_id,
             &[RuntimeStreamItemKind::Transcript],
             &channel,
             &mut projection,
@@ -3849,14 +3869,14 @@ mod tests {
     #[test]
     fn fresh_runtime_stream_subscription_replays_full_run_history() {
         let root = tempfile::tempdir().expect("temp dir");
-        let repo_root = seed_replay_project(&root);
+        let fixture = seed_replay_project(&root);
         let event_count = INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT + 5;
-        seed_replay_run(&repo_root, event_count);
+        seed_replay_run(&fixture, event_count);
 
         let (full_events, full_mode) = load_owned_agent_replay_events(
-            &repo_root,
-            "project-1",
-            "run-1",
+            &fixture.repo_root,
+            &fixture.project_id,
+            &fixture.run_id,
             None,
             None,
             INCREMENTAL_RUNTIME_STREAM_REPLAY_LIMIT,
@@ -3870,9 +3890,15 @@ mod tests {
             event_count as i64
         );
 
-        let (limited_events, limited_mode) =
-            load_owned_agent_replay_events(&repo_root, "project-1", "run-1", None, Some(10), 10)
-                .expect("load limited replay events");
+        let (limited_events, limited_mode) = load_owned_agent_replay_events(
+            &fixture.repo_root,
+            &fixture.project_id,
+            &fixture.run_id,
+            None,
+            Some(10),
+            10,
+        )
+        .expect("load limited replay events");
         assert_eq!(limited_mode, "limited-full");
         assert_eq!(limited_events.len(), 10);
         assert_eq!(

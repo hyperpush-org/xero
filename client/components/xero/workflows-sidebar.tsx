@@ -68,6 +68,7 @@ import {
 } from "@/src/lib/xero-model/workflow-templates"
 import { CreateWorkflowDialog } from "./create-workflow-dialog"
 import type { CreateEntityDialogView } from "./create-entity-dialog"
+import type { ComposerWorkflowTarget } from "./agent-runtime"
 
 const MIN_WIDTH = 280
 const MAX_WIDTH = 1200
@@ -96,6 +97,7 @@ interface WorkflowsSidebarProps {
   onCreateWorkflow?: () => void
   onCreateWorkflowWithAgentCreate?: () => void
   onCreateWorkflowFromTemplate?: (templateId: WorkflowTemplateIdDto) => void
+  onUseWorkflowInChat?: (target: ComposerWorkflowTarget) => void
   onStartWorkflowRun?: (workflowId: string) => void
   onCancelWorkflowRun?: (runId: string) => void
   onResumeWorkflowRun?: (runId: string, nodeRunId: string, decision: string) => void
@@ -147,6 +149,7 @@ export function WorkflowsSidebar({
   onCreateWorkflow,
   onCreateWorkflowWithAgentCreate,
   onCreateWorkflowFromTemplate,
+  onUseWorkflowInChat,
   onStartWorkflowRun,
   onCancelWorkflowRun,
   onResumeWorkflowRun,
@@ -403,6 +406,7 @@ export function WorkflowsSidebar({
             onSelectWorkflowTemplate={onSelectWorkflowTemplate}
             onSelectWorkflowRun={onSelectWorkflowRun}
             onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+            onUseWorkflowInChat={onUseWorkflowInChat}
             onStartWorkflowRun={onStartWorkflowRun}
             onCancelWorkflowRun={onCancelWorkflowRun}
             onResumeWorkflowRun={onResumeWorkflowRun}
@@ -682,6 +686,7 @@ function LibraryList({
   onSelectWorkflowTemplate,
   onSelectWorkflowRun,
   onCreateWorkflowFromTemplate,
+  onUseWorkflowInChat,
   onStartWorkflowRun,
   onCancelWorkflowRun,
   onResumeWorkflowRun,
@@ -711,6 +716,7 @@ function LibraryList({
   onSelectWorkflowTemplate?: (templateId: WorkflowTemplateIdDto) => void
   onSelectWorkflowRun?: (runId: string) => void
   onCreateWorkflowFromTemplate?: (templateId: WorkflowTemplateIdDto) => void
+  onUseWorkflowInChat?: (target: ComposerWorkflowTarget) => void
   onStartWorkflowRun?: (workflowId: string) => void
   onCancelWorkflowRun?: (runId: string) => void
   onResumeWorkflowRun?: (runId: string, nodeRunId: string, decision: string) => void
@@ -738,6 +744,7 @@ function LibraryList({
         onSelectWorkflow={onSelectWorkflow}
         onSelectWorkflowRun={onSelectWorkflowRun}
         onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+        onUseWorkflowInChat={onUseWorkflowInChat}
         onStartWorkflowRun={onStartWorkflowRun}
         onCancelWorkflowRun={onCancelWorkflowRun}
         onResumeWorkflowRun={onResumeWorkflowRun}
@@ -837,6 +844,7 @@ function WorkflowsList({
   onSelectWorkflowTemplate,
   onSelectWorkflowRun,
   onCreateWorkflowFromTemplate,
+  onUseWorkflowInChat,
   onStartWorkflowRun,
   onCancelWorkflowRun,
   onResumeWorkflowRun,
@@ -856,6 +864,7 @@ function WorkflowsList({
   onSelectWorkflowTemplate?: (templateId: WorkflowTemplateIdDto) => void
   onSelectWorkflowRun?: (runId: string) => void
   onCreateWorkflowFromTemplate?: (templateId: WorkflowTemplateIdDto) => void
+  onUseWorkflowInChat?: (target: ComposerWorkflowTarget) => void
   onStartWorkflowRun?: (workflowId: string) => void
   onCancelWorkflowRun?: (runId: string) => void
   onResumeWorkflowRun?: (runId: string, nodeRunId: string, decision: string) => void
@@ -894,6 +903,7 @@ function WorkflowsList({
             selectedTemplateId={selectedWorkflowTemplateId}
             onSelectWorkflowTemplate={onSelectWorkflowTemplate}
             onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+            onUseInChat={onUseWorkflowInChat}
           />
         ) : (
           definitions.map((definition) => {
@@ -905,6 +915,15 @@ function WorkflowsList({
                   latestRun={latestRun}
                   selected={definition.id === selectedWorkflowId}
                   onSelect={onSelectWorkflow}
+                  onUseInChat={
+                    onUseWorkflowInChat
+                      ? () =>
+                          onUseWorkflowInChat({
+                            kind: "definition",
+                            workflowId: definition.id,
+                          })
+                      : undefined
+                  }
                   onStart={onStartWorkflowRun}
                 />
               </li>
@@ -917,6 +936,7 @@ function WorkflowsList({
             selectedTemplateId={selectedWorkflowTemplateId}
             onSelectWorkflowTemplate={onSelectWorkflowTemplate}
             onCreateWorkflowFromTemplate={onCreateWorkflowFromTemplate}
+            onUseInChat={onUseWorkflowInChat}
           />
         ) : null}
       </ul>
@@ -1041,11 +1061,13 @@ function WorkflowTemplateRows({
   selectedTemplateId = null,
   onSelectWorkflowTemplate,
   onCreateWorkflowFromTemplate,
+  onUseInChat,
 }: {
   compact?: boolean
   selectedTemplateId?: WorkflowTemplateIdDto | null
   onSelectWorkflowTemplate?: (templateId: WorkflowTemplateIdDto) => void
   onCreateWorkflowFromTemplate?: (templateId: WorkflowTemplateIdDto) => void
+  onUseInChat?: (target: ComposerWorkflowTarget) => void
 }) {
   return (
     <>
@@ -1075,6 +1097,13 @@ function WorkflowTemplateRows({
                 name={template.name}
                 actions={[
                   {
+                    label: "Use in Chat",
+                    icon: <MessageCircle className="mr-2 h-3.5 w-3.5" />,
+                    onSelect: onUseInChat
+                      ? () => onUseInChat({ kind: "template", templateId: template.id })
+                      : undefined,
+                  },
+                  {
                     label: "Use template",
                     icon: <Sparkles className="mr-2 h-3.5 w-3.5" />,
                     onSelect: onCreateWorkflowFromTemplate
@@ -1096,12 +1125,14 @@ function WorkflowRow({
   latestRun,
   selected,
   onSelect,
+  onUseInChat,
   onStart,
 }: {
   definition: WorkflowDefinitionSummaryDto
   latestRun: WorkflowRunDto | null
   selected: boolean
   onSelect?: (workflowId: string) => void
+  onUseInChat?: () => void
   onStart?: (workflowId: string) => void
 }) {
   const runBadge = latestRun ? (
@@ -1134,6 +1165,11 @@ function WorkflowRow({
         <LibraryEntityRowMenu
           name={definition.name}
           actions={[
+            {
+              label: "Use in Chat",
+              icon: <MessageCircle className="mr-2 h-3.5 w-3.5" />,
+              onSelect: onUseInChat,
+            },
             {
               label: "Open workflow",
               icon: <WorkflowIcon className="mr-2 h-3.5 w-3.5" />,

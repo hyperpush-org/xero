@@ -55,9 +55,8 @@ pub(crate) fn stop_runtime_run_blocking<R: Runtime>(
         if project_store::load_agent_run(&repo_root, &request.project_id, &snapshot.run.run_id)
             .is_ok()
         {
-            let runtime = crate::runtime::DesktopAgentCoreRuntime::new(
-                state.agent_run_supervisor().clone(),
-            );
+            let runtime =
+                crate::runtime::DesktopAgentCoreRuntime::new(state.agent_run_supervisor().clone());
             let _ = runtime.cancel_run(
                 repo_root.clone(),
                 request.project_id.clone(),

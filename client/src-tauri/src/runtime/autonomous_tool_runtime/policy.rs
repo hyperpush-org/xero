@@ -1352,7 +1352,10 @@ fn command_tool_can_run_without_operator_review(
     prepared: &PreparedCommandRequest,
     policy: &AutonomousCommandPolicyTrace,
 ) -> bool {
-    matches!(tool_name, AUTONOMOUS_TOOL_COMMAND_PROBE) && command_probe_allows(prepared, policy)
+    (matches!(tool_name, AUTONOMOUS_TOOL_COMMAND_PROBE) && command_probe_allows(prepared, policy))
+        || (matches!(tool_name, AUTONOMOUS_TOOL_COMMAND_VERIFY)
+            && policy.approval_mode == RuntimeRunApprovalModeDto::AutoEdit
+            && command_verify_allows(prepared, policy))
 }
 
 pub(super) fn command_tool_scope_escalation(
@@ -1434,6 +1437,9 @@ fn command_verify_allows(
     }
     let program = executable_name(&prepared.argv[0]);
     match program {
+        "git" => {
+            prepared.argv.len() == 3 && prepared.argv[1] == "diff" && prepared.argv[2] == "--check"
+        }
         "cargo" => git_subcommand(&prepared.argv).is_some_and(|subcommand| {
             matches!(
                 subcommand,
@@ -3775,6 +3781,7 @@ mod tests {
         )
         .expect("package");
         let scoped_runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Suggest);
+        let auto_edit_runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::AutoEdit);
         let full_access_runtime = test_runtime(tempdir.path(), RuntimeRunApprovalModeDto::Yolo);
         let probe_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
             argv: vec!["cargo".into(), "test".into()],
@@ -3809,6 +3816,38 @@ mod tests {
             .expect("verify policy");
 
         assert_eq!(verify_decision.action, AutonomousSafetyPolicyAction::Allow);
+
+        let git_diff_check_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
+            argv: vec!["git".into(), "diff".into(), "--check".into()],
+            cwd: None,
+            timeout_ms: None,
+        });
+        let auto_edit_git_diff_check = auto_edit_runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["git", "diff", "--check"]}),
+                &git_diff_check_request,
+                false,
+                "input-hash",
+            )
+            .expect("auto-edit git diff check policy");
+        assert_eq!(
+            auto_edit_git_diff_check.action,
+            AutonomousSafetyPolicyAction::Allow
+        );
+        let suggest_git_diff_check = scoped_runtime
+            .evaluate_safety_policy(
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                &json!({"argv": ["git", "diff", "--check"]}),
+                &git_diff_check_request,
+                false,
+                "input-hash",
+            )
+            .expect("suggest git diff check policy");
+        assert_eq!(
+            suggest_git_diff_check.action,
+            AutonomousSafetyPolicyAction::RequireApproval
+        );
 
         let root_cwd_verify_request = AutonomousToolRequest::Command(AutonomousCommandRequest {
             argv: vec!["cargo".into(), "test".into()],

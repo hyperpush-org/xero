@@ -59,7 +59,10 @@ use super::{
         append_workflow_command_arguments, harden_workflow_command_process,
         resolve_workflow_command_executable, validate_workflow_command_policy,
     },
-    condition_eval::{evaluate_workflow_condition, json_path_lookup, WorkflowConditionContext},
+    condition_eval::{
+        evaluate_workflow_condition, json_path_lookup, lookup_run_input_binding,
+        WorkflowConditionContext,
+    },
 };
 
 const MAX_RECONCILE_STEPS: usize = 32;
@@ -1227,11 +1230,12 @@ fn reconcile_running_agent_nodes(
 ) -> CommandResult<bool> {
     let mut changed = false;
     let now = OffsetDateTime::now_utc();
-    for node_run in run
-        .nodes
-        .iter()
-        .filter(|node| node.status == WorkflowNodeRunStatusDto::Running)
-    {
+    for node_run in run.nodes.iter().filter(|node| {
+        matches!(
+            node.status,
+            WorkflowNodeRunStatusDto::Running | WorkflowNodeRunStatusDto::WaitingOnGate
+        )
+    }) {
         let Some(runtime_run_id) = node_run.runtime_run_id.as_deref() else {
             continue;
         };
@@ -1259,8 +1263,8 @@ fn reconcile_running_agent_nodes(
                 repo_root,
                 project_id,
                 &node_run.id,
-                &[WorkflowNodeRunStatusDto::Running],
-                WorkflowNodeRunStatusDto::Running,
+                &[node_run.status],
+                node_run.status,
                 Some(runtime_run_id),
                 Some(&snapshot.run.agent_session_id),
                 None,
@@ -1283,6 +1287,33 @@ fn reconcile_running_agent_nodes(
         }
         match snapshot.run.status {
             AgentRunStatus::Starting | AgentRunStatus::Running => {
+                if node_run.status == WorkflowNodeRunStatusDto::WaitingOnGate {
+                    if project_store::compare_and_set_workflow_run_node(
+                        repo_root,
+                        project_id,
+                        &node_run.id,
+                        &[WorkflowNodeRunStatusDto::WaitingOnGate],
+                        WorkflowNodeRunStatusDto::Running,
+                        Some(runtime_run_id),
+                        Some(&snapshot.run.agent_session_id),
+                        None,
+                    )? {
+                        project_store::insert_workflow_event(
+                            repo_root,
+                            project_id,
+                            &run.id,
+                            Some(&node_run.id),
+                            "workflow_agent_resumed",
+                            &json!({
+                                "nodeId": node_run.node_id,
+                                "runtimeRunId": runtime_run_id,
+                                "agentSessionId": snapshot.run.agent_session_id,
+                            }),
+                        )?;
+                        changed = true;
+                    }
+                    continue;
+                }
                 if let Some(timeout_seconds) =
                     activity_timeout_seconds_for_node(&run.definition_snapshot, &node_run.node_id)
                 {
@@ -1334,6 +1365,35 @@ fn reconcile_running_agent_nodes(
                         }
                         changed = true;
                     }
+                }
+            }
+            AgentRunStatus::Paused => {
+                if node_run.status == WorkflowNodeRunStatusDto::Running
+                    && project_store::compare_and_set_workflow_run_node(
+                        repo_root,
+                        project_id,
+                        &node_run.id,
+                        &[WorkflowNodeRunStatusDto::Running],
+                        WorkflowNodeRunStatusDto::WaitingOnGate,
+                        Some(runtime_run_id),
+                        Some(&snapshot.run.agent_session_id),
+                        None,
+                    )?
+                {
+                    project_store::insert_workflow_event(
+                        repo_root,
+                        project_id,
+                        &run.id,
+                        Some(&node_run.id),
+                        "workflow_agent_paused",
+                        &json!({
+                            "nodeId": node_run.node_id,
+                            "runtimeRunId": runtime_run_id,
+                            "agentSessionId": snapshot.run.agent_session_id,
+                            "error": snapshot.run.last_error,
+                        }),
+                    )?;
+                    changed = true;
                 }
             }
             AgentRunStatus::Completed => {
@@ -1398,7 +1458,10 @@ fn reconcile_running_agent_nodes(
                     repo_root,
                     project_id,
                     &node_run.id,
-                    &[WorkflowNodeRunStatusDto::Running],
+                    &[
+                        WorkflowNodeRunStatusDto::Running,
+                        WorkflowNodeRunStatusDto::WaitingOnGate,
+                    ],
                     WorkflowNodeRunStatusDto::Succeeded,
                     None,
                     None,
@@ -1419,7 +1482,10 @@ fn reconcile_running_agent_nodes(
                     repo_root,
                     project_id,
                     &node_run.id,
-                    &[WorkflowNodeRunStatusDto::Running],
+                    &[
+                        WorkflowNodeRunStatusDto::Running,
+                        WorkflowNodeRunStatusDto::WaitingOnGate,
+                    ],
                     WorkflowNodeRunStatusDto::Failed,
                     None,
                     None,
@@ -1433,7 +1499,10 @@ fn reconcile_running_agent_nodes(
                     repo_root,
                     project_id,
                     &node_run.id,
-                    &[WorkflowNodeRunStatusDto::Running],
+                    &[
+                        WorkflowNodeRunStatusDto::Running,
+                        WorkflowNodeRunStatusDto::WaitingOnGate,
+                    ],
                     WorkflowNodeRunStatusDto::Cancelled,
                     None,
                     None,
@@ -2887,11 +2956,9 @@ fn resolve_input_bindings_payload(
                 path,
                 ..
             } => {
-                let value = match (run.initial_input.as_ref(), path.as_deref()) {
-                    (Some(input), Some(path)) => json_path_lookup(input, path).cloned(),
-                    (Some(input), None) => Some(input.clone()),
-                    (None, _) => None,
-                };
+                let value =
+                    lookup_run_input_binding(run.initial_input.as_ref(), name, path.as_deref())
+                        .cloned();
                 (name, *required, value)
             }
             WorkflowInputBindingDto::Artifact {
@@ -6235,6 +6302,28 @@ mod tests {
             .collect::<Vec<_>>();
 
         (run_with_nodes(edges, nodes), merge_run)
+    }
+
+    #[test]
+    fn input_bindings_payload_resolves_omitted_run_input_path_from_binding_name() {
+        let mut run = run_with_nodes(Vec::new(), Vec::new());
+        run.initial_input = Some(json!({
+            "goal": "Ship it",
+            "internal": "must not be copied into the goal binding"
+        }));
+
+        let payload = resolve_input_bindings_payload(
+            &run,
+            &[WorkflowInputBindingDto::RunInput {
+                name: "goal".into(),
+                required: true,
+                path: None,
+                prompt_label: Some("Goal".into()),
+            }],
+        )
+        .expect("resolve input bindings");
+
+        assert_eq!(payload, json!({ "goal": "Ship it" }));
     }
 
     #[test]

@@ -1504,7 +1504,7 @@ impl AutonomousAgentWorkflowPolicy {
         }
     }
 
-    fn ensure_valid(&self) -> CommandResult<()> {
+    pub(crate) fn ensure_valid(&self) -> CommandResult<()> {
         let Some(reason) = self.invalid_reason.as_deref() else {
             return Ok(());
         };
@@ -5020,7 +5020,16 @@ impl AutonomousToolRuntime {
     }
 
     pub fn with_agent_workflow_replay(mut self, replay: AutonomousAgentWorkflowReplay) -> Self {
-        self.todo_items = Arc::new(Mutex::new(replay.todo_items.clone()));
+        self.todo_items = Arc::new(Mutex::new(replay.todo_items));
+        let state = self.agent_workflow_state_from_replay_events(replay.events);
+        self.agent_workflow_state = Arc::new(Mutex::new(state));
+        self
+    }
+
+    fn agent_workflow_state_from_replay_events(
+        &self,
+        events: Vec<AutonomousAgentWorkflowReplayEvent>,
+    ) -> AutonomousAgentWorkflowRuntimeState {
         let mut state = self
             .agent_workflow_policy
             .as_ref()
@@ -5028,7 +5037,7 @@ impl AutonomousToolRuntime {
             .unwrap_or_default();
         if let Some(policy) = self.agent_workflow_policy.as_ref() {
             let mut in_flight = BTreeMap::new();
-            for event in replay.events {
+            for event in events {
                 match event {
                     AutonomousAgentWorkflowReplayEvent::ToolStarted {
                         tool_call_id,
@@ -5056,8 +5065,29 @@ impl AutonomousToolRuntime {
                 }
             }
         }
-        self.agent_workflow_state = Arc::new(Mutex::new(state));
-        self
+        state
+    }
+
+    pub(crate) fn reconcile_agent_workflow_replay(
+        &self,
+        replay: AutonomousAgentWorkflowReplay,
+    ) -> CommandResult<()> {
+        let state = self.agent_workflow_state_from_replay_events(replay.events);
+        let mut todo_items = self.todo_items.lock().map_err(|_| {
+            CommandError::system_fault(
+                "autonomous_tool_todo_lock_failed",
+                "Xero could not reconcile the owned-agent todo store from persisted run events.",
+            )
+        })?;
+        let mut workflow_state = self.agent_workflow_state.lock().map_err(|_| {
+            CommandError::system_fault(
+                "agent_workflow_state_lock_failed",
+                "Xero could not reconcile the custom-agent Stage state from persisted run events.",
+            )
+        })?;
+        *todo_items = replay.todo_items;
+        *workflow_state = state;
+        Ok(())
     }
 
     pub fn with_agent_run_context(
@@ -6304,12 +6334,10 @@ impl AutonomousToolRuntime {
 
     pub(crate) fn reconcile_isolated_tool_result(
         &self,
+        tool_call_id: &str,
         tool_name: &str,
         output: &JsonValue,
     ) -> CommandResult<()> {
-        if !matches!(tool_name, AUTONOMOUS_TOOL_TODO | AUTONOMOUS_TOOL_SUBAGENT) {
-            return Ok(());
-        }
         let result = serde_json::from_value::<AutonomousToolResult>(output.clone()).map_err(|error| {
             CommandError::system_fault(
                 "agent_isolated_tool_state_decode_failed",
@@ -6318,6 +6346,29 @@ impl AutonomousToolRuntime {
                 ),
             )
         })?;
+        if let Some(context) = self.agent_run_context.as_ref() {
+            let touched_paths = project_store::read_agent_file_change_paths_for_tool_call(
+                &self.repo_root,
+                &context.project_id,
+                &context.run_id,
+                tool_call_id,
+            )?;
+            if !touched_paths.is_empty() {
+                let checked_at = crate::auth::now_timestamp();
+                project_store::refresh_project_record_freshness_for_paths(
+                    &self.repo_root,
+                    &context.project_id,
+                    &touched_paths,
+                    &checked_at,
+                )?;
+                project_store::refresh_agent_memory_freshness_for_paths(
+                    &self.repo_root,
+                    &context.project_id,
+                    &touched_paths,
+                    &checked_at,
+                )?;
+            }
+        }
         match result.output {
             AutonomousToolOutput::Todo(output) => {
                 let mut todos = self.todo_items.lock().map_err(|_| {
@@ -6344,7 +6395,7 @@ impl AutonomousToolRuntime {
                 }
                 tasks.insert(output.task.subagent_id.clone(), output.task);
             }
-            _ => {
+            _ if matches!(tool_name, AUTONOMOUS_TOOL_TODO | AUTONOMOUS_TOOL_SUBAGENT) => {
                 return Err(CommandError::system_fault(
                     "agent_isolated_tool_state_kind_mismatch",
                     format!(
@@ -6352,6 +6403,7 @@ impl AutonomousToolRuntime {
                     ),
                 ));
             }
+            _ => {}
         }
         Ok(())
     }
@@ -12502,6 +12554,92 @@ mod tests {
             .agent_stage_completion_gate_prompt()
             .expect("completion gate")
             .is_none());
+    }
+
+    #[test]
+    fn stage_regression_same_todo_must_be_recompleted_in_each_stage_attempt() {
+        let policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [
+                    {
+                        "id": "inspect",
+                        "title": "Inspect",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [{
+                            "kind": "todo_completed",
+                            "todoId": "stage_done"
+                        }]
+                    },
+                    {
+                        "id": "verify",
+                        "title": "Verify",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [{
+                            "kind": "todo_completed",
+                            "todoId": "stage_done"
+                        }]
+                    },
+                    {
+                        "id": "publish",
+                        "title": "Publish",
+                        "allowedTools": [AUTONOMOUS_TOOL_WRITE]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tempdir = tempfile::tempdir().expect("tempdir");
+        let runtime = AutonomousToolRuntime::new(tempdir.path())
+            .expect("runtime")
+            .with_agent_workflow_policy(Some(policy));
+
+        runtime
+            .execute(AutonomousToolRequest::Todo(AutonomousTodoRequest {
+                action: AutonomousTodoAction::Upsert,
+                id: Some("stage_done".into()),
+                title: Some("Current Stage complete".into()),
+                notes: None,
+                status: Some(AutonomousTodoStatus::Completed),
+                mode: None,
+                debug_stage: None,
+                evidence: Some("Inspection complete.".into()),
+                phase_id: Some("inspect".into()),
+                phase_title: Some("Inspect".into()),
+                slice_id: None,
+                handoff_note: None,
+            }))
+            .expect("complete inspect Stage todo");
+
+        assert!(runtime
+            .agent_stage_completion_gate_prompt()
+            .expect("verify completion gate")
+            .is_some());
+
+        runtime
+            .execute(AutonomousToolRequest::Todo(AutonomousTodoRequest {
+                action: AutonomousTodoAction::Complete,
+                id: Some("stage_done".into()),
+                title: None,
+                notes: None,
+                status: None,
+                mode: None,
+                debug_stage: None,
+                evidence: None,
+                phase_id: None,
+                phase_title: None,
+                slice_id: None,
+                handoff_note: None,
+            }))
+            .expect("record fresh verify Stage completion");
+
+        assert!(runtime
+            .agent_stage_completion_gate_prompt()
+            .expect("publish completion gate")
+            .is_none());
+        assert!(runtime
+            .enforce_agent_workflow_before_tool(AUTONOMOUS_TOOL_WRITE)
+            .is_ok());
     }
 
     #[test]

@@ -624,6 +624,7 @@ describe('WorkflowDefinitionCanvas', () => {
 
     const startButton = screen.getByRole('button', { name: 'Start' })
     expect(startButton).toBeDisabled()
+    await waitFor(() => expect(screen.getByLabelText('Goal')).toHaveFocus())
     expect(screen.getByLabelText('Only phase (optional)')).toBeInTheDocument()
     expect(screen.getByLabelText('From phase (optional)')).toBeInTheDocument()
     expect(screen.getByLabelText('To phase (optional)')).toBeInTheDocument()
@@ -642,6 +643,106 @@ describe('WorkflowDefinitionCanvas', () => {
         only: '2',
       }),
     )
+  })
+
+  it('focuses the first configured input when every start input is optional', async () => {
+    const onCanvasStatusChange = vi.fn()
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'continuous_delivery',
+    })
+
+    render(
+      <WorkflowDefinitionCanvas
+        definition={definition}
+        onCanvasStatusChange={onCanvasStatusChange}
+        onStartRun={vi.fn(async () => undefined)}
+      />,
+    )
+
+    await waitFor(() => {
+      const latestStatus = onCanvasStatusChange.mock.calls
+        .map((call) => call[0])
+        .filter(Boolean)
+        .at(-1)
+      expect(latestStatus).toBeTruthy()
+      latestStatus.start()
+    })
+
+    expect(screen.getByRole('button', { name: 'Start' })).toBeEnabled()
+    await waitFor(() => expect(screen.getByLabelText('Goal (optional)')).toHaveFocus())
+  })
+
+  it('handles a positive external start token on first mount exactly once', async () => {
+    const onStartRun = vi.fn(async () => undefined)
+    const onWorkflowStartRequestHandled = vi.fn()
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'gsd_auto',
+    })
+    const canvas = (requestToken: number) => (
+      <WorkflowDefinitionCanvas
+        definition={definition}
+        onStartRun={onStartRun}
+        startRunRequestToken={requestToken}
+        onWorkflowStartRequestHandled={onWorkflowStartRequestHandled}
+      />
+    )
+
+    const { rerender } = render(canvas(11))
+
+    expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    expect(onWorkflowStartRequestHandled).toHaveBeenCalledWith(11)
+    expect(onWorkflowStartRequestHandled).toHaveBeenCalledTimes(1)
+
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+    rerender(canvas(11))
+    expect(screen.queryByRole('button', { name: 'Cancel' })).toBeNull()
+    expect(onWorkflowStartRequestHandled).toHaveBeenCalledTimes(1)
+
+    rerender(canvas(0))
+    rerender(canvas(11))
+
+    expect(await screen.findByRole('button', { name: 'Cancel' })).toBeInTheDocument()
+    expect(onWorkflowStartRequestHandled).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not carry cancelled start input into a different Workflow', async () => {
+    const firstDefinition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'gsd_auto',
+      name: 'First Workflow',
+    })
+    const secondDefinition = {
+      ...instantiateWorkflowTemplate({
+        projectId: 'project-1',
+        templateId: 'gsd_auto',
+        name: 'Second Workflow',
+      }),
+      id: 'second-workflow',
+    }
+    const onStartRun = vi.fn(async () => undefined)
+    const { rerender } = render(
+      <WorkflowDefinitionCanvas
+        definition={firstDefinition}
+        onStartRun={onStartRun}
+        startRunRequestToken={1}
+      />,
+    )
+
+    const firstGoal = await screen.findByLabelText('Goal')
+    fireEvent.change(firstGoal, { target: { value: 'Input only for the first Workflow' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancel' }))
+
+    rerender(
+      <WorkflowDefinitionCanvas
+        definition={secondDefinition}
+        onStartRun={onStartRun}
+        startRunRequestToken={2}
+      />,
+    )
+
+    expect(await screen.findByLabelText('Goal')).toHaveValue('')
   })
 
   it('shows child node runs when inspecting a subgraph node', () => {

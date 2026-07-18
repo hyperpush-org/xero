@@ -4,6 +4,7 @@ import type {
   WorkflowDefinitionDto,
   WorkflowEdgeDto,
   WorkflowNodeDto,
+  WorkflowRunOverrideDto,
 } from './workflow-definition'
 import type { AgentRefDto, WorkflowAgentSummaryDto } from './workflow-agents'
 
@@ -214,7 +215,7 @@ function instantiateContinuousDeliveryTemplate(
 ): WorkflowDefinitionDto {
   const planAgent = resolveBuiltInAgentRef(agents, 'plan')
   const workAgent = resolveBuiltInAgentRef(agents, 'engineer')
-  const checkAgent = resolveBuiltInAgentRef(agents, 'engineer')
+  const checkAgent = resolveBuiltInAgentRef(agents, 'ask')
   const debugAgent = resolveBuiltInAgentRef(agents, 'debug')
   const summaryAgent = resolveBuiltInAgentRef(agents, 'generalist')
   const id = createWorkflowId('continuous-delivery')
@@ -234,7 +235,7 @@ function instantiateContinuousDeliveryTemplate(
       ]),
       agentNode('work', 'Work', ...templateNodePosition('continuous_delivery', 'work'), workAgent, 'implementation_summary', [
         artifactBinding('plan.plan', 'Plan'),
-      ]),
+      ], autoEditRunOverrides()),
       agentNode('check', 'Check', ...templateNodePosition('continuous_delivery', 'check'), checkAgent, 'verification_result', [
         artifactBinding('work.implementation_summary', 'Implementation summary'),
       ]),
@@ -245,14 +246,14 @@ function instantiateContinuousDeliveryTemplate(
       agentNode('debug', 'Debug', ...templateNodePosition('continuous_delivery', 'debug'), debugAgent, 'debug_report', [
         artifactBinding('work.implementation_summary', 'Implementation summary', false),
         artifactBinding('check.verification_result', 'Verification result', false),
-      ]),
+      ], autoEditRunOverrides()),
       agentNode('review', 'Review', ...templateNodePosition('continuous_delivery', 'review'), checkAgent, 'review_findings', [
         artifactBinding('check.verification_result', 'Verification result'),
       ]),
       routerNode('review_router', 'Review route', ...templateNodePosition('continuous_delivery', 'review_router')),
       agentNode('fix', 'Fix', ...templateNodePosition('continuous_delivery', 'fix'), workAgent, 'implementation_summary', [
         artifactBinding('review.review_findings', 'Review findings'),
-      ]),
+      ], autoEditRunOverrides()),
       agentNode('summary', 'Summary', ...templateNodePosition('continuous_delivery', 'summary'), summaryAgent, 'text_output', [
         artifactBinding('work.implementation_summary', 'Implementation summary'),
         artifactBinding('review.review_findings', 'Review findings', false),
@@ -375,9 +376,9 @@ function instantiateGsdAutoTemplate(
 ): WorkflowDefinitionDto {
   const planAgent = resolveBuiltInAgentRef(agents, 'plan')
   const workAgent = resolveBuiltInAgentRef(agents, 'engineer')
-  const verifyAgent = resolveBuiltInAgentRef(agents, 'engineer')
+  const verifyAgent = resolveBuiltInAgentRef(agents, 'ask')
   const debugAgent = resolveBuiltInAgentRef(agents, 'debug')
-  const reviewAgent = resolveBuiltInAgentRef(agents, 'engineer')
+  const reviewAgent = resolveBuiltInAgentRef(agents, 'ask')
   const auditAgent = resolveBuiltInAgentRef(agents, 'generalist')
   const id = createWorkflowId('gsd-auto')
 
@@ -487,11 +488,11 @@ function instantiateGsdAutoTemplate(
       agentNode('phase_execute', 'Phase execute', ...templateNodePosition('gsd_auto', 'phase_execute'), workAgent, 'implementation_summary', [
         artifactBinding('phase_plan.delivery_plan', 'Phase plan'),
         artifactBinding('gap_closure.gap_list', 'Gap closure plan', false),
-      ]),
+      ], autoEditRunOverrides()),
       agentNode('debug_phase', 'Debug', ...templateNodePosition('gsd_auto', 'debug_phase'), debugAgent, 'debug_report', [
         artifactBinding('phase_execute.implementation_summary', 'Implementation summary', false),
         artifactBinding('verify_command.command_result', 'Verification command', false),
-      ]),
+      ], autoEditRunOverrides()),
       commandNode('verify_command', 'Verification command', ...templateNodePosition('gsd_auto', 'verify_command'), 'git', ['status', '--short']),
       agentNode('phase_verify', 'Verification review', ...templateNodePosition('gsd_auto', 'phase_verify'), verifyAgent, 'verification_result', [
         artifactBinding('phase_execute.implementation_summary', 'Implementation summary'),
@@ -509,7 +510,7 @@ function instantiateGsdAutoTemplate(
       routerNode('review_router', 'Review route', ...templateNodePosition('gsd_auto', 'review_router')),
       agentNode('phase_fix', 'Fix review findings', ...templateNodePosition('gsd_auto', 'phase_fix'), workAgent, 'implementation_summary', [
         artifactBinding('phase_review.review_findings', 'Review findings'),
-      ]),
+      ], autoEditRunOverrides()),
       stateWriteNode('write_phase_context', 'Record context', ...templateNodePosition('gsd_auto', 'write_phase_context'), 'phase_context', 'upsert', {
         id: '{{state.next_phase.collection_item.itemId}}-context',
         phaseId: '{{state.next_phase.collection_item.itemId}}',
@@ -886,7 +887,7 @@ function instantiateBugTriageTemplate(
       ]),
       agentNode('fix_bug', 'Fix bug', ...templateNodePosition('bug_triage_fix_loop', 'fix_bug'), workAgent, 'implementation_summary', [
         artifactBinding('triage.task_brief', 'Triage brief'),
-      ]),
+      ], autoEditRunOverrides()),
       commandNode('bug_check', 'Bug check', ...templateNodePosition('bug_triage_fix_loop', 'bug_check'), 'git', ['status', '--short']),
       stateWriteNode('close_bug', 'Close bug', ...templateNodePosition('bug_triage_fix_loop', 'close_bug'), 'requirement', 'mark_complete', {}, undefined, '{{state.next_bug.collection_item.itemId}}'),
       humanCheckpointNode('bug_human', 'Bug decision', ...templateNodePosition('bug_triage_fix_loop', 'bug_human')),
@@ -980,6 +981,7 @@ function agentNode(
   agentRef: AgentRefDto,
   artifactType: string,
   inputBindings: WorkflowNodeDto extends infer _ ? NonNullable<Extract<WorkflowNodeDto, { type: 'agent' }>['inputBindings']> : never = [],
+  runOverrides: WorkflowRunOverrideDto | null = null,
 ): WorkflowNodeDto {
   return {
     id,
@@ -997,12 +999,24 @@ function agentNode(
       required: true,
       renderTextPath: defaultRenderTextPath(artifactType),
     },
-    runOverrides: null,
+    runOverrides,
     resourceScopes: [],
     failurePolicy: {
       quotaFailureClasses: [],
       transientFailureClasses: [],
     },
+  }
+}
+
+function autoEditRunOverrides(): WorkflowRunOverrideDto {
+  return {
+    providerProfileId: null,
+    modelId: null,
+    thinkingEffort: null,
+    approvalMode: 'auto_edit',
+    promptPreface: '',
+    planModeRequired: false,
+    autoCompactEnabled: true,
   }
 }
 
@@ -1414,9 +1428,29 @@ function commandResultSchema(): Record<string, unknown> {
     timedOut: { type: 'boolean' },
     stdout: { type: 'string' },
     stderr: { type: 'string' },
+    stdoutTruncated: { type: 'boolean' },
+    stderrTruncated: { type: 'boolean' },
+    stdoutDrainIncomplete: { type: 'boolean' },
+    stderrDrainIncomplete: { type: 'boolean' },
+    stdoutReadError: { type: ['string', 'null'] },
+    stderrReadError: { type: ['string', 'null'] },
     parsed: {},
     parseError: { type: ['string', 'null'] },
-  }, ['status', 'command', 'args', 'exitCode', 'timedOut', 'stdout', 'stderr'])
+  }, [
+    'status',
+    'command',
+    'args',
+    'exitCode',
+    'timedOut',
+    'stdout',
+    'stderr',
+    'stdoutTruncated',
+    'stderrTruncated',
+    'stdoutDrainIncomplete',
+    'stderrDrainIncomplete',
+    'stdoutReadError',
+    'stderrReadError',
+  ])
 }
 
 function subgraphResultSchema(): Record<string, unknown> {
@@ -1450,7 +1484,20 @@ function resolveBuiltInAgentRef(
   return {
     kind: 'built_in',
     runtimeAgentId,
-    version: 1,
+    version: fallbackBuiltInAgentVersion(runtimeAgentId),
+  }
+}
+
+function fallbackBuiltInAgentVersion(runtimeAgentId: RuntimeAgentIdDto): number {
+  switch (runtimeAgentId) {
+    case 'plan':
+    case 'engineer':
+    case 'debug':
+      return 2
+    case 'agent_create':
+      return 3
+    default:
+      return 1
   }
 }
 

@@ -1,0 +1,3120 @@
+{
+  "schema": "xero.workflow_definition.v1",
+  "id": "workflow-gsd-auto-fixture",
+  "projectId": "project-fixture",
+  "name": "GSD Auto",
+  "description": "A durable milestone workflow that discovers incomplete delivery phases, iterates them, verifies work, audits coverage, and archives completion state.",
+  "version": 1,
+  "startNodeId": "gsd_start",
+  "nodes": [
+    {
+      "id": "gsd_start",
+      "title": "GSD start",
+      "description": "",
+      "position": {
+        "x": 40,
+        "y": 420
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "run_input",
+          "name": "goal",
+          "required": true,
+          "path": "$.goal",
+          "promptLabel": "Goal"
+        },
+        {
+          "source": "run_input",
+          "name": "only",
+          "required": false,
+          "path": "$.only",
+          "promptLabel": "Only phase"
+        },
+        {
+          "source": "run_input",
+          "name": "from",
+          "required": false,
+          "path": "$.from",
+          "promptLabel": "From phase"
+        },
+        {
+          "source": "run_input",
+          "name": "to",
+          "required": false,
+          "path": "$.to",
+          "promptLabel": "To phase"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "task_brief",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "load_milestones",
+      "title": "Load milestones",
+      "description": "",
+      "position": {
+        "x": 440,
+        "y": 420
+      },
+      "type": "state_query",
+      "query": {
+        "entityType": "milestone",
+        "filters": [
+          {
+            "path": "$.status",
+            "operator": "neq",
+            "value": "archived",
+            "values": []
+          }
+        ],
+        "orderBy": "$.updatedAt",
+        "limit": 1,
+        "includeArchived": false
+      },
+      "outputArtifactType": "state_milestones"
+    },
+    {
+      "id": "milestone_route",
+      "title": "Milestone route",
+      "description": "",
+      "position": {
+        "x": 840,
+        "y": 420
+      },
+      "type": "router"
+    },
+    {
+      "id": "project_ideation",
+      "title": "Project ideation",
+      "description": "",
+      "position": {
+        "x": 1240,
+        "y": 720
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "run_input",
+          "name": "goal",
+          "required": true,
+          "path": "$.goal",
+          "promptLabel": "Goal"
+        },
+        {
+          "source": "artifact",
+          "name": "gsd_start_task_brief",
+          "required": true,
+          "artifactRef": "gsd_start.task_brief",
+          "promptLabel": "GSD start brief"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "task_brief",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "new_milestone_intake",
+      "title": "New milestone intake",
+      "description": "",
+      "position": {
+        "x": 1240,
+        "y": 940
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "run_input",
+          "name": "goal",
+          "required": true,
+          "path": "$.goal",
+          "promptLabel": "Goal"
+        },
+        {
+          "source": "artifact",
+          "name": "audit_milestone_milestone_audit",
+          "required": false,
+          "artifactRef": "audit_milestone.milestone_audit",
+          "promptLabel": "Previous milestone audit"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "task_brief",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "project_requirements",
+      "title": "Requirements",
+      "description": "",
+      "position": {
+        "x": 1640,
+        "y": 720
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "run_input",
+          "name": "goal",
+          "required": true,
+          "path": "$.goal",
+          "promptLabel": "Goal"
+        },
+        {
+          "source": "artifact",
+          "name": "project_ideation_task_brief",
+          "required": false,
+          "artifactRef": "project_ideation.task_brief",
+          "promptLabel": "Project ideation"
+        },
+        {
+          "source": "artifact",
+          "name": "new_milestone_intake_task_brief",
+          "required": false,
+          "artifactRef": "new_milestone_intake.task_brief",
+          "promptLabel": "New milestone intake"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "task_brief",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "project_roadmap",
+      "title": "Roadmap",
+      "description": "",
+      "position": {
+        "x": 2040,
+        "y": 720
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "artifact",
+          "name": "project_requirements_task_brief",
+          "required": true,
+          "artifactRef": "project_requirements.task_brief",
+          "promptLabel": "Requirements"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "delivery_plan",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "milestone_intake",
+      "title": "Create milestone",
+      "description": "",
+      "position": {
+        "x": 2440,
+        "y": 720
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "run_input",
+          "name": "goal",
+          "required": true,
+          "path": "$.goal",
+          "promptLabel": "Goal"
+        },
+        {
+          "source": "artifact",
+          "name": "project_roadmap_delivery_plan",
+          "required": true,
+          "artifactRef": "project_roadmap.delivery_plan",
+          "promptLabel": "Roadmap"
+        },
+        {
+          "source": "artifact",
+          "name": "project_requirements_task_brief",
+          "required": true,
+          "artifactRef": "project_requirements.task_brief",
+          "promptLabel": "Requirements"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "task_brief",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "write_milestone",
+      "title": "Write milestone",
+      "description": "",
+      "position": {
+        "x": 2840,
+        "y": 720
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "milestone",
+        "action": "upsert",
+        "idempotencyKey": "gsd-current-milestone",
+        "targetId": null,
+        "payload": {
+          "id": "gsd-current-milestone",
+          "title": "{{input.goal}}",
+          "summary": "{{artifact:project_roadmap.delivery_plan}}",
+          "goal": "{{input.goal}}",
+          "status": "active"
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "seed_requirement",
+      "title": "Seed requirement",
+      "description": "",
+      "position": {
+        "x": 3240,
+        "y": 720
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "requirement",
+        "action": "upsert",
+        "idempotencyKey": "gsd-requirement-1",
+        "targetId": null,
+        "payload": {
+          "id": "gsd-requirement-1",
+          "milestoneId": "{{state.write_milestone.state_write_result.id}}",
+          "title": "{{input.goal}}",
+          "description": "{{artifact:project_requirements.task_brief}}",
+          "status": "open",
+          "priority": 100
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "seed_phase_1",
+      "title": "Seed phase 1",
+      "description": "",
+      "position": {
+        "x": 3640,
+        "y": 720
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "delivery_phase",
+        "action": "upsert",
+        "idempotencyKey": "gsd-phase-1",
+        "targetId": null,
+        "payload": {
+          "id": "gsd-phase-1",
+          "milestoneId": "{{state.write_milestone.state_write_result.id}}",
+          "phaseKey": "1",
+          "title": "Discuss and plan",
+          "summary": "Establish scope, risks, and implementation path.",
+          "status": "incomplete",
+          "sortOrder": 1
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "seed_phase_2",
+      "title": "Seed phase 2",
+      "description": "",
+      "position": {
+        "x": 4040,
+        "y": 720
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "delivery_phase",
+        "action": "upsert",
+        "idempotencyKey": "gsd-phase-2",
+        "targetId": null,
+        "payload": {
+          "id": "gsd-phase-2",
+          "milestoneId": "{{state.write_milestone.state_write_result.id}}",
+          "phaseKey": "2",
+          "title": "Implement",
+          "summary": "Build the planned vertical slice.",
+          "status": "incomplete",
+          "sortOrder": 2
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "seed_phase_3",
+      "title": "Seed phase 3",
+      "description": "",
+      "position": {
+        "x": 4440,
+        "y": 720
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "delivery_phase",
+        "action": "upsert",
+        "idempotencyKey": "gsd-phase-3",
+        "targetId": null,
+        "payload": {
+          "id": "gsd-phase-3",
+          "milestoneId": "{{state.write_milestone.state_write_result.id}}",
+          "phaseKey": "3",
+          "title": "Verify and polish",
+          "summary": "Run checks, close gaps, and prepare the milestone audit.",
+          "status": "incomplete",
+          "sortOrder": 3
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "query_phases",
+      "title": "Query incomplete phases",
+      "description": "",
+      "position": {
+        "x": 1240,
+        "y": 260
+      },
+      "type": "state_query",
+      "query": {
+        "entityType": "delivery_phase",
+        "filters": [
+          {
+            "path": "$.status",
+            "operator": "not_in",
+            "values": [
+              "complete",
+              "archived"
+            ]
+          }
+        ],
+        "orderBy": "$.sortOrder",
+        "limit": null,
+        "includeArchived": false
+      },
+      "outputArtifactType": "state_incomplete_phases"
+    },
+    {
+      "id": "next_phase",
+      "title": "Next phase",
+      "description": "",
+      "position": {
+        "x": 1640,
+        "y": 260
+      },
+      "type": "collection_loop",
+      "collection": {
+        "entityType": "delivery_phase",
+        "filters": [
+          {
+            "path": "$.status",
+            "operator": "not_in",
+            "values": [
+              "complete",
+              "archived"
+            ]
+          }
+        ],
+        "orderBy": "$.sortOrder",
+        "limit": null,
+        "includeArchived": false
+      },
+      "itemArtifactType": "collection_item",
+      "itemVariableName": "item",
+      "sortKey": "$.sortOrder",
+      "afterItemRequery": true,
+      "maxItemCount": 100,
+      "maxRuntimeSeconds": null,
+      "controls": {
+        "fromInputPath": "$.from",
+        "toInputPath": "$.to",
+        "onlyInputPath": "$.only"
+      }
+    },
+    {
+      "id": "phase_router",
+      "title": "Phase route",
+      "description": "",
+      "position": {
+        "x": 2040,
+        "y": 260
+      },
+      "type": "router"
+    },
+    {
+      "id": "smart_discuss",
+      "title": "Smart discuss",
+      "description": "",
+      "position": {
+        "x": 2440,
+        "y": 260
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "run_input",
+          "name": "goal",
+          "required": true,
+          "path": "$.goal",
+          "promptLabel": "Goal"
+        },
+        {
+          "source": "run_input",
+          "name": "only",
+          "required": false,
+          "path": "$.only",
+          "promptLabel": "Only phase"
+        },
+        {
+          "source": "run_input",
+          "name": "from",
+          "required": false,
+          "path": "$.from",
+          "promptLabel": "From phase"
+        },
+        {
+          "source": "run_input",
+          "name": "to",
+          "required": false,
+          "path": "$.to",
+          "promptLabel": "To phase"
+        },
+        {
+          "source": "state",
+          "name": "next_phase_collection_item",
+          "required": true,
+          "stateRef": "next_phase.collection_item",
+          "path": "$.item",
+          "promptLabel": "Delivery phase"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "task_brief",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "phase_plan",
+      "title": "Phase plan",
+      "description": "",
+      "position": {
+        "x": 2840,
+        "y": 260
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "artifact",
+          "name": "smart_discuss_task_brief",
+          "required": true,
+          "artifactRef": "smart_discuss.task_brief",
+          "promptLabel": "Phase discussion"
+        },
+        {
+          "source": "state",
+          "name": "next_phase_collection_item",
+          "required": true,
+          "stateRef": "next_phase.collection_item",
+          "path": "$.item",
+          "promptLabel": "Delivery phase"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "delivery_plan",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "phase_execute",
+      "title": "Phase execute",
+      "description": "",
+      "position": {
+        "x": 3240,
+        "y": 260
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "engineer",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "artifact",
+          "name": "phase_plan_delivery_plan",
+          "required": true,
+          "artifactRef": "phase_plan.delivery_plan",
+          "promptLabel": "Phase plan"
+        },
+        {
+          "source": "artifact",
+          "name": "gap_closure_gap_list",
+          "required": false,
+          "artifactRef": "gap_closure.gap_list",
+          "promptLabel": "Gap closure plan"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "implementation_summary",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": {
+        "providerProfileId": null,
+        "modelId": null,
+        "thinkingEffort": null,
+        "approvalMode": "auto_edit",
+        "promptPreface": "",
+        "planModeRequired": false,
+        "autoCompactEnabled": true
+      },
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "debug_phase",
+      "title": "Debug",
+      "description": "",
+      "position": {
+        "x": 3240,
+        "y": 480
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "debug",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "artifact",
+          "name": "phase_execute_implementation_summary",
+          "required": false,
+          "artifactRef": "phase_execute.implementation_summary",
+          "promptLabel": "Implementation summary"
+        },
+        {
+          "source": "artifact",
+          "name": "verify_command_command_result",
+          "required": false,
+          "artifactRef": "verify_command.command_result",
+          "promptLabel": "Verification command"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "debug_report",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": {
+        "providerProfileId": null,
+        "modelId": null,
+        "thinkingEffort": null,
+        "approvalMode": "auto_edit",
+        "promptPreface": "",
+        "planModeRequired": false,
+        "autoCompactEnabled": true
+      },
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "verify_command",
+      "title": "Verification command",
+      "description": "",
+      "position": {
+        "x": 3640,
+        "y": 260
+      },
+      "type": "command",
+      "command": "git",
+      "args": [
+        "status",
+        "--short"
+      ],
+      "allowedCommands": [
+        "git"
+      ],
+      "workingDirectory": null,
+      "timeoutSeconds": 120,
+      "successExitCodes": [
+        0
+      ],
+      "outputContract": {
+        "artifactType": "command_result",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.stdout"
+      },
+      "parser": {
+        "extraction": "generic_text",
+        "renderTextPath": "$.stdout"
+      }
+    },
+    {
+      "id": "phase_verify",
+      "title": "Verification review",
+      "description": "",
+      "position": {
+        "x": 4040,
+        "y": 260
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "ask",
+        "version": 1
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "artifact",
+          "name": "phase_execute_implementation_summary",
+          "required": true,
+          "artifactRef": "phase_execute.implementation_summary",
+          "promptLabel": "Implementation summary"
+        },
+        {
+          "source": "artifact",
+          "name": "verify_command_command_result",
+          "required": true,
+          "artifactRef": "verify_command.command_result",
+          "promptLabel": "Command result"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "verification_result",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "verification_router",
+      "title": "Verification route",
+      "description": "",
+      "position": {
+        "x": 4440,
+        "y": 260
+      },
+      "type": "router"
+    },
+    {
+      "id": "gap_closure",
+      "title": "Gap closure",
+      "description": "",
+      "position": {
+        "x": 4440,
+        "y": 480
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "plan",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "artifact",
+          "name": "phase_verify_verification_result",
+          "required": true,
+          "artifactRef": "phase_verify.verification_result",
+          "promptLabel": "Verification result"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "gap_list",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "phase_review",
+      "title": "Code review",
+      "description": "",
+      "position": {
+        "x": 4840,
+        "y": 260
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "ask",
+        "version": 1
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "artifact",
+          "name": "phase_verify_verification_result",
+          "required": true,
+          "artifactRef": "phase_verify.verification_result",
+          "promptLabel": "Verification result"
+        },
+        {
+          "source": "artifact",
+          "name": "phase_execute_implementation_summary",
+          "required": true,
+          "artifactRef": "phase_execute.implementation_summary",
+          "promptLabel": "Implementation summary"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "review_findings",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "human_verify",
+      "title": "Human verification",
+      "description": "Pause the Workflow for user judgment before continuing.",
+      "position": {
+        "x": 4840,
+        "y": 480
+      },
+      "type": "human_checkpoint",
+      "checkpointType": "human_verify",
+      "prompt": "Review the current artifacts and choose how the Workflow should continue.",
+      "decisionOptions": [
+        "passed",
+        "gaps_found",
+        "stop"
+      ],
+      "resumePayloadSchema": null,
+      "stateUpdates": []
+    },
+    {
+      "id": "review_router",
+      "title": "Review route",
+      "description": "",
+      "position": {
+        "x": 5240,
+        "y": 260
+      },
+      "type": "router"
+    },
+    {
+      "id": "phase_fix",
+      "title": "Fix review findings",
+      "description": "",
+      "position": {
+        "x": 5240,
+        "y": 480
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "engineer",
+        "version": 2
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "artifact",
+          "name": "phase_review_review_findings",
+          "required": true,
+          "artifactRef": "phase_review.review_findings",
+          "promptLabel": "Review findings"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "implementation_summary",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": {
+        "providerProfileId": null,
+        "modelId": null,
+        "thinkingEffort": null,
+        "approvalMode": "auto_edit",
+        "promptPreface": "",
+        "planModeRequired": false,
+        "autoCompactEnabled": true
+      },
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "write_phase_context",
+      "title": "Record context",
+      "description": "",
+      "position": {
+        "x": 5640,
+        "y": 260
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "phase_context",
+        "action": "upsert",
+        "idempotencyKey": "{{state.next_phase.collection_item.itemId}}-context",
+        "targetId": null,
+        "payload": {
+          "id": "{{state.next_phase.collection_item.itemId}}-context",
+          "phaseId": "{{state.next_phase.collection_item.itemId}}",
+          "context": "{{artifact:smart_discuss.task_brief}}"
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "write_phase_plan",
+      "title": "Record plan",
+      "description": "",
+      "position": {
+        "x": 6040,
+        "y": 260
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "phase_plan",
+        "action": "upsert",
+        "idempotencyKey": "{{state.next_phase.collection_item.itemId}}-plan",
+        "targetId": null,
+        "payload": {
+          "id": "{{state.next_phase.collection_item.itemId}}-plan",
+          "phaseId": "{{state.next_phase.collection_item.itemId}}",
+          "plan": "{{artifact:phase_plan.delivery_plan}}"
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "write_phase_summary",
+      "title": "Record summary",
+      "description": "",
+      "position": {
+        "x": 6440,
+        "y": 260
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "phase_summary",
+        "action": "upsert",
+        "idempotencyKey": "{{state.next_phase.collection_item.itemId}}-summary",
+        "targetId": null,
+        "payload": {
+          "id": "{{state.next_phase.collection_item.itemId}}-summary",
+          "phaseId": "{{state.next_phase.collection_item.itemId}}",
+          "summary": "{{artifact:phase_execute.implementation_summary}}",
+          "review": "{{artifact:phase_review.review_findings}}"
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "write_verification_evidence",
+      "title": "Record verification",
+      "description": "",
+      "position": {
+        "x": 6840,
+        "y": 260
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "verification_evidence",
+        "action": "upsert",
+        "idempotencyKey": "{{state.next_phase.collection_item.itemId}}-verification",
+        "targetId": null,
+        "payload": {
+          "id": "{{state.next_phase.collection_item.itemId}}-verification",
+          "phaseId": "{{state.next_phase.collection_item.itemId}}",
+          "status": "{{artifact:phase_verify.verification_result $.status}}",
+          "verification": "{{artifact:phase_verify.verification_result}}",
+          "commandResult": "{{artifact:verify_command.command_result}}",
+          "review": "{{artifact:phase_review.review_findings}}"
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "mark_phase_complete",
+      "title": "Mark phase complete",
+      "description": "",
+      "position": {
+        "x": 7240,
+        "y": 260
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "delivery_phase",
+        "action": "mark_complete",
+        "idempotencyKey": null,
+        "targetId": "{{state.next_phase.collection_item.itemId}}",
+        "payload": {},
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "reload_milestones",
+      "title": "Reload milestone",
+      "description": "",
+      "position": {
+        "x": 2040,
+        "y": 40
+      },
+      "type": "state_query",
+      "query": {
+        "entityType": "milestone",
+        "filters": [
+          {
+            "path": "$.status",
+            "operator": "neq",
+            "value": "archived",
+            "values": []
+          }
+        ],
+        "orderBy": "$.updatedAt",
+        "limit": 1,
+        "includeArchived": false
+      },
+      "outputArtifactType": "state_milestones"
+    },
+    {
+      "id": "query_remaining_phases",
+      "title": "Remaining phases",
+      "description": "",
+      "position": {
+        "x": 2440,
+        "y": 40
+      },
+      "type": "state_query",
+      "query": {
+        "entityType": "delivery_phase",
+        "filters": [
+          {
+            "path": "$.status",
+            "operator": "not_in",
+            "values": [
+              "complete",
+              "archived"
+            ]
+          }
+        ],
+        "orderBy": "$.sortOrder",
+        "limit": null,
+        "includeArchived": false
+      },
+      "outputArtifactType": "state_incomplete_phases"
+    },
+    {
+      "id": "query_requirements",
+      "title": "Requirements",
+      "description": "",
+      "position": {
+        "x": 2840,
+        "y": 40
+      },
+      "type": "state_query",
+      "query": {
+        "entityType": "requirement",
+        "filters": [
+          {
+            "path": "$.status",
+            "operator": "neq",
+            "value": "archived",
+            "values": []
+          }
+        ],
+        "orderBy": "$.priority",
+        "limit": null,
+        "includeArchived": false
+      },
+      "outputArtifactType": "state_requirements"
+    },
+    {
+      "id": "audit_milestone",
+      "title": "Audit milestone",
+      "description": "",
+      "position": {
+        "x": 3240,
+        "y": 40
+      },
+      "type": "agent",
+      "agentRef": {
+        "kind": "built_in",
+        "runtimeAgentId": "generalist",
+        "version": 1
+      },
+      "displayLabel": null,
+      "inputBindings": [
+        {
+          "source": "run_input",
+          "name": "goal",
+          "required": true,
+          "path": "$.goal",
+          "promptLabel": "Goal"
+        },
+        {
+          "source": "state",
+          "name": "reload_milestones_state_milestones",
+          "required": true,
+          "stateRef": "reload_milestones.state_milestones",
+          "promptLabel": "Milestone state"
+        },
+        {
+          "source": "state",
+          "name": "query_remaining_phases_state_incomplete_phases",
+          "required": false,
+          "stateRef": "query_remaining_phases.state_incomplete_phases",
+          "promptLabel": "Remaining phases"
+        },
+        {
+          "source": "state",
+          "name": "query_requirements_state_requirements",
+          "required": true,
+          "stateRef": "query_requirements.state_requirements",
+          "promptLabel": "Requirements"
+        }
+      ],
+      "outputContract": {
+        "artifactType": "milestone_audit",
+        "schemaVersion": 1,
+        "extraction": "json_object",
+        "required": true,
+        "renderTextPath": "$.summary"
+      },
+      "runOverrides": null,
+      "resourceScopes": [],
+      "failurePolicy": {
+        "quotaFailureClasses": [],
+        "transientFailureClasses": []
+      }
+    },
+    {
+      "id": "audit_router",
+      "title": "Audit route",
+      "description": "",
+      "position": {
+        "x": 3640,
+        "y": 40
+      },
+      "type": "router"
+    },
+    {
+      "id": "human_audit",
+      "title": "Audit decision",
+      "description": "Pause the Workflow for user judgment before continuing.",
+      "position": {
+        "x": 4040,
+        "y": -180
+      },
+      "type": "human_checkpoint",
+      "checkpointType": "human_verify",
+      "prompt": "Review the current artifacts and choose how the Workflow should continue.",
+      "decisionOptions": [
+        "passed",
+        "gaps_found",
+        "stop"
+      ],
+      "resumePayloadSchema": null,
+      "stateUpdates": []
+    },
+    {
+      "id": "complete_requirement",
+      "title": "Complete requirement",
+      "description": "",
+      "position": {
+        "x": 4040,
+        "y": 40
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "requirement",
+        "action": "mark_complete",
+        "idempotencyKey": null,
+        "targetId": "gsd-requirement-1",
+        "payload": {},
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "complete_milestone",
+      "title": "Complete milestone",
+      "description": "",
+      "position": {
+        "x": 4440,
+        "y": 40
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "milestone",
+        "action": "mark_complete",
+        "idempotencyKey": null,
+        "targetId": "{{state.reload_milestones.state_milestones.records[0].id}}",
+        "payload": {},
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "write_milestone_archive",
+      "title": "Write archive",
+      "description": "",
+      "position": {
+        "x": 4840,
+        "y": 40
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "milestone_archive",
+        "action": "upsert",
+        "idempotencyKey": "{{state.reload_milestones.state_milestones.records[0].id}}-archive",
+        "targetId": null,
+        "payload": {
+          "id": "{{state.reload_milestones.state_milestones.records[0].id}}-archive",
+          "milestoneId": "{{state.reload_milestones.state_milestones.records[0].id}}",
+          "summary": "{{input.goal}}",
+          "goal": "{{input.goal}}",
+          "runId": "{{run.id}}"
+        },
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "archive_milestone",
+      "title": "Archive milestone",
+      "description": "",
+      "position": {
+        "x": 5240,
+        "y": 40
+      },
+      "type": "state_write",
+      "inputBindings": [],
+      "operation": {
+        "entityType": "milestone",
+        "action": "archive",
+        "idempotencyKey": null,
+        "targetId": "{{state.reload_milestones.state_milestones.records[0].id}}",
+        "payload": {},
+        "outputArtifactType": "state_write_result"
+      }
+    },
+    {
+      "id": "next_milestone_offer",
+      "title": "Next milestone",
+      "description": "Pause the Workflow for user judgment before continuing.",
+      "position": {
+        "x": 5640,
+        "y": 40
+      },
+      "type": "human_checkpoint",
+      "checkpointType": "human_verify",
+      "prompt": "Review the current artifacts and choose how the Workflow should continue.",
+      "decisionOptions": [
+        "finish",
+        "start_next",
+        "pause"
+      ],
+      "resumePayloadSchema": null,
+      "stateUpdates": []
+    },
+    {
+      "id": "success",
+      "title": "Success",
+      "description": "",
+      "position": {
+        "x": 6040,
+        "y": 40
+      },
+      "type": "terminal",
+      "terminalStatus": "success"
+    },
+    {
+      "id": "partial_success",
+      "title": "Partial run complete",
+      "description": "",
+      "position": {
+        "x": 2040,
+        "y": 480
+      },
+      "type": "terminal",
+      "terminalStatus": "success"
+    },
+    {
+      "id": "needs_human",
+      "title": "Needs human",
+      "description": "",
+      "position": {
+        "x": 6040,
+        "y": 720
+      },
+      "type": "terminal",
+      "terminalStatus": "needs_human"
+    }
+  ],
+  "edges": [
+    {
+      "id": "start_to_load",
+      "fromNodeId": "gsd_start",
+      "toNodeId": "load_milestones",
+      "type": "success",
+      "label": "load state",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "start_failed",
+      "fromNodeId": "gsd_start",
+      "toNodeId": "needs_human",
+      "type": "failure",
+      "label": "blocked",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "load_to_route",
+      "fromNodeId": "load_milestones",
+      "toNodeId": "milestone_route",
+      "type": "success",
+      "label": "route",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "milestone_exists",
+      "fromNodeId": "milestone_route",
+      "toNodeId": "query_phases",
+      "type": "conditional",
+      "label": "continue",
+      "priority": 10,
+      "condition": {
+        "kind": "state_collection_count_compare",
+        "stateRef": "load_milestones.state_milestones",
+        "operator": "gt",
+        "value": 0
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "milestone_missing",
+      "fromNodeId": "milestone_route",
+      "toNodeId": "project_ideation",
+      "type": "conditional",
+      "label": "ideate",
+      "priority": 20,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "ideation_to_requirements",
+      "fromNodeId": "project_ideation",
+      "toNodeId": "project_requirements",
+      "type": "success",
+      "label": "requirements",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "ideation_failed",
+      "fromNodeId": "project_ideation",
+      "toNodeId": "needs_human",
+      "type": "failure",
+      "label": "blocked",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "new_milestone_to_requirements",
+      "fromNodeId": "new_milestone_intake",
+      "toNodeId": "project_requirements",
+      "type": "success",
+      "label": "requirements",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "new_milestone_failed",
+      "fromNodeId": "new_milestone_intake",
+      "toNodeId": "needs_human",
+      "type": "failure",
+      "label": "blocked",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "requirements_to_roadmap",
+      "fromNodeId": "project_requirements",
+      "toNodeId": "project_roadmap",
+      "type": "success",
+      "label": "roadmap",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "requirements_failed",
+      "fromNodeId": "project_requirements",
+      "toNodeId": "needs_human",
+      "type": "failure",
+      "label": "blocked",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "roadmap_to_milestone",
+      "fromNodeId": "project_roadmap",
+      "toNodeId": "milestone_intake",
+      "type": "success",
+      "label": "create milestone",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "roadmap_failed",
+      "fromNodeId": "project_roadmap",
+      "toNodeId": "needs_human",
+      "type": "failure",
+      "label": "blocked",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "intake_to_write",
+      "fromNodeId": "milestone_intake",
+      "toNodeId": "write_milestone",
+      "type": "success",
+      "label": "create",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "intake_failed",
+      "fromNodeId": "milestone_intake",
+      "toNodeId": "needs_human",
+      "type": "failure",
+      "label": "blocked",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "write_to_requirement",
+      "fromNodeId": "write_milestone",
+      "toNodeId": "seed_requirement",
+      "type": "success",
+      "label": "requirement",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "requirement_to_seed_1",
+      "fromNodeId": "seed_requirement",
+      "toNodeId": "seed_phase_1",
+      "type": "success",
+      "label": "seed",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "seed_1_to_seed_2",
+      "fromNodeId": "seed_phase_1",
+      "toNodeId": "seed_phase_2",
+      "type": "success",
+      "label": "seed",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "seed_2_to_seed_3",
+      "fromNodeId": "seed_phase_2",
+      "toNodeId": "seed_phase_3",
+      "type": "success",
+      "label": "seed",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "seed_3_to_query",
+      "fromNodeId": "seed_phase_3",
+      "toNodeId": "query_phases",
+      "type": "success",
+      "label": "query",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "query_to_loop",
+      "fromNodeId": "query_phases",
+      "toNodeId": "next_phase",
+      "type": "success",
+      "label": "select",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "loop_to_router",
+      "fromNodeId": "next_phase",
+      "toNodeId": "phase_router",
+      "type": "success",
+      "label": "route",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "phase_available",
+      "fromNodeId": "phase_router",
+      "toNodeId": "smart_discuss",
+      "type": "conditional",
+      "label": "phase",
+      "priority": 10,
+      "condition": {
+        "kind": "artifact_field_equals",
+        "artifactRef": "next_phase.collection_item",
+        "path": "$.hasItem",
+        "value": true
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "partial_run_done",
+      "fromNodeId": "phase_router",
+      "toNodeId": "partial_success",
+      "type": "conditional",
+      "label": "partial done",
+      "priority": 20,
+      "condition": {
+        "kind": "all",
+        "conditions": [
+          {
+            "kind": "artifact_field_equals",
+            "artifactRef": "next_phase.collection_item",
+            "path": "$.hasItem",
+            "value": false
+          },
+          {
+            "kind": "artifact_field_equals",
+            "artifactRef": "next_phase.collection_item",
+            "path": "$.partialSelection",
+            "value": true
+          }
+        ]
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "no_phase_to_audit",
+      "fromNodeId": "phase_router",
+      "toNodeId": "reload_milestones",
+      "type": "conditional",
+      "label": "audit",
+      "priority": 30,
+      "condition": {
+        "kind": "artifact_field_equals",
+        "artifactRef": "next_phase.collection_item",
+        "path": "$.hasItem",
+        "value": false
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "phase_route_fallback",
+      "fromNodeId": "phase_router",
+      "toNodeId": "needs_human",
+      "type": "conditional",
+      "label": "review",
+      "priority": 90,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "discuss_to_plan",
+      "fromNodeId": "smart_discuss",
+      "toNodeId": "phase_plan",
+      "type": "success",
+      "label": "plan",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "plan_to_execute",
+      "fromNodeId": "phase_plan",
+      "toNodeId": "phase_execute",
+      "type": "success",
+      "label": "execute",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "execute_failed_to_debug",
+      "fromNodeId": "phase_execute",
+      "toNodeId": "debug_phase",
+      "type": "recovery",
+      "label": "debug",
+      "priority": 5,
+      "condition": {
+        "kind": "node_status",
+        "nodeId": "phase_execute",
+        "status": "failed"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "execute_failure_fallback",
+      "fromNodeId": "phase_execute",
+      "toNodeId": "needs_human",
+      "type": "failure",
+      "label": "blocked",
+      "priority": 90,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "execute_to_command",
+      "fromNodeId": "phase_execute",
+      "toNodeId": "verify_command",
+      "type": "success",
+      "label": "check",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "command_to_verify",
+      "fromNodeId": "verify_command",
+      "toNodeId": "phase_verify",
+      "type": "success",
+      "label": "review",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "command_failed",
+      "fromNodeId": "verify_command",
+      "toNodeId": "debug_phase",
+      "type": "failure",
+      "label": "debug check",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "verify_to_router",
+      "fromNodeId": "phase_verify",
+      "toNodeId": "verification_router",
+      "type": "success",
+      "label": "route",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "verify_passed",
+      "fromNodeId": "verification_router",
+      "toNodeId": "phase_review",
+      "type": "conditional",
+      "label": "review",
+      "priority": 10,
+      "condition": {
+        "kind": "artifact_field_equals",
+        "artifactRef": "phase_verify.verification_result",
+        "path": "$.status",
+        "value": "passed"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "verify_gaps_to_closure",
+      "fromNodeId": "verification_router",
+      "toNodeId": "gap_closure",
+      "type": "conditional",
+      "label": "gaps",
+      "priority": 20,
+      "condition": {
+        "kind": "artifact_field_in",
+        "artifactRef": "phase_verify.verification_result",
+        "path": "$.status",
+        "values": [
+          "gaps_found",
+          "needs_changes"
+        ]
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "verify_human_needed",
+      "fromNodeId": "verification_router",
+      "toNodeId": "human_verify",
+      "type": "conditional",
+      "label": "needs human",
+      "priority": 30,
+      "condition": {
+        "kind": "artifact_field_in",
+        "artifactRef": "phase_verify.verification_result",
+        "path": "$.status",
+        "values": [
+          "human_needed",
+          "failed"
+        ]
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "verify_route_fallback",
+      "fromNodeId": "verification_router",
+      "toNodeId": "human_verify",
+      "type": "conditional",
+      "label": "review",
+      "priority": 90,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "gap_closure_to_execute",
+      "fromNodeId": "gap_closure",
+      "toNodeId": "phase_execute",
+      "type": "loop",
+      "label": "close gaps",
+      "priority": 30,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": {
+        "loopKey": "gap_closure",
+        "maxAttempts": 2,
+        "attemptScope": "run",
+        "carryoverPolicy": "all",
+        "selectedArtifactRefs": [],
+        "resetPolicy": "never",
+        "stallDetector": "no_artifact_progress",
+        "onExhausted": "human_verify"
+      }
+    },
+    {
+      "id": "debug_to_execute",
+      "fromNodeId": "debug_phase",
+      "toNodeId": "phase_execute",
+      "type": "loop",
+      "label": "retry execute",
+      "priority": 30,
+      "condition": {
+        "kind": "artifact_field_equals",
+        "artifactRef": "debug_phase.debug_report",
+        "path": "$.recommended_route",
+        "value": "retry_work"
+      },
+      "loopPolicy": {
+        "loopKey": "debug_recovery",
+        "maxAttempts": 2,
+        "attemptScope": "run",
+        "carryoverPolicy": "all",
+        "selectedArtifactRefs": [],
+        "resetPolicy": "never",
+        "stallDetector": "same_failure_class_repeated",
+        "onExhausted": "human_verify"
+      }
+    },
+    {
+      "id": "debug_needs_human",
+      "fromNodeId": "debug_phase",
+      "toNodeId": "human_verify",
+      "type": "conditional",
+      "label": "human",
+      "priority": 40,
+      "condition": {
+        "kind": "artifact_field_in",
+        "artifactRef": "debug_phase.debug_report",
+        "path": "$.recommended_route",
+        "values": [
+          "ask_human",
+          "fail"
+        ]
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "debug_route_fallback",
+      "fromNodeId": "debug_phase",
+      "toNodeId": "human_verify",
+      "type": "conditional",
+      "label": "review",
+      "priority": 80,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "debug_to_human",
+      "fromNodeId": "debug_phase",
+      "toNodeId": "human_verify",
+      "type": "failure",
+      "label": "human",
+      "priority": 90,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "review_to_router",
+      "fromNodeId": "phase_review",
+      "toNodeId": "review_router",
+      "type": "success",
+      "label": "route",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "review_clear",
+      "fromNodeId": "review_router",
+      "toNodeId": "write_phase_context",
+      "type": "conditional",
+      "label": "clear",
+      "priority": 10,
+      "condition": {
+        "kind": "artifact_field_number_compare",
+        "artifactRef": "phase_review.review_findings",
+        "path": "$.high_count",
+        "operator": "eq",
+        "value": 0
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "review_high_findings",
+      "fromNodeId": "review_router",
+      "toNodeId": "phase_fix",
+      "type": "conditional",
+      "label": "fix",
+      "priority": 20,
+      "condition": {
+        "kind": "artifact_field_number_compare",
+        "artifactRef": "phase_review.review_findings",
+        "path": "$.high_count",
+        "operator": "gt",
+        "value": 0
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "review_route_fallback",
+      "fromNodeId": "review_router",
+      "toNodeId": "human_verify",
+      "type": "conditional",
+      "label": "review",
+      "priority": 90,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "fix_back_to_review",
+      "fromNodeId": "phase_fix",
+      "toNodeId": "phase_review",
+      "type": "loop",
+      "label": "review fix",
+      "priority": 30,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": {
+        "loopKey": "review_fix",
+        "maxAttempts": 3,
+        "attemptScope": "run",
+        "carryoverPolicy": "all",
+        "selectedArtifactRefs": [],
+        "resetPolicy": "never",
+        "stallDetector": "no_artifact_progress",
+        "onExhausted": "human_verify"
+      }
+    },
+    {
+      "id": "context_to_plan_record",
+      "fromNodeId": "write_phase_context",
+      "toNodeId": "write_phase_plan",
+      "type": "success",
+      "label": "record plan",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "plan_record_to_summary_record",
+      "fromNodeId": "write_phase_plan",
+      "toNodeId": "write_phase_summary",
+      "type": "success",
+      "label": "record summary",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "summary_record_to_verification_record",
+      "fromNodeId": "write_phase_summary",
+      "toNodeId": "write_verification_evidence",
+      "type": "success",
+      "label": "record verification",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "verification_record_to_complete",
+      "fromNodeId": "write_verification_evidence",
+      "toNodeId": "mark_phase_complete",
+      "type": "success",
+      "label": "complete phase",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "human_verify_passed",
+      "fromNodeId": "human_verify",
+      "toNodeId": "mark_phase_complete",
+      "type": "manual_override",
+      "label": "passed",
+      "priority": 10,
+      "condition": {
+        "kind": "human_decision_is",
+        "checkpointNodeId": "human_verify",
+        "decision": "passed"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "human_verify_gaps",
+      "fromNodeId": "human_verify",
+      "toNodeId": "gap_closure",
+      "type": "manual_override",
+      "label": "gaps",
+      "priority": 20,
+      "condition": {
+        "kind": "human_decision_is",
+        "checkpointNodeId": "human_verify",
+        "decision": "gaps_found"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "human_verify_stop",
+      "fromNodeId": "human_verify",
+      "toNodeId": "needs_human",
+      "type": "manual_override",
+      "label": "stop",
+      "priority": 90,
+      "condition": {
+        "kind": "human_decision_is",
+        "checkpointNodeId": "human_verify",
+        "decision": "stop"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "human_verify_fallback",
+      "fromNodeId": "human_verify",
+      "toNodeId": "needs_human",
+      "type": "manual_override",
+      "label": "review",
+      "priority": 100,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "phase_complete_to_query",
+      "fromNodeId": "mark_phase_complete",
+      "toNodeId": "query_phases",
+      "type": "loop",
+      "label": "next phase",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": {
+        "loopKey": "delivery_phase_iteration",
+        "maxAttempts": 100,
+        "attemptScope": "run",
+        "carryoverPolicy": "all",
+        "selectedArtifactRefs": [],
+        "resetPolicy": "never",
+        "stallDetector": "no_artifact_progress",
+        "onExhausted": "needs_human"
+      }
+    },
+    {
+      "id": "reload_to_remaining",
+      "fromNodeId": "reload_milestones",
+      "toNodeId": "query_remaining_phases",
+      "type": "success",
+      "label": "remaining",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "remaining_to_requirements",
+      "fromNodeId": "query_remaining_phases",
+      "toNodeId": "query_requirements",
+      "type": "success",
+      "label": "requirements",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "requirements_to_audit",
+      "fromNodeId": "query_requirements",
+      "toNodeId": "audit_milestone",
+      "type": "success",
+      "label": "audit",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "audit_to_router",
+      "fromNodeId": "audit_milestone",
+      "toNodeId": "audit_router",
+      "type": "success",
+      "label": "route",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "audit_passed",
+      "fromNodeId": "audit_router",
+      "toNodeId": "complete_requirement",
+      "type": "conditional",
+      "label": "passed",
+      "priority": 10,
+      "condition": {
+        "kind": "artifact_field_equals",
+        "artifactRef": "audit_milestone.milestone_audit",
+        "path": "$.status",
+        "value": "passed"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "audit_needs_human",
+      "fromNodeId": "audit_router",
+      "toNodeId": "human_audit",
+      "type": "conditional",
+      "label": "review",
+      "priority": 20,
+      "condition": {
+        "kind": "artifact_field_in",
+        "artifactRef": "audit_milestone.milestone_audit",
+        "path": "$.status",
+        "values": [
+          "gaps_found",
+          "tech_debt",
+          "human_needed",
+          "failed"
+        ]
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "audit_route_fallback",
+      "fromNodeId": "audit_router",
+      "toNodeId": "human_audit",
+      "type": "conditional",
+      "label": "review",
+      "priority": 90,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "requirement_to_complete",
+      "fromNodeId": "complete_requirement",
+      "toNodeId": "complete_milestone",
+      "type": "success",
+      "label": "complete milestone",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "complete_to_write_archive",
+      "fromNodeId": "complete_milestone",
+      "toNodeId": "write_milestone_archive",
+      "type": "success",
+      "label": "record archive",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "write_archive_to_archive",
+      "fromNodeId": "write_milestone_archive",
+      "toNodeId": "archive_milestone",
+      "type": "success",
+      "label": "archive",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "archive_to_next_milestone",
+      "fromNodeId": "archive_milestone",
+      "toNodeId": "next_milestone_offer",
+      "type": "success",
+      "label": "next",
+      "priority": 10,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "human_audit_passed",
+      "fromNodeId": "human_audit",
+      "toNodeId": "complete_requirement",
+      "type": "manual_override",
+      "label": "passed",
+      "priority": 10,
+      "condition": {
+        "kind": "human_decision_is",
+        "checkpointNodeId": "human_audit",
+        "decision": "passed"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "human_audit_stop",
+      "fromNodeId": "human_audit",
+      "toNodeId": "needs_human",
+      "type": "manual_override",
+      "label": "stop",
+      "priority": 20,
+      "condition": {
+        "kind": "any",
+        "conditions": [
+          {
+            "kind": "human_decision_is",
+            "checkpointNodeId": "human_audit",
+            "decision": "gaps_found"
+          },
+          {
+            "kind": "human_decision_is",
+            "checkpointNodeId": "human_audit",
+            "decision": "stop"
+          }
+        ]
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "human_audit_fallback",
+      "fromNodeId": "human_audit",
+      "toNodeId": "needs_human",
+      "type": "manual_override",
+      "label": "review",
+      "priority": 90,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "next_milestone_finish",
+      "fromNodeId": "next_milestone_offer",
+      "toNodeId": "success",
+      "type": "manual_override",
+      "label": "finish",
+      "priority": 10,
+      "condition": {
+        "kind": "human_decision_is",
+        "checkpointNodeId": "next_milestone_offer",
+        "decision": "finish"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "next_milestone_start",
+      "fromNodeId": "next_milestone_offer",
+      "toNodeId": "new_milestone_intake",
+      "type": "loop",
+      "label": "start next",
+      "priority": 20,
+      "condition": {
+        "kind": "human_decision_is",
+        "checkpointNodeId": "next_milestone_offer",
+        "decision": "start_next"
+      },
+      "loopPolicy": {
+        "loopKey": "next_milestone",
+        "maxAttempts": 10,
+        "attemptScope": "run",
+        "carryoverPolicy": "all",
+        "selectedArtifactRefs": [],
+        "resetPolicy": "never",
+        "stallDetector": "no_artifact_progress",
+        "onExhausted": "needs_human"
+      }
+    },
+    {
+      "id": "next_milestone_pause",
+      "fromNodeId": "next_milestone_offer",
+      "toNodeId": "needs_human",
+      "type": "manual_override",
+      "label": "pause",
+      "priority": 30,
+      "condition": {
+        "kind": "human_decision_is",
+        "checkpointNodeId": "next_milestone_offer",
+        "decision": "pause"
+      },
+      "loopPolicy": null
+    },
+    {
+      "id": "next_milestone_fallback",
+      "fromNodeId": "next_milestone_offer",
+      "toNodeId": "needs_human",
+      "type": "manual_override",
+      "label": "review",
+      "priority": 90,
+      "condition": {
+        "kind": "always"
+      },
+      "loopPolicy": null
+    }
+  ],
+  "subgraphs": [],
+  "artifactContracts": [
+    {
+      "artifactType": "text_output",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "text"
+        ],
+        "properties": {
+          "text": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Text output",
+      "description": ""
+    },
+    {
+      "artifactType": "task_brief",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "summary",
+          "goal"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "goal": {
+            "type": "string",
+            "minLength": 1
+          },
+          "constraints": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "acceptanceCriteria": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Task brief",
+      "description": ""
+    },
+    {
+      "artifactType": "delivery_plan",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "summary",
+          "steps"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "status"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "blocked",
+                    "done"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Delivery plan",
+      "description": ""
+    },
+    {
+      "artifactType": "plan",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "summary",
+          "steps"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "title",
+                "status"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "title": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "pending",
+                    "in_progress",
+                    "blocked",
+                    "done"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "risks": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Plan",
+      "description": ""
+    },
+    {
+      "artifactType": "implementation_summary",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "summary"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "changedFiles": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "testsRun": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "followUps": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Implementation summary",
+      "description": ""
+    },
+    {
+      "artifactType": "verification_result",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "status",
+          "summary"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "gaps_found",
+              "needs_changes",
+              "human_needed",
+              "failed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "status"
+              ],
+              "properties": {
+                "command": {
+                  "type": "string"
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "passed",
+                    "failed",
+                    "skipped"
+                  ]
+                },
+                "output": {
+                  "type": "string"
+                }
+              },
+              "additionalProperties": false
+            }
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "summary"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Verification result",
+      "description": ""
+    },
+    {
+      "artifactType": "debug_report",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "summary",
+          "recommended_route"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "failureClass": {
+            "type": "string"
+          },
+          "recommendedRoute": {
+            "type": "string",
+            "enum": [
+              "retry_work",
+              "ask_human",
+              "fail"
+            ]
+          },
+          "recommended_route": {
+            "type": "string",
+            "enum": [
+              "retry_work",
+              "ask_human",
+              "fail"
+            ]
+          },
+          "diagnostics": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Debug report",
+      "description": ""
+    },
+    {
+      "artifactType": "gap_list",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "summary",
+          "gaps"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "gaps": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "summary"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical"
+                  ]
+                },
+                "status": {
+                  "type": "string",
+                  "enum": [
+                    "open",
+                    "closed",
+                    "deferred"
+                  ]
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Gap list",
+      "description": ""
+    },
+    {
+      "artifactType": "review_findings",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "summary",
+          "high_count",
+          "findings"
+        ],
+        "properties": {
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "high_count": {
+            "type": "integer"
+          },
+          "findings": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": [
+                "id",
+                "severity",
+                "summary"
+              ],
+              "properties": {
+                "id": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "severity": {
+                  "type": "string",
+                  "enum": [
+                    "low",
+                    "medium",
+                    "high",
+                    "critical"
+                  ]
+                },
+                "summary": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "additionalProperties": false
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Review findings",
+      "description": ""
+    },
+    {
+      "artifactType": "human_decision",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "decision"
+        ],
+        "properties": {
+          "decision": {
+            "type": "string",
+            "minLength": 1
+          },
+          "payload": {}
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Human decision",
+      "description": ""
+    },
+    {
+      "artifactType": "milestone_audit",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "status",
+          "summary",
+          "unsatisfiedRequirements"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "gaps_found",
+              "tech_debt",
+              "human_needed",
+              "failed"
+            ]
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          },
+          "unsatisfiedRequirements": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "evidence": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Milestone audit",
+      "description": ""
+    },
+    {
+      "artifactType": "command_result",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "status",
+          "command",
+          "args",
+          "exitCode",
+          "timedOut",
+          "stdout",
+          "stderr",
+          "stdoutTruncated",
+          "stderrTruncated",
+          "stdoutDrainIncomplete",
+          "stderrDrainIncomplete",
+          "stdoutReadError",
+          "stderrReadError"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "passed",
+              "failed"
+            ]
+          },
+          "command": {
+            "type": "string",
+            "minLength": 1
+          },
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "workingDirectory": {
+            "type": "string"
+          },
+          "exitCode": {
+            "type": "integer"
+          },
+          "timedOut": {
+            "type": "boolean"
+          },
+          "stdout": {
+            "type": "string"
+          },
+          "stderr": {
+            "type": "string"
+          },
+          "stdoutTruncated": {
+            "type": "boolean"
+          },
+          "stderrTruncated": {
+            "type": "boolean"
+          },
+          "stdoutDrainIncomplete": {
+            "type": "boolean"
+          },
+          "stderrDrainIncomplete": {
+            "type": "boolean"
+          },
+          "stdoutReadError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "stderrReadError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "parsed": {},
+          "parseError": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Command result",
+      "description": ""
+    },
+    {
+      "artifactType": "subgraph_result",
+      "schemaVersion": 1,
+      "jsonSchema": {
+        "type": "object",
+        "required": [
+          "status",
+          "subgraphId",
+          "summary"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "enum": [
+              "succeeded",
+              "failed",
+              "cancelled",
+              "needs_human"
+            ]
+          },
+          "subgraphId": {
+            "type": "string",
+            "minLength": 1
+          },
+          "summary": {
+            "type": "string",
+            "minLength": 1
+          }
+        },
+        "additionalProperties": false
+      },
+      "displayName": "Subgraph result",
+      "description": ""
+    }
+  ],
+  "runPolicy": {
+    "concurrencyLimit": 1,
+    "resourceConflictPolicy": {
+      "mode": "serialize_conflicts",
+      "defaultScopes": []
+    },
+    "recoveryDefaults": {
+      "debugMaxAttempts": 2,
+      "gapClosureMaxAttempts": 2,
+      "reviewFixMaxAttempts": 3
+    }
+  },
+  "createdAt": null,
+  "updatedAt": null
+}

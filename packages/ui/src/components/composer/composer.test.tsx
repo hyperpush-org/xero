@@ -349,6 +349,25 @@ describe("Composer", () => {
 		).toBe(true);
 	});
 
+	it("allows an explicit empty submit when the caller opts in", async () => {
+		const { onSubmit } = renderComposer({ allowEmptySubmit: true });
+
+		const sendButton = screen.getByRole("button", { name: "Send message" });
+		expect(sendButton).toBeEnabled();
+		fireEvent.click(sendButton);
+
+		await waitFor(() => expect(onSubmit).toHaveBeenCalledWith(""));
+	});
+
+	it("uses a caller-provided label for a mixed composer selector", () => {
+		renderComposer({ agentSelectorAriaLabel: "Agent or Workflow selector" });
+
+		expect(
+			screen.getByRole("combobox", { name: "Agent or Workflow selector" }),
+		).toBeVisible();
+		expect(screen.queryByRole("combobox", { name: "Agent selector" })).toBeNull();
+	});
+
 	it("shows the approval selector only when more than one option is available", () => {
 		const { onSubmit } = renderComposer({
 			approvalOptions: [{ id: "suggest", label: "Ask first" }],

@@ -48,7 +48,11 @@ impl OwnedRuntimePromptDriveWorkerRegistration {
         let mut workers = workers
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        workers.insert(key.clone()).then_some(Self { key })
+        if !workers.insert(key.clone()) {
+            return None;
+        }
+        drop(workers);
+        Some(Self { key })
     }
 }
 
@@ -92,7 +96,7 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
     request: UpdateRuntimeRunControlsRequestDto,
 ) -> CommandResult<RuntimeRunDto> {
     let repo_root = resolve_project_root(&app, &state, &request.project_id)?;
-    let before =
+    let mut before =
         load_persisted_runtime_run(&repo_root, &request.project_id, &request.agent_session_id)?;
     let Some(existing) = before.as_ref() else {
         return Err(CommandError::retryable(
@@ -135,40 +139,87 @@ pub(crate) fn update_runtime_run_controls_blocking<R: Runtime + 'static>(
         return Ok(runtime_run_dto_from_snapshot(&outcome.snapshot));
     }
 
-    let next_provider_id = match request.controls.as_ref() {
-        Some(controls) => {
-            resolve_owned_runtime_profile_selection(&app, &state, Some(controls))?.provider_id
+    const MAX_CONTROL_UPDATE_ATTEMPTS: usize = 5;
+    let mut last_conflict = None;
+    for attempt in 0..MAX_CONTROL_UPDATE_ATTEMPTS {
+        if attempt > 0 {
+            before = load_persisted_runtime_run(
+                &repo_root,
+                &request.project_id,
+                &request.agent_session_id,
+            )?;
         }
-        None => existing.run.provider_id.clone(),
-    };
+        let Some(existing) = before.as_ref() else {
+            return Err(CommandError::retryable(
+                "runtime_run_missing",
+                format!(
+                    "Xero cannot queue runtime-run controls because project `{}` has no durable runtime run.",
+                    request.project_id
+                ),
+            ));
+        };
+        if existing.run.run_id != request.run_id {
+            return Err(CommandError::user_fixable(
+                "runtime_run_mismatch",
+                format!(
+                    "Xero refused to queue controls for run `{}` because project `{}` is currently bound to durable run `{}`.",
+                    request.run_id, request.project_id, existing.run.run_id
+                ),
+            ));
+        }
+        if existing.run.supervisor_kind != crate::runtime::OWNED_AGENT_SUPERVISOR_KIND {
+            return Err(CommandError::retryable(
+                "runtime_run_supervisor_changed",
+                format!(
+                    "Xero could not queue owned-agent controls because runtime run `{}` changed supervisors. Refresh and retry.",
+                    request.run_id
+                ),
+            ));
+        }
 
-    let after = update_owned_runtime_run_controls(
-        &repo_root,
-        existing,
-        &next_provider_id,
-        request.controls.clone(),
-        &request.continuation_request_id,
-        request.prompt.clone(),
-        &request.attachments,
-        &request.linked_paths,
-    )?;
-    emit_runtime_run_updated_if_changed(
-        &app,
-        &request.project_id,
-        &request.agent_session_id,
-        &before,
-        &Some(after.clone()),
-    )?;
-    if normalized_prompt(request.prompt.as_deref()).is_some() {
-        spawn_owned_runtime_prompt_drive_when_idle(
-            app.clone(),
-            state.clone(),
-            repo_root.clone(),
-            after.clone(),
-        );
+        let next_provider_id = match request.controls.as_ref() {
+            Some(controls) => {
+                resolve_owned_runtime_profile_selection(&app, &state, Some(controls))?.provider_id
+            }
+            None => existing.run.provider_id.clone(),
+        };
+        match update_owned_runtime_run_controls(
+            &repo_root,
+            existing,
+            &next_provider_id,
+            request.controls.clone(),
+            &request.continuation_request_id,
+            request.prompt.clone(),
+            &request.attachments,
+            &request.linked_paths,
+        ) {
+            Ok(after) => {
+                emit_runtime_run_updated_if_changed(
+                    &app,
+                    &request.project_id,
+                    &request.agent_session_id,
+                    &before,
+                    &Some(after.clone()),
+                )?;
+                if normalized_prompt(request.prompt.as_deref()).is_some() {
+                    spawn_owned_runtime_prompt_drive_when_idle(
+                        app.clone(),
+                        state.clone(),
+                        repo_root.clone(),
+                        after.clone(),
+                    );
+                }
+                return Ok(runtime_run_dto_from_snapshot(&after));
+            }
+            Err(error) if error.code == "runtime_run_write_conflict" => {
+                last_conflict = Some(error);
+                thread::yield_now();
+            }
+            Err(error) => return Err(error),
+        }
     }
 
-    Ok(runtime_run_dto_from_snapshot(&after))
+    Err(last_conflict.expect("a control-update retry only continues after a write conflict"))
 }
 
 fn queued_attachments_as_staged(
@@ -326,9 +377,11 @@ fn spawn_owned_runtime_prompt_drive_when_idle<R: Runtime + 'static>(
                                 if request.state
                                     == project_store::AgentContinuationRequestState::Driving =>
                             {
-                                // Provider dispatch may have happened. Keep the runtime prompt
-                                // durable for explicit reconciliation; never replay it blindly.
-                                return;
+                                // The provider turn is in flight. Keep this worker alive so it can
+                                // reconcile the durable request and apply pending controls once the
+                                // supervisor becomes idle; the continuation id prevents replay.
+                                thread::sleep(QUEUED_PROMPT_DRIVE_POLL_INTERVAL);
+                                continue;
                             }
                             Err(error) => {
                                 let _ = fail_owned_runtime_run(

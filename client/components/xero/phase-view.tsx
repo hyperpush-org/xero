@@ -76,6 +76,7 @@ interface PhaseViewProps {
   onClearWorkflowSelection?: () => void
   onStartWorkflowDefinitionRun?: (workflowId: string, initialInput: unknown) => Promise<WorkflowRunDto | void>
   workflowStartRequestToken?: number
+  onWorkflowStartRequestHandled?: (requestToken: number) => void
   onCancelWorkflowRun?: (runId: string) => Promise<WorkflowRunDto | void>
   onRetryWorkflowNodeRun?: (runId: string, nodeRunId: string) => Promise<WorkflowRunDto | void>
   onSkipWorkflowBranch?: (
@@ -163,6 +164,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     onClearWorkflowSelection,
     onStartWorkflowDefinitionRun,
     workflowStartRequestToken = 0,
+    onWorkflowStartRequestHandled,
     onCancelWorkflowRun,
     onRetryWorkflowNodeRun,
     onSkipWorkflowBranch,
@@ -365,6 +367,7 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
           onCanvasStatusChange={handleWorkflowCanvasStatusChange}
           onStartRun={selectedWorkflowIsTemplatePreview ? undefined : onStartWorkflowDefinitionRun}
           startRunRequestToken={selectedWorkflowIsTemplatePreview ? 0 : workflowStartRequestToken}
+          onWorkflowStartRequestHandled={onWorkflowStartRequestHandled}
           onCancelRun={onCancelWorkflowRun}
           onRetryNodeRun={onRetryWorkflowNodeRun}
           onSkipBranch={onSkipWorkflowBranch}

@@ -462,6 +462,10 @@ pub fn create_owned_agent_run(
     }
     controls.active.plan_mode_required =
         controls.active.plan_mode_required && controls.active.runtime_agent_id.allows_plan_gate();
+    let provider = create_provider_adapter(request.provider_config.clone())?;
+    if controls.active.model_id.trim().is_empty() {
+        controls.active.model_id = provider.model_id().to_owned();
+    }
     let effective_definition_snapshot = request
         .tool_runtime
         .subagent_child_identity()
@@ -509,7 +513,6 @@ pub fn create_owned_agent_run(
         None,
         attached_skill_contexts,
     )?;
-    let provider = create_provider_adapter(request.provider_config.clone())?;
     let runtime_contract = if matches!(&request.provider_config, AgentProviderConfig::Fake) {
         None
     } else {
@@ -1100,7 +1103,7 @@ fn workflow_policy_for_runtime_agent(
     AutonomousAgentWorkflowPolicy::from_definition_snapshot(definition_snapshot)
 }
 
-fn workflow_replay_from_snapshot(
+pub(crate) fn workflow_replay_from_snapshot(
     snapshot: &AgentRunSnapshotRecord,
 ) -> AutonomousAgentWorkflowReplay {
     let events = snapshot
@@ -4913,7 +4916,6 @@ fn drive_owned_agent_continuation_inner(
     let provider = create_provider_adapter(provider_config.clone())?;
     let snapshot =
         project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
-    let messages = provider_messages_from_snapshot(&request.repo_root, &snapshot)?;
     let definition_snapshot =
         load_agent_definition_snapshot_for_run(&request.repo_root, &snapshot.run)?;
     let (default_approval_mode, allowed_approval_modes) =
@@ -4973,6 +4975,34 @@ fn drive_owned_agent_continuation_inner(
         cancellation.clone(),
         supervisor.clone(),
     );
+    let environment = match start_owned_agent_environment(
+        &request.repo_root,
+        &request.project_id,
+        &request.run_id,
+        &request.provider_config,
+        &tool_runtime,
+    ) {
+        Ok(environment) => environment,
+        Err(error) if error.code == "agent_environment_startup_failed" => {
+            return project_store::load_agent_run(
+                &request.repo_root,
+                &request.project_id,
+                &request.run_id,
+            );
+        }
+        Err(error) => return Err(error),
+    };
+    if !environment.state.is_ready() {
+        return project_store::load_agent_run(
+            &request.repo_root,
+            &request.project_id,
+            &request.run_id,
+        );
+    }
+    deliver_environment_pending_messages(&request.repo_root, &request.project_id, &request.run_id)?;
+    let snapshot =
+        project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
+    let messages = provider_messages_from_snapshot(&request.repo_root, &snapshot)?;
     match drive_provider_loop_with_dispatch_observer(
         provider.as_ref(),
         messages,
@@ -5566,6 +5596,59 @@ fn finish_owned_agent_drive_error(
     Ok(snapshot)
 }
 
+pub(crate) fn record_unhandled_owned_agent_drive_error(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    error: &CommandError,
+) -> CommandResult<AgentRunSnapshotRecord> {
+    let current = project_store::load_agent_run(repo_root, project_id, run_id)?;
+    if !matches!(
+        current.run.status,
+        AgentRunStatus::Starting | AgentRunStatus::Running
+    ) {
+        return Ok(current);
+    }
+    let diagnostic = project_store::AgentRunDiagnosticRecord {
+        code: error.code.clone(),
+        message: error.message.clone(),
+    };
+    record_state_transition(
+        repo_root,
+        project_id,
+        run_id,
+        AgentStateTransition {
+            from: None,
+            to: AgentRunState::Blocked,
+            reason: "Owned-agent background drive stopped before standard error finalization.",
+            stop_reason: Some(stop_reason_for_error(error)),
+            extra: None,
+        },
+    )?;
+    append_event(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunEventKind::RunFailed,
+        json!({
+            "code": error.code,
+            "message": error.message,
+            "retryable": error.retryable,
+            "state": AgentRunState::Blocked.as_str(),
+            "stopReason": stop_reason_for_error(error).as_str(),
+            "source": "background_drive_fallback",
+        }),
+    )?;
+    project_store::update_agent_run_status(
+        repo_root,
+        project_id,
+        run_id,
+        AgentRunStatus::Failed,
+        Some(diagnostic),
+        &now_timestamp(),
+    )
+}
+
 fn capture_pause_artifacts_best_effort_async(
     repo_root: PathBuf,
     snapshot: AgentRunSnapshotRecord,
@@ -5880,8 +5963,6 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
         self.cancellation.check_cancelled()?;
         let child_run_id =
             sanitize_action_id(&format!("{}-{}", self.parent_run_id, task.subagent_id));
-        let child_trace_id =
-            xero_agent_core::runtime_trace_id_for_run(&self.project_id, &child_run_id);
         let parent_trace_id =
             project_store::load_agent_run(&self.repo_root, &self.project_id, &self.parent_run_id)
                 .map(|snapshot| snapshot.run.trace_id)
@@ -5945,10 +6026,11 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
             provider_preflight: None,
         };
 
+        let initial_child_snapshot = create_owned_agent_run(&request)?;
         task.run_id = Some(child_run_id);
-        task.trace_id = Some(child_trace_id);
+        task.trace_id = Some(initial_child_snapshot.run.trace_id.clone());
         task.parent_run_id = Some(self.parent_run_id.clone());
-        task.parent_trace_id = Some(parent_trace_id);
+        task.parent_trace_id = initial_child_snapshot.run.parent_trace_id.clone();
         task.result_artifact = Some(result_artifact);
         task.status = "running".into();
         task.started_at.get_or_insert_with(now_timestamp);
@@ -5980,7 +6062,13 @@ impl AutonomousSubagentExecutor for OwnedAgentSubagentExecutor {
         std::thread::Builder::new()
             .name(format!("xero-subagent-{}", started_task.subagent_id))
             .spawn(move || {
-                executor.drive_subagent_background(request, child_token, started_task, task_store);
+                executor.drive_subagent_background(
+                    request,
+                    child_token,
+                    started_task,
+                    task_store,
+                    initial_child_snapshot,
+                );
             })
             .map_err(|error| {
                 CommandError::system_fault(
@@ -6278,11 +6366,12 @@ impl OwnedAgentSubagentExecutor {
         cancellation: AgentRunCancellationToken,
         mut task: AutonomousSubagentTask,
         task_store: Arc<std::sync::Mutex<BTreeMap<String, AutonomousSubagentTask>>>,
+        initial_snapshot: AgentRunSnapshotRecord,
     ) {
         let run_id = request.run_id.clone();
-        let result = create_owned_agent_run(&request).and_then(|snapshot| {
-            task.trace_id = Some(snapshot.run.trace_id);
-            task.parent_trace_id = snapshot.run.parent_trace_id;
+        let result = (|| {
+            task.trace_id = Some(initial_snapshot.run.trace_id);
+            task.parent_trace_id = initial_snapshot.run.parent_trace_id;
             emit_subagent_lifecycle(
                 &self.repo_root,
                 &self.project_id,
@@ -6294,7 +6383,7 @@ impl OwnedAgentSubagentExecutor {
             // scheduled-wakeup resume of the same run cannot drive it concurrently.
             let _child_lease = self.acquire_child_run_lease(&run_id)?;
             drive_owned_agent_run(request, cancellation, self.supervisor.clone())
-        });
+        })();
 
         let mut child_snapshot: Option<AgentRunSnapshotRecord> = None;
         match result {

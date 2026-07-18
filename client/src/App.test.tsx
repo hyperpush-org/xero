@@ -164,6 +164,7 @@ import type {
   ProjectUsageSummaryDto,
   ProviderCapabilityCatalogDto,
   ProviderAuthSessionDto,
+  ProviderCredentialsSnapshotDto,
   ProviderModelCatalogDto,
   ProviderPreflightRequiredFeaturesDto,
   ProviderPreflightSnapshotDto,
@@ -187,6 +188,12 @@ import type {
   WorkflowAgentDetailDto,
   WorkflowAgentSummaryDto,
 } from '@/src/lib/xero-model/workflow-agents'
+import type {
+  WorkflowDefinitionDto,
+  WorkflowDefinitionSummaryDto,
+} from '@/src/lib/xero-model/workflow-definition'
+import type { WorkflowRunDto } from '@/src/lib/xero-model/workflow-run'
+import { instantiateWorkflowTemplate } from '@/src/lib/xero-model/workflow-templates'
 import {
   getCloudProviderPreset,
   type CloudProviderPreset,
@@ -266,6 +273,56 @@ function makeWorkflowAgentDetail(
       edges: [],
       groups: [],
     },
+  }
+}
+
+const WORKFLOW_TEST_TIMESTAMP = '2026-07-16T20:00:00Z'
+type CreateWorkflowDefinitionRequest = Parameters<
+  NonNullable<XeroDesktopAdapter['createWorkflowDefinition']>
+>[0]
+type StartWorkflowRunRequest = Parameters<
+  NonNullable<XeroDesktopAdapter['startWorkflowRun']>
+>[0]
+
+function makeWorkflowDefinitionSummary(
+  definition: WorkflowDefinitionDto,
+): WorkflowDefinitionSummaryDto {
+  return {
+    id: definition.id,
+    projectId: definition.projectId,
+    name: definition.name,
+    description: definition.description,
+    activeVersionId: `${definition.id}:version:${definition.version}`,
+    activeVersionNumber: definition.version,
+    createdAt: WORKFLOW_TEST_TIMESTAMP,
+    updatedAt: WORKFLOW_TEST_TIMESTAMP,
+  }
+}
+
+function makeWorkflowRun(
+  definition: WorkflowDefinitionDto,
+  initialInput: unknown,
+): WorkflowRunDto {
+  return {
+    id: `run:${definition.id}`,
+    projectId: definition.projectId,
+    workflowVersionId: `${definition.id}:version:${definition.version}`,
+    workflowId: definition.id,
+    workflowVersionNumber: definition.version,
+    status: 'running',
+    terminalStatus: null,
+    definitionSnapshot: definition,
+    initialInput,
+    startedAt: WORKFLOW_TEST_TIMESTAMP,
+    updatedAt: WORKFLOW_TEST_TIMESTAMP,
+    completedAt: null,
+    cancellationReason: null,
+    nodes: [],
+    edgeDecisions: [],
+    artifacts: [],
+    gateDecisions: [],
+    loopAttempts: [],
+    events: [],
   }
 }
 
@@ -532,6 +589,29 @@ function makeRuntimeSettings(overrides: Partial<RuntimeSettingsDto> = {}): Runti
     openrouterApiKeyConfigured: false,
     anthropicApiKeyConfigured: false,
     ...overrides,
+  }
+}
+
+function makeOpenAiProviderCredentials(): ProviderCredentialsSnapshotDto {
+  return {
+    credentials: [
+      {
+        providerId: 'openai_codex',
+        kind: 'oauth_session',
+        hasApiKey: false,
+        oauthAccountId: 'acct-1',
+        oauthSessionId: 'session-1',
+        hasOauthAccessToken: true,
+        oauthExpiresAt: null,
+        baseUrl: null,
+        apiVersion: null,
+        region: null,
+        projectId: null,
+        defaultModelId: 'openai_codex',
+        readinessProof: 'oauth_session',
+        updatedAt: WORKFLOW_TEST_TIMESTAMP,
+      },
+    ],
   }
 }
 
@@ -1264,6 +1344,7 @@ function createAdapter(options?: {
   runtimeSession?: RuntimeSessionDto
   runtimeSettings?: RuntimeSettingsDto
   providerProfiles?: ProviderProfilesDto
+  providerCredentials?: ProviderCredentialsSnapshotDto
   mcpRegistry?: McpRegistryDto
   skillRegistry?: SkillRegistryDto
   runtimeRun?: RuntimeRunDto | null
@@ -1603,9 +1684,8 @@ function createAdapter(options?: {
     currentRuntimeRun = payload.run ? cloneRuntimeRun(payload.run) : null
   }
 
-  let currentProviderCredentials: { credentials: import('@/src/lib/xero-model').ProviderCredentialDto[] } = {
-    credentials: [],
-  }
+  let currentProviderCredentials: ProviderCredentialsSnapshotDto =
+    options?.providerCredentials ?? { credentials: [] }
   const listProviderCredentials = vi.fn(async () => currentProviderCredentials)
   const upsertProviderCredential = vi.fn(async (request: import('@/src/lib/xero-model').UpsertProviderCredentialRequestDto) => {
     const next = currentProviderCredentials.credentials.filter((c) => c.providerId !== request.providerId)
@@ -3236,6 +3316,320 @@ describe('XeroApp current UI', () => {
     expect(screen.queryByText('Xero Desktop')).not.toBeInTheDocument()
   })
 
+  it('creates a Workflow template selected in the composer and collects input before starting it', async () => {
+    const { adapter } = createAdapter({
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    const listWorkflowDefinitions = vi.fn(async () => ({ definitions: [] }))
+    let persistedDefinition: WorkflowDefinitionDto | null = null
+    const createWorkflowDefinition = vi.fn(
+      async (request: CreateWorkflowDefinitionRequest) => {
+        persistedDefinition = {
+          ...request.definition,
+          createdAt: WORKFLOW_TEST_TIMESTAMP,
+          updatedAt: WORKFLOW_TEST_TIMESTAMP,
+        }
+        return { definition: persistedDefinition }
+      },
+    )
+    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => {
+      const definition = persistedDefinition
+      if (!definition) throw new Error('Expected the template to be persisted before starting.')
+      return { run: makeWorkflowRun(definition, request.initialInput) }
+    })
+    adapter.listWorkflowDefinitions = listWorkflowDefinitions
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    adapter.createWorkflowDefinition = createWorkflowDefinition
+    adapter.startWorkflowRun = startWorkflowRun
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(listWorkflowDefinitions).toHaveBeenCalledWith({ projectId: 'project-1' }),
+    )
+    const targetSelector = await screen.findByRole(
+      'combobox',
+      { name: 'Agent or Workflow selector' },
+      { timeout: 5000 },
+    )
+    await waitFor(() => expect(targetSelector).toBeEnabled())
+    fireEvent.click(targetSelector)
+    const workflowsGroup = await screen.findByRole('group', { name: 'Workflows' })
+    fireEvent.click(
+      within(workflowsGroup).getByRole('option', { name: /Plan, build, verify/i }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Start Plan, build, verify' }))
+
+    await waitFor(() => expect(createWorkflowDefinition).toHaveBeenCalledTimes(1))
+    expect(createWorkflowDefinition).toHaveBeenCalledWith({
+      definition: expect.objectContaining({
+        projectId: 'project-1',
+        name: 'Plan, build, verify',
+      }),
+    })
+    const startDialog = await screen.findByRole('dialog', {
+      name: 'Start Plan, build, verify',
+    })
+    expect(startWorkflowRun).not.toHaveBeenCalled()
+
+    fireEvent.change(within(startDialog).getByLabelText('Goal (optional)'), {
+      target: { value: 'Ship Workflow launch from Chat' },
+    })
+    fireEvent.click(within(startDialog).getByRole('button', { name: 'Start' }))
+
+    await waitFor(() => expect(startWorkflowRun).toHaveBeenCalledTimes(1))
+    expect(startWorkflowRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-1',
+        idempotencyKey: expect.any(String),
+        initialInput: { goal: 'Ship Workflow launch from Chat' },
+      }),
+    )
+    expect(startWorkflowRun.mock.calls[0]?.[0].workflowId).toBe(
+      createWorkflowDefinition.mock.calls[0]?.[0].definition.id,
+    )
+  })
+
+  it('keeps the newest saved Workflow list when an older refresh resolves last', async () => {
+    let resolveInitialDefinitions!: (response: {
+      definitions: WorkflowDefinitionSummaryDto[]
+    }) => void
+    const initialDefinitions = new Promise<{ definitions: WorkflowDefinitionSummaryDto[] }>(
+      (resolve) => {
+        resolveInitialDefinitions = resolve
+      },
+    )
+    let persistedDefinition: WorkflowDefinitionDto | null = null
+    const { adapter } = createAdapter({
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    const listWorkflowDefinitions = vi.fn(() => {
+      if (listWorkflowDefinitions.mock.calls.length === 1) return initialDefinitions
+      return Promise.resolve({
+        definitions: persistedDefinition
+          ? [makeWorkflowDefinitionSummary(persistedDefinition)]
+          : [],
+      })
+    })
+    adapter.listWorkflowDefinitions = listWorkflowDefinitions
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    adapter.createWorkflowDefinition = vi.fn(
+      async (request: CreateWorkflowDefinitionRequest) => {
+        persistedDefinition = {
+          ...request.definition,
+          createdAt: WORKFLOW_TEST_TIMESTAMP,
+          updatedAt: WORKFLOW_TEST_TIMESTAMP,
+        }
+        return { definition: persistedDefinition }
+      },
+    )
+
+    render(<XeroApp adapter={adapter} />)
+
+    const targetSelector = await screen.findByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    fireEvent.click(targetSelector)
+    fireEvent.click(
+      within(await screen.findByRole('group', { name: 'Workflows' })).getByRole('option', {
+        name: /Plan, build, verify/i,
+      }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Start Plan, build, verify' }))
+
+    const startDialog = await screen.findByRole('dialog', {
+      name: 'Start Plan, build, verify',
+    })
+    await waitFor(() => expect(listWorkflowDefinitions).toHaveBeenCalledTimes(2))
+    fireEvent.click(within(startDialog).getByRole('button', { name: 'Cancel' }))
+
+    fireEvent.click(targetSelector)
+    let workflowsGroup = await screen.findByRole('group', { name: 'Workflows' })
+    expect(
+      within(workflowsGroup).getAllByRole('option', { name: /Plan, build, verify/i }),
+    ).toHaveLength(2)
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    resolveInitialDefinitions({ definitions: [] })
+    await initialDefinitions
+    await Promise.resolve()
+
+    fireEvent.click(targetSelector)
+    workflowsGroup = await screen.findByRole('group', { name: 'Workflows' })
+    expect(
+      within(workflowsGroup).getAllByRole('option', { name: /Plan, build, verify/i }),
+    ).toHaveLength(2)
+  })
+
+  it('removes saved Workflows from the previous project while the next project loads', async () => {
+    const projectOneDefinition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'release_train',
+      name: 'Project one release',
+    })
+    let resolveProjectTwoDefinitions!: (response: {
+      definitions: WorkflowDefinitionSummaryDto[]
+    }) => void
+    const projectTwoDefinitions = new Promise<{ definitions: WorkflowDefinitionSummaryDto[] }>(
+      (resolve) => {
+        resolveProjectTwoDefinitions = resolve
+      },
+    )
+    const { adapter } = createAdapter({
+      projects: [
+        makeProjectSummary('project-1', 'Xero'),
+        makeProjectSummary('project-2', 'Orchestra'),
+      ],
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    adapter.getProjectSnapshot = vi.fn(async (projectId: string) =>
+      projectId === 'project-2'
+        ? makeSnapshot('project-2', 'Orchestra')
+        : makeSnapshot('project-1', 'Xero'),
+    )
+    adapter.listWorkflowDefinitions = vi.fn(({ projectId }) =>
+      projectId === 'project-1'
+        ? Promise.resolve({
+            definitions: [makeWorkflowDefinitionSummary(projectOneDefinition)],
+          })
+        : projectTwoDefinitions,
+    )
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+
+    render(<XeroApp adapter={adapter} />)
+
+    let targetSelector = await screen.findByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    fireEvent.click(targetSelector)
+    expect(
+      within(await screen.findByRole('group', { name: 'Workflows' })).getByRole('option', {
+        name: /Project one release/i,
+      }),
+    ).toBeVisible()
+    fireEvent.keyDown(document.body, { key: 'Escape' })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open Orchestra' }))
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Open Orchestra (active)' })).toBeVisible(),
+    )
+
+    targetSelector = screen.getByRole('combobox', { name: 'Agent or Workflow selector' })
+    fireEvent.click(targetSelector)
+    expect(
+      within(await screen.findByRole('group', { name: 'Workflows' })).queryByRole('option', {
+        name: /Project one release/i,
+      }),
+    ).not.toBeInTheDocument()
+
+    resolveProjectTwoDefinitions({ definitions: [] })
+    await projectTwoDefinitions
+  })
+
+  it('directly starts a persisted zero-input Workflow selected in the composer', async () => {
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'release_train',
+      name: 'Saved release pipeline',
+    })
+    const summary = makeWorkflowDefinitionSummary(definition)
+    const { adapter } = createAdapter({
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    const listWorkflowDefinitions = vi.fn(async () => ({ definitions: [summary] }))
+    const getWorkflowDefinition = vi.fn(async () => ({ definition }))
+    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => ({
+      run: makeWorkflowRun(definition, request.initialInput),
+    }))
+    adapter.listWorkflowDefinitions = listWorkflowDefinitions
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    adapter.getWorkflowDefinition = getWorkflowDefinition
+    adapter.startWorkflowRun = startWorkflowRun
+
+    render(<XeroApp adapter={adapter} />)
+
+    const targetSelector = await screen.findByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    await waitFor(() => expect(listWorkflowDefinitions).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(targetSelector).toBeEnabled())
+    fireEvent.click(targetSelector)
+    fireEvent.click(await screen.findByRole('option', { name: /Saved release pipeline/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start Saved release pipeline' }))
+
+    await waitFor(() => expect(startWorkflowRun).toHaveBeenCalledTimes(1))
+    expect(getWorkflowDefinition).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      workflowId: definition.id,
+    })
+    expect(startWorkflowRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        projectId: 'project-1',
+        workflowId: definition.id,
+        idempotencyKey: expect.any(String),
+        initialInput: {},
+      }),
+    )
+    expect(
+      screen.queryByRole('dialog', { name: 'Start Saved release pipeline' }),
+    ).not.toBeInTheDocument()
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Create' })).toHaveClass('bg-secondary'),
+    )
+  })
+
+  it('keeps a failed direct Workflow start in Chat and retries from the composer', async () => {
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'release_train',
+      name: 'Retryable release pipeline',
+    })
+    const summary = makeWorkflowDefinitionSummary(definition)
+    const { adapter } = createAdapter({
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    const listWorkflowDefinitions = vi.fn(async () => ({ definitions: [summary] }))
+    let startAttempt = 0
+    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => {
+      startAttempt += 1
+      if (startAttempt === 1) throw new Error('Workflow service is unavailable.')
+      return { run: makeWorkflowRun(definition, request.initialInput) }
+    })
+    adapter.listWorkflowDefinitions = listWorkflowDefinitions
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    adapter.getWorkflowDefinition = vi.fn(async () => ({ definition }))
+    adapter.startWorkflowRun = startWorkflowRun
+
+    render(<XeroApp adapter={adapter} />)
+
+    const targetSelector = await screen.findByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    await waitFor(() => expect(listWorkflowDefinitions).toHaveBeenCalledTimes(1))
+    await waitFor(() => expect(targetSelector).toBeEnabled())
+    fireEvent.click(targetSelector)
+    fireEvent.click(await screen.findByRole('option', { name: /Retryable release pipeline/i }))
+    const startButton = screen.getByRole('button', {
+      name: 'Start Retryable release pipeline',
+    })
+    fireEvent.click(startButton)
+
+    expect(await screen.findByText('Workflow start failed')).toBeVisible()
+    expect(screen.getByText('Workflow service is unavailable.')).toBeVisible()
+    expect(screen.getByRole('button', { name: 'Chat' })).toHaveClass('bg-secondary')
+    expect(screen.getByRole('button', { name: 'Create' })).not.toHaveClass('bg-secondary')
+    expect(startButton).toBeEnabled()
+
+    fireEvent.click(startButton)
+    await waitFor(() => expect(startWorkflowRun).toHaveBeenCalledTimes(2))
+    expect(startWorkflowRun.mock.calls[1]?.[0].idempotencyKey).toBe(
+      startWorkflowRun.mock.calls[0]?.[0].idempotencyKey,
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Create' })).toHaveClass('bg-secondary'),
+    )
+  })
+
   it('starts hand authoring and opens Agent Create from the workflow empty state', async () => {
     const { adapter } = createAdapter()
 
@@ -3431,7 +3825,7 @@ describe('XeroApp current UI', () => {
     const dock = await screen.findByLabelText('Agent dock')
     await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
     await waitFor(() =>
-      expect(within(dock).getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent(
+      expect(within(dock).getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent(
         'Agent Create',
       ),
     )
@@ -3986,10 +4380,260 @@ describe('XeroApp current UI', () => {
     )
     expect(screen.getByRole('button', { name: 'Editor' })).not.toHaveClass('bg-secondary')
     await waitFor(() =>
-      expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent(
+      expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent(
         'Engineer',
       ),
     )
+  })
+
+  it('uses a saved Workflow from the library in Chat without loading or starting it', async () => {
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'release_train',
+      name: 'Library release workflow',
+    })
+    const { adapter } = createAdapter({
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    adapter.listWorkflowDefinitions = vi.fn(async () => ({
+      definitions: [makeWorkflowDefinitionSummary(definition)],
+    }))
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    const getWorkflowDefinition = vi.fn(async () => ({ definition }))
+    const createWorkflowDefinition = vi.fn(
+      async (request: CreateWorkflowDefinitionRequest) => ({
+        definition: request.definition,
+      }),
+    )
+    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => ({
+      run: makeWorkflowRun(definition, request.initialInput),
+    }))
+    adapter.getWorkflowDefinition = getWorkflowDefinition
+    adapter.createWorkflowDefinition = createWorkflowDefinition
+    adapter.startWorkflowRun = startWorkflowRun
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Editor' }))
+    expect(await screen.findByText('README.md')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open workflows' }))
+    const library = await screen.findByLabelText('Library')
+    fireEvent.click(within(library).getByRole('tab', { name: 'Workflows' }))
+    fireEvent.pointerDown(
+      await within(library).findByRole('button', {
+        name: 'More actions for Library release workflow',
+      }),
+      { button: 0, ctrlKey: false },
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use in Chat' }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('button', { name: 'Chat' })).toHaveClass('bg-secondary'),
+    )
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent(
+        'Library release workflow',
+      ),
+    )
+    expect(screen.getByRole('button', { name: 'Start Library release workflow' })).toBeEnabled()
+    expect(getWorkflowDefinition).not.toHaveBeenCalled()
+    expect(createWorkflowDefinition).not.toHaveBeenCalled()
+    expect(startWorkflowRun).not.toHaveBeenCalled()
+  })
+
+  it('uses a saved Workflow in the focused Chat pane without changing the other pane', async () => {
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'release_train',
+      name: 'Focused pane release workflow',
+    })
+    const { adapter } = createAdapter({
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    adapter.listWorkflowDefinitions = vi.fn(async () => ({
+      definitions: [makeWorkflowDefinitionSummary(definition)],
+    }))
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    const getWorkflowDefinition = vi.fn(async () => ({ definition }))
+    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => ({
+      run: makeWorkflowRun(definition, request.initialInput),
+    }))
+    adapter.getWorkflowDefinition = getWorkflowDefinition
+    adapter.startWorkflowRun = startWorkflowRun
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
+    expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn agent pane' }))
+    const firstPane = await screen.findByRole('region', {
+      name: 'Agent pane 1 - Session "Main session"',
+    })
+    const secondPane = await screen.findByRole('region', {
+      name: 'Agent pane 2 - Session "Session 2"',
+    })
+    await waitFor(() => expect(secondPane).toHaveAttribute('data-pane-focused', 'true'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open workflows' }))
+    const library = await screen.findByLabelText('Library')
+    fireEvent.click(within(library).getByRole('tab', { name: 'Workflows' }))
+    fireEvent.pointerDown(
+      await within(library).findByRole('button', {
+        name: 'More actions for Focused pane release workflow',
+      }),
+      { button: 0, ctrlKey: false },
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use in Chat' }))
+
+    const firstSelector = within(firstPane).getByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    const secondSelector = within(secondPane).getByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    await waitFor(() =>
+      expect(secondSelector).toHaveTextContent('Focused pane release workflow'),
+    )
+    expect(firstSelector).not.toHaveTextContent('Focused pane release workflow')
+    expect(getWorkflowDefinition).not.toHaveBeenCalled()
+    expect(startWorkflowRun).not.toHaveBeenCalled()
+  })
+
+  it('waits for a focused pane session before using a Workflow in that pane', async () => {
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'release_train',
+      name: 'Queued pane release workflow',
+    })
+    const { adapter } = createAdapter({
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    adapter.listWorkflowDefinitions = vi.fn(async () => ({
+      definitions: [makeWorkflowDefinitionSummary(definition)],
+    }))
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    const originalCreateAgentSession = adapter.createAgentSession
+    let resolveSpawnSession: (() => void) | undefined
+    adapter.createAgentSession = vi.fn(async (request) => {
+      await new Promise<void>((resolve) => {
+        resolveSpawnSession = resolve
+      })
+      return originalCreateAgentSession(request)
+    })
+    const getWorkflowDefinition = vi.fn(async () => ({ definition }))
+    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => ({
+      run: makeWorkflowRun(definition, request.initialInput),
+    }))
+    adapter.getWorkflowDefinition = getWorkflowDefinition
+    adapter.startWorkflowRun = startWorkflowRun
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Chat' }))
+    expect(await screen.findByLabelText('Agent conversation viewport')).toBeVisible()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Spawn agent pane' }))
+    const firstPane = await screen.findByRole('region', {
+      name: 'Agent pane 1 - Session "Main session"',
+    })
+    const emptyPane = await screen.findByRole('region', {
+      name: 'Agent pane 2 - Empty session',
+    })
+    expect(emptyPane).toHaveAttribute('data-pane-focused', 'true')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Open workflows' }))
+    const library = await screen.findByLabelText('Library')
+    fireEvent.click(within(library).getByRole('tab', { name: 'Workflows' }))
+    fireEvent.pointerDown(
+      await within(library).findByRole('button', {
+        name: 'More actions for Queued pane release workflow',
+      }),
+      { button: 0, ctrlKey: false },
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use in Chat' }))
+
+    expect(
+      within(firstPane).getByRole('combobox', { name: 'Agent or Workflow selector' }),
+    ).not.toHaveTextContent('Queued pane release workflow')
+    expect(resolveSpawnSession).toBeTypeOf('function')
+    await act(async () => {
+      resolveSpawnSession?.()
+    })
+
+    const secondPane = await screen.findByRole('region', {
+      name: 'Agent pane 2 - Session "Session 2"',
+    })
+    await waitFor(() =>
+      expect(
+        within(secondPane).getByRole('combobox', {
+          name: 'Agent or Workflow selector',
+        }),
+      ).toHaveTextContent('Queued pane release workflow'),
+    )
+    expect(
+      within(firstPane).getByRole('combobox', { name: 'Agent or Workflow selector' }),
+    ).not.toHaveTextContent('Queued pane release workflow')
+    expect(getWorkflowDefinition).not.toHaveBeenCalled()
+    expect(startWorkflowRun).not.toHaveBeenCalled()
+  })
+
+  it('uses a built-in Workflow template from the library in Chat without creating or starting it', async () => {
+    const definition = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'continuous_delivery',
+    })
+    const { adapter } = createAdapter({
+      providerCredentials: makeOpenAiProviderCredentials(),
+    })
+    adapter.listWorkflowDefinitions = vi.fn(async () => ({ definitions: [] }))
+    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    const createWorkflowDefinition = vi.fn(
+      async (request: CreateWorkflowDefinitionRequest) => ({
+        definition: request.definition,
+      }),
+    )
+    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => ({
+      run: makeWorkflowRun(definition, request.initialInput),
+    }))
+    adapter.createWorkflowDefinition = createWorkflowDefinition
+    adapter.startWorkflowRun = startWorkflowRun
+
+    render(<XeroApp adapter={adapter} />)
+
+    await waitFor(() =>
+      expect(screen.queryByRole('heading', { name: 'Loading desktop project state' })).not.toBeInTheDocument(),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Open workflows' }))
+    const library = await screen.findByLabelText('Library')
+    fireEvent.click(within(library).getByRole('tab', { name: 'Workflows' }))
+
+    fireEvent.pointerDown(
+      await within(library).findByRole('button', {
+        name: 'More actions for Plan, build, verify',
+      }),
+      { button: 0, ctrlKey: false },
+    )
+    fireEvent.click(await screen.findByRole('menuitem', { name: 'Use in Chat' }))
+
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent(
+        'Plan, build, verify',
+      ),
+    )
+    expect(screen.getByRole('button', { name: 'Start Plan, build, verify' })).toBeEnabled()
+    expect(createWorkflowDefinition).not.toHaveBeenCalled()
+    expect(startWorkflowRun).not.toHaveBeenCalled()
   })
 
   it('renders live git footer data from desktop state while leaving mock-only fields untouched', async () => {

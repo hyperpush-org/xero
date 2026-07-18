@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
+import gsdAutoDefinitionFixture from '../../../test-fixtures/workflows/gsd_auto.definition.json'
+
 import {
   validateWorkflowDefinition,
   type WorkflowDefinitionDto,
@@ -704,6 +706,75 @@ describe('validateWorkflowDefinition', () => {
     }
   })
 
+  it('uses backend-compatible built-in versions before the agent catalog loads', () => {
+    const workflow = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'gsd_auto',
+    })
+    const versions = new Map(
+      workflow.nodes.flatMap((node) =>
+        node.type === 'agent' && node.agentRef.kind === 'built_in'
+          ? [[node.agentRef.runtimeAgentId, node.agentRef.version] as const]
+          : [],
+      ),
+    )
+
+    expect(Object.fromEntries(versions)).toMatchObject({
+      plan: 2,
+      engineer: 2,
+      debug: 2,
+      generalist: 1,
+    })
+  })
+
+  it('ships review stages as read-only Ask agents and mutation stages with auto-edit approval', () => {
+    const continuous = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'continuous_delivery',
+    })
+    const gsd = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'gsd_auto',
+    })
+    const bugTriage = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'bug_triage_fix_loop',
+    })
+    const agent = (workflow: WorkflowDefinitionDto, nodeId: string) => {
+      const node = workflow.nodes.find((candidate) => candidate.id === nodeId)
+      expect(node?.type).toBe('agent')
+      if (node?.type !== 'agent') {
+        throw new Error(`Expected ${nodeId} to be an agent node`)
+      }
+      return node
+    }
+
+    for (const [workflow, nodeId] of [
+      [continuous, 'check'],
+      [continuous, 'review'],
+      [gsd, 'phase_verify'],
+      [gsd, 'phase_review'],
+    ] as const) {
+      expect(agent(workflow, nodeId).agentRef).toMatchObject({
+        kind: 'built_in',
+        runtimeAgentId: 'ask',
+      })
+      expect(agent(workflow, nodeId).runOverrides).toBeNull()
+    }
+
+    for (const [workflow, nodeId] of [
+      [continuous, 'work'],
+      [continuous, 'debug'],
+      [continuous, 'fix'],
+      [gsd, 'phase_execute'],
+      [gsd, 'debug_phase'],
+      [gsd, 'phase_fix'],
+      [bugTriage, 'fix_bug'],
+    ] as const) {
+      expect(agent(workflow, nodeId).runOverrides?.approvalMode).toBe('auto_edit')
+    }
+  })
+
   it('exposes starter templates before the advanced GSD Auto template', () => {
     expect(WORKFLOW_TEMPLATE_LIBRARY.map((template) => template.id)).toEqual([
       'continuous_delivery',
@@ -822,6 +893,37 @@ describe('validateWorkflowDefinition', () => {
           id: 'next_milestone_start',
           toNodeId: 'new_milestone_intake',
         }),
+      ]),
+    )
+  })
+
+  it('keeps the cross-runtime GSD Auto fixture identical to the shipped template', () => {
+    const workflow = instantiateWorkflowTemplate({
+      projectId: 'project-fixture',
+      templateId: 'gsd_auto',
+    })
+    workflow.id = 'workflow-gsd-auto-fixture'
+
+    expect(workflow).toEqual(gsdAutoDefinitionFixture)
+  })
+
+  it('keeps command artifacts strict enough to preserve bounded output diagnostics', () => {
+    const workflow = instantiateWorkflowTemplate({
+      projectId: 'project-1',
+      templateId: 'gsd_auto',
+    })
+    const commandResult = workflow.artifactContracts.find(
+      (contract) => contract.artifactType === 'command_result',
+    )
+
+    expect(commandResult?.jsonSchema?.required).toEqual(
+      expect.arrayContaining([
+        'stdoutTruncated',
+        'stderrTruncated',
+        'stdoutDrainIncomplete',
+        'stderrDrainIncomplete',
+        'stdoutReadError',
+        'stderrReadError',
       ]),
     )
   })

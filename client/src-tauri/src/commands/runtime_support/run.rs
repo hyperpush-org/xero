@@ -464,13 +464,28 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         return Ok(());
     }
 
+    let controls = Some(runtime_control_input_from_active(&task.run_controls.active));
+    let provider_config = match resolve_owned_agent_provider_config(app, state, controls.as_ref()) {
+        Ok(config) => config,
+        Err(error) => {
+            record_owned_runtime_failure(
+                app,
+                &task.repo_root,
+                &runtime_snapshot,
+                &error,
+                "Provider configuration failed.",
+            );
+            return Ok(());
+        }
+    };
+    let (provider_id, model_id) = agent_provider_config_identity(&provider_config);
     let provider_preflight = match ensure_owned_runtime_provider_turn_capabilities(
         app,
         state,
         state.owned_agent_provider_config_override().is_none(),
         &task.provider_profile_id,
-        &task.provider_id,
-        &task.run_controls.active.model_id,
+        &provider_id,
+        &model_id,
         &task.attachments,
     ) {
         Ok(snapshot) => snapshot,
@@ -495,21 +510,6 @@ fn bootstrap_and_drive_owned_runtime_prompt<R: Runtime>(
         "Preparing tools and context.",
     )?;
 
-    let controls = Some(runtime_control_input_from_active(&task.run_controls.active));
-    let provider_config = match resolve_owned_agent_provider_config(app, state, controls.as_ref()) {
-        Ok(config) => config,
-        Err(error) => {
-            record_owned_runtime_failure(
-                app,
-                &task.repo_root,
-                &runtime_snapshot,
-                &error,
-                "Provider configuration failed.",
-            );
-            return Ok(());
-        }
-    };
-    let (provider_id, model_id) = agent_provider_config_identity(&provider_config);
     let tool_application_policy =
         match resolve_agent_tool_application_style(app, state, &provider_id, &model_id) {
             Ok(policy) => policy,

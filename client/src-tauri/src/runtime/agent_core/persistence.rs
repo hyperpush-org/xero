@@ -3598,18 +3598,23 @@ fn record_single_file_change_event(
             created_at: recorded_at.clone(),
         },
         |stored_change| {
-            project_store::refresh_project_record_freshness_for_paths(
-                repo_root,
-                project_id,
-                &touched_paths,
-                &recorded_at,
-            )?;
-            project_store::refresh_agent_memory_freshness_for_paths(
-                repo_root,
-                project_id,
-                &touched_paths,
-                &recorded_at,
-            )?;
+            // A mutation worker is created with `fork`, so it cannot enter the inherited
+            // multi-thread Tokio runtimes used by the Lance-backed freshness stores. The
+            // parent reconciles these derived indexes after it receives the isolated result.
+            if !xero_agent_core::mutation_boundary_child_active() {
+                project_store::refresh_project_record_freshness_for_paths(
+                    repo_root,
+                    project_id,
+                    &touched_paths,
+                    &recorded_at,
+                )?;
+                project_store::refresh_agent_memory_freshness_for_paths(
+                    repo_root,
+                    project_id,
+                    &touched_paths,
+                    &recorded_at,
+                )?;
+            }
             Ok(json!({
                 "path": change.path,
                 "operation": change.operation,
@@ -3638,6 +3643,17 @@ fn record_single_file_change_event(
 pub(crate) struct AgentWorkspaceWriteObservation {
     path: String,
     old_hash: Option<String>,
+}
+
+pub(crate) fn observed_file_hash_for_path(
+    observations: &[AgentWorkspaceWriteObservation],
+    path: &str,
+) -> Option<String> {
+    let path = relative_path_key(path)?;
+    observations
+        .iter()
+        .find(|observation| observation.path == path)
+        .and_then(|observation| observation.old_hash.clone())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -330,4 +330,113 @@ mod tests {
             .windows(2)
             .any(|pair| pair == ["status", "--ignore-submodules=all"]));
     }
+
+    #[test]
+    fn app_policy_covers_every_approved_status_option() {
+        for option in [
+            "--short",
+            "-s",
+            "--porcelain",
+            "--porcelain=v1",
+            "--untracked-files=no",
+            "--untracked-files=normal",
+            "--untracked-files=all",
+            "-uno",
+            "-unormal",
+            "-uall",
+            "-z",
+            "--null",
+        ] {
+            validate_workflow_command_policy("git", &["status".into(), option.into()])
+                .unwrap_or_else(|error| {
+                    panic!("approved option {option} failed: {}", error.message)
+                });
+        }
+        validate_workflow_command_policy(
+            "git",
+            &["status".into(), "--".into(), "./client/src".into()],
+        )
+        .expect("current-directory path components are safe");
+    }
+
+    #[test]
+    fn app_policy_rejects_malformed_repo_relative_pathspecs() {
+        for pathspec in [
+            "",
+            ":(glob)src/**",
+            "/absolute",
+            "\\absolute",
+            "dir\\file",
+            "C:drive-relative",
+            "../outside",
+            "client/../../outside",
+        ] {
+            let error = validate_workflow_command_policy(
+                "git",
+                &["status".into(), "--".into(), pathspec.into()],
+            )
+            .expect_err("malformed pathspec must fail");
+            assert_eq!(
+                error.code, "workflow_command_arguments_not_allowed_by_app_policy",
+                "pathspec {pathspec}"
+            );
+        }
+
+        let error = validate_workflow_command_policy("git", &["status".into(), "bad\0path".into()])
+            .expect_err("NUL argument must fail");
+        assert!(error.message.contains("NUL"));
+    }
+
+    #[test]
+    fn executable_policy_resolves_only_trusted_approved_commands() {
+        assert_eq!(
+            resolve_workflow_command_executable("npm")
+                .expect_err("unapproved executable must fail")
+                .code,
+            "workflow_command_not_allowed_by_app_policy"
+        );
+
+        #[cfg(unix)]
+        {
+            let git = resolve_workflow_command_executable("git").expect("resolve system git");
+            assert!(git.is_absolute());
+            let shell = resolve_workflow_command_executable("/bin/sh").expect("resolve test shell");
+            assert!(shell.is_absolute());
+            assert_eq!(
+                trusted_unix_executable(PathBuf::from("/definitely/missing/xero-command"))
+                    .expect_err("missing executable must fail")
+                    .code,
+                "workflow_command_approved_executable_unavailable"
+            );
+        }
+    }
+
+    #[test]
+    fn process_policy_leaves_test_commands_unhardened_and_appends_arguments_verbatim() {
+        use std::ffi::OsStr;
+
+        let mut process = Command::new("/bin/sh");
+        process.env("PRESERVE_ME", "yes");
+        harden_workflow_command_process("/bin/sh", std::path::Path::new("/repo"), &mut process);
+        append_workflow_command_arguments(
+            "/bin/sh",
+            &["-c".into(), "printf ok".into()],
+            &mut process,
+        );
+
+        assert_eq!(
+            process
+                .get_envs()
+                .find(|(key, _)| *key == OsStr::new("PRESERVE_ME"))
+                .and_then(|(_, value)| value),
+            Some(OsStr::new("yes"))
+        );
+        assert_eq!(
+            process
+                .get_args()
+                .map(|argument| argument.to_string_lossy().into_owned())
+                .collect::<Vec<_>>(),
+            vec!["-c", "printf ok"]
+        );
+    }
 }

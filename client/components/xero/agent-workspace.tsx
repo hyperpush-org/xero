@@ -129,6 +129,8 @@ export interface AgentWorkspaceProps
       | 'pendingInitialRuntimeAgentId'
       | 'pendingInitialAgentDefinitionId'
       | 'onPendingInitialRuntimeAgentIdConsumed'
+      | 'pendingInitialWorkflowTarget'
+      | 'onPendingInitialWorkflowTargetConsumed'
       | 'pendingComposerInsert'
       | 'onPendingComposerInsertConsumed'
     >,
@@ -150,6 +152,13 @@ export interface AgentWorkspaceProps
     agentDefinitionId?: string | null
   } | null
   onClearPendingInitialRuntimeAgent?: (agentSessionId: string) => void
+  /** Per-session pending Workflow target to preselect when its pane mounts. */
+  pendingInitialWorkflow?: {
+    projectId: string
+    agentSessionId: string
+    target: NonNullable<AgentRuntimeProps['pendingInitialWorkflowTarget']>
+  } | null
+  onClearPendingInitialWorkflow?: (agentSessionId: string) => void
   pendingComposerInsert?: AgentRuntimeProps['pendingComposerInsert']
   onPendingComposerInsertConsumed?: AgentRuntimeProps['onPendingComposerInsertConsumed']
 }
@@ -180,6 +189,8 @@ export const AgentWorkspace = memo(function AgentWorkspace({
   onResumeOperatorRun,
   pendingInitialRuntimeAgent = null,
   onClearPendingInitialRuntimeAgent,
+  pendingInitialWorkflow = null,
+  onClearPendingInitialWorkflow,
   pendingComposerInsert = null,
   onPendingComposerInsertConsumed,
   ...runtimeProps
@@ -258,6 +269,8 @@ export const AgentWorkspace = memo(function AgentWorkspace({
           onResumeOperatorRun={onResumeOperatorRun}
           pendingInitialRuntimeAgent={pendingInitialRuntimeAgent}
           onClearPendingInitialRuntimeAgent={onClearPendingInitialRuntimeAgent}
+          pendingInitialWorkflow={pendingInitialWorkflow}
+          onClearPendingInitialWorkflow={onClearPendingInitialWorkflow}
           pendingComposerInsert={slot.isFocused ? pendingComposerInsert : null}
           onPendingComposerInsertConsumed={onPendingComposerInsertConsumed}
         />
@@ -269,6 +282,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
       highChurnStore,
       onCancelAutonomousRun,
       onClearPendingInitialRuntimeAgent,
+      onClearPendingInitialWorkflow,
       onPendingComposerInsertConsumed,
       onClosePane,
       onComposerControlsChange,
@@ -289,6 +303,7 @@ export const AgentWorkspace = memo(function AgentWorkspace({
       paneCount,
       panes,
       pendingInitialRuntimeAgent,
+      pendingInitialWorkflow,
       pendingComposerInsert,
       spawnPaneDisabled,
       stableRuntimeProps,
@@ -355,6 +370,8 @@ interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
     | 'pendingInitialRuntimeAgentId'
     | 'pendingInitialAgentDefinitionId'
     | 'onPendingInitialRuntimeAgentIdConsumed'
+    | 'pendingInitialWorkflowTarget'
+    | 'onPendingInitialWorkflowTargetConsumed'
     | 'pendingComposerInsert'
     | 'onPendingComposerInsertConsumed'
   >
@@ -365,6 +382,12 @@ interface PaneRuntimeWrapperProps extends PaneAwareRuntimeHandlers {
     agentDefinitionId?: string | null
   } | null
   onClearPendingInitialRuntimeAgent?: (agentSessionId: string) => void
+  pendingInitialWorkflow?: {
+    projectId: string
+    agentSessionId: string
+    target: NonNullable<AgentRuntimeProps['pendingInitialWorkflowTarget']>
+  } | null
+  onClearPendingInitialWorkflow?: (agentSessionId: string) => void
   pendingComposerInsert?: AgentRuntimeProps['pendingComposerInsert']
   onPendingComposerInsertConsumed?: AgentRuntimeProps['onPendingComposerInsertConsumed']
 }
@@ -398,6 +421,8 @@ const PaneRuntime = memo(function PaneRuntime({
   onResumeOperatorRun,
   pendingInitialRuntimeAgent,
   onClearPendingInitialRuntimeAgent,
+  pendingInitialWorkflow,
+  onClearPendingInitialWorkflow,
   pendingComposerInsert = null,
   onPendingComposerInsertConsumed,
   dragHandle,
@@ -416,12 +441,25 @@ const PaneRuntime = memo(function PaneRuntime({
     pendingInitialRuntimeAgent.agentSessionId === paneSessionId
       ? pendingInitialRuntimeAgent.agentDefinitionId ?? null
       : null
+  const pendingInitialWorkflowTarget =
+    pendingInitialWorkflow &&
+    pendingInitialWorkflow.projectId === pane.agent.project.id &&
+    pendingInitialWorkflow.agentSessionId === paneSessionId
+      ? pendingInitialWorkflow.target
+      : null
   const handlePendingInitialRuntimeAgentIdConsumed = useMemo(
     () =>
       paneSessionId && onClearPendingInitialRuntimeAgent
         ? () => onClearPendingInitialRuntimeAgent(paneSessionId)
         : undefined,
     [onClearPendingInitialRuntimeAgent, paneSessionId],
+  )
+  const handlePendingInitialWorkflowTargetConsumed = useMemo(
+    () =>
+      paneSessionId && onClearPendingInitialWorkflow
+        ? () => onClearPendingInitialWorkflow(paneSessionId)
+        : undefined,
+    [onClearPendingInitialWorkflow, paneSessionId],
   )
   const paneBoundHandlers = useMemo<
     Partial<
@@ -537,6 +575,8 @@ const PaneRuntime = memo(function PaneRuntime({
       pendingInitialRuntimeAgentId={pendingInitialRuntimeAgentId}
       pendingInitialAgentDefinitionId={pendingInitialAgentDefinitionId}
       onPendingInitialRuntimeAgentIdConsumed={handlePendingInitialRuntimeAgentIdConsumed}
+      pendingInitialWorkflowTarget={pendingInitialWorkflowTarget}
+      onPendingInitialWorkflowTargetConsumed={handlePendingInitialWorkflowTargetConsumed}
       pendingComposerInsert={pendingComposerInsert}
       onPendingComposerInsertConsumed={onPendingComposerInsertConsumed}
     />

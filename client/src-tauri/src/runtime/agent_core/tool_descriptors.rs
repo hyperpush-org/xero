@@ -2365,9 +2365,10 @@ pub(crate) fn prompt_relevant_paths_from_provider_messages(
 
 fn collect_explicit_prompt_paths(repo_root: &Path, content: &str, paths: &mut BTreeSet<String>) {
     for candidate in content.split('`').skip(1).step_by(2) {
-        if let Some(path) = normalize_relevant_prompt_path(repo_root, candidate)
-            .ok()
-            .flatten()
+        if let Some(path) =
+            normalize_relevant_prompt_path(repo_root, trim_serialized_prompt_path_suffix(candidate))
+                .ok()
+                .flatten()
         {
             paths.insert(path);
         }
@@ -2379,7 +2380,7 @@ fn collect_explicit_prompt_paths(repo_root: &Path, content: &str, paths: &mut BT
                 '`' | '"' | '\'' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | ',' | ';'
             )
     }) {
-        let candidate = candidate.trim_end_matches(['.', ':', '!', '?']);
+        let candidate = trim_serialized_prompt_path_suffix(candidate);
         if !explicit_prompt_path_candidate(repo_root, candidate) {
             continue;
         }
@@ -2389,6 +2390,19 @@ fn collect_explicit_prompt_paths(repo_root: &Path, content: &str, paths: &mut BT
         {
             paths.insert(path);
         }
+    }
+}
+
+fn trim_serialized_prompt_path_suffix(mut candidate: &str) -> &str {
+    loop {
+        candidate = candidate.trim_end_matches(['.', ':', '!', '?']);
+        let Some(trimmed) = ["\\n", "\\r", "\\t"]
+            .into_iter()
+            .find_map(|suffix| candidate.strip_suffix(suffix))
+        else {
+            return candidate;
+        };
+        candidate = trimmed;
     }
 }
 
@@ -8096,6 +8110,9 @@ pub(crate) fn runtime_controls_for_agent_run_with_state(
     state.active.runtime_agent_id = run.runtime_agent_id;
     state.active.agent_definition_id = Some(run.agent_definition_id.clone());
     state.active.agent_definition_version = Some(run.agent_definition_version);
+    if state.active.model_id.trim().is_empty() {
+        state.active.model_id = run.model_id.clone();
+    }
     if !allowed_approval_modes
         .iter()
         .any(|mode| mode == &state.active.approval_mode)
@@ -10386,6 +10403,40 @@ mod tests {
         let relevant_paths = prompt_relevant_paths_from_provider_messages(root.path(), &messages);
 
         assert_eq!(relevant_paths, BTreeSet::from(["client".to_string()]));
+    }
+
+    #[test]
+    fn serialized_command_output_does_not_invent_repository_instruction_paths() {
+        let root = tempfile::tempdir().expect("temp dir");
+        fs::write(root.path().join("AGENTS.md"), "Use repository rules.\n")
+            .expect("write root instructions");
+        fs::create_dir(root.path().join("src")).expect("create source directory");
+        let messages = vec![ProviderMessage::User {
+            content: concat!(
+                "Verify this command result: ",
+                r#"{"stdout":"?? AGENTS.md\n?? src/\n","exitCode":0}"#,
+            )
+            .into(),
+            attachments: Vec::new(),
+        }];
+
+        let relevant_paths = prompt_relevant_paths_from_provider_messages(root.path(), &messages);
+
+        assert_eq!(
+            relevant_paths,
+            BTreeSet::from(["AGENTS.md".to_string(), "src".to_string()])
+        );
+        PromptCompiler::new(
+            root.path(),
+            None,
+            None,
+            RuntimeAgentIdDto::Ask,
+            BrowserControlPreferenceDto::Default,
+            &[],
+        )
+        .with_relevant_paths(&relevant_paths)
+        .compile()
+        .expect("serialized command output must not break instruction scoping");
     }
 
     #[test]

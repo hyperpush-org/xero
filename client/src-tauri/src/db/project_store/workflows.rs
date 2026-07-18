@@ -5247,7 +5247,7 @@ pub fn complete_workflow_agent_node_with_artifact(
                 updated_at = ?3
             WHERE project_id = ?1
               AND id = ?2
-              AND status = 'running'
+              AND status IN ('running', 'waiting_on_gate')
               AND EXISTS (
                     SELECT 1
                     FROM workflow_runs
@@ -8877,6 +8877,52 @@ mod tests {
             .events
             .iter()
             .any(|event| event.event_type == "workflow_artifact_extracted"));
+    }
+
+    #[test]
+    fn agent_completion_accepts_a_child_that_completed_while_parent_waited_on_its_gate() {
+        let (temp, definition) = repo_with_database();
+        let created =
+            create_workflow_definition(temp.path(), &definition).expect("create workflow");
+        let run =
+            create_workflow_run(temp.path(), "project-1", &created.id, None).expect("create run");
+        let node = insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "agent-a",
+            "agent",
+            0,
+            WorkflowNodeRunStatusDto::WaitingOnGate,
+            "agent-waiting-attempt",
+        )
+        .expect("insert waiting agent node");
+
+        assert!(complete_workflow_agent_node_with_artifact(
+            temp.path(),
+            "project-1",
+            &WorkflowAgentArtifactCompletionRecord {
+                run_id: run.id.clone(),
+                node_run_id: node.id.clone(),
+                artifact_type: "agent_output".into(),
+                schema_version: 1,
+                payload: json!({ "status": "done" }),
+                render_text: Some("done".into()),
+                event: json!({ "status": "done" }),
+            },
+        )
+        .expect("complete waiting agent node"));
+
+        let loaded = get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load run")
+            .expect("run exists");
+        let persisted = loaded
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == node.id)
+            .expect("agent node exists");
+        assert_eq!(persisted.status, WorkflowNodeRunStatusDto::Succeeded);
+        assert_eq!(loaded.artifacts.len(), 1);
     }
 
     #[test]

@@ -130,15 +130,6 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
             workspace_guard.record_persisted_observations(&run_snapshot)?;
             let agent_definition_snapshot =
                 load_agent_definition_snapshot_for_run(repo_root, &run_snapshot.run)?;
-            let effective_agent_definition_id = agent_definition_snapshot
-                .get("id")
-                .and_then(JsonValue::as_str)
-                .unwrap_or(run_snapshot.run.agent_definition_id.as_str());
-            let effective_agent_definition_version = agent_definition_snapshot
-                .get("version")
-                .and_then(JsonValue::as_u64)
-                .and_then(|version| u32::try_from(version).ok())
-                .unwrap_or(run_snapshot.run.agent_definition_version);
             let attached_skill_contexts = attached_skill_contexts_for_provider_turn(
                 repo_root,
                 project_id,
@@ -154,8 +145,11 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
                     agent_session_id,
                     run_id,
                     runtime_agent_id: controls.active.runtime_agent_id,
-                    agent_definition_id: effective_agent_definition_id,
-                    agent_definition_version: effective_agent_definition_version,
+                    // Runtime-child snapshots have an ephemeral typed identity, but
+                    // retrieval and manifest rows are relational audit records whose
+                    // definition foreign key must bind to the durable run identity.
+                    agent_definition_id: &run_snapshot.run.agent_definition_id,
+                    agent_definition_version: run_snapshot.run.agent_definition_version,
                     agent_definition_snapshot: Some(&agent_definition_snapshot),
                     provider_id: provider.provider_id(),
                     model_id: provider.model_id(),
@@ -876,14 +870,21 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
                     tool_calls,
                     active_repository_instruction_hashes,
                 )?;
+                for result in &batch.results {
+                    record_plan_artifact_from_tool_result(repo_root, project_id, run_id, result)?;
+                }
+                let persisted_tool_snapshot =
+                    project_store::load_agent_run(repo_root, project_id, run_id)?;
+                tool_runtime.reconcile_agent_workflow_replay(workflow_replay_from_snapshot(
+                    &persisted_tool_snapshot,
+                ))?;
                 if let Some(gate) = harness_order_gate.as_mut() {
-                    let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
                     gate.record_tool_outcomes(
                         repo_root,
                         project_id,
                         run_id,
                         &harness_assignments,
-                        &snapshot,
+                        &persisted_tool_snapshot,
                     )?;
                 }
                 let parent_assistant_message_id = provider_assistant_message_id(run_id, turn_index);
@@ -905,7 +906,6 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
                     result.parent_assistant_message_id = Some(parent_assistant_message_id.clone());
                     let provider_content = serialize_model_visible_tool_result(&result)?;
                     let transcript_content = serialize_transcript_tool_result(&result)?;
-                    record_plan_artifact_from_tool_result(repo_root, project_id, run_id, &result)?;
                     append_message(
                         repo_root,
                         project_id,
@@ -12434,6 +12434,125 @@ mod tests {
         let third_turn = descriptor_name_set(&captured_tools[2]);
         assert!(third_turn.contains(AUTONOMOUS_TOOL_TOOL_ACCESS));
         assert!(third_turn.contains(AUTONOMOUS_TOOL_WRITE));
+    }
+
+    #[test]
+    fn provider_loop_advances_from_tool_gate_to_todo_gate_before_final_response() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .expect("project state test lock");
+        let run_id = "stage-sequential-tool-and-todo-gates";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        let workflow_policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "discover",
+                "phases": [
+                    {
+                        "id": "discover",
+                        "title": "Discover",
+                        "allowedTools": [AUTONOMOUS_TOOL_READ],
+                        "requiredChecks": [{
+                            "kind": "tool_succeeded",
+                            "toolName": AUTONOMOUS_TOOL_READ,
+                            "minCount": 1
+                        }]
+                    },
+                    {
+                        "id": "draft",
+                        "title": "Draft",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [{
+                            "kind": "todo_completed",
+                            "todoId": "plan_draft"
+                        }]
+                    },
+                    {
+                        "id": "accept",
+                        "title": "Accept",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let tool_runtime = tool_runtime.with_agent_workflow_policy(Some(workflow_policy));
+        let registry = ToolRegistry::for_tool_names_with_options(
+            [AUTONOMOUS_TOOL_READ, AUTONOMOUS_TOOL_TODO]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                stage_allowed_tools: Some(
+                    [AUTONOMOUS_TOOL_READ]
+                        .into_iter()
+                        .map(str::to_owned)
+                        .collect(),
+                ),
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let provider = ScriptedProvider::new(vec![
+            ProviderTurnOutcome::ToolCalls {
+                message: "inspect context".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-read-context",
+                    AUTONOMOUS_TOOL_READ,
+                    json!({"path": "src/tracked.txt"}),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::ToolCalls {
+                message: "finish draft".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-finish-draft",
+                    AUTONOMOUS_TOOL_TODO,
+                    json!({
+                        "action": "upsert",
+                        "id": "plan_draft",
+                        "title": "Plan draft ready",
+                        "status": "completed",
+                        "evidence": "Read project context.",
+                        "phaseId": "draft",
+                        "phaseTitle": "Draft"
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+        ]);
+
+        drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry,
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect("provider loop should advance through sequential Stage gates");
+
+        assert_eq!(provider.captured_tools().len(), 3);
+        assert!(tool_runtime
+            .agent_stage_completion_gate_prompt()
+            .expect("completion gate")
+            .is_none());
     }
 
     #[test]

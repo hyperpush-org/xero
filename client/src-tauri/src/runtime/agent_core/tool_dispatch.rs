@@ -339,21 +339,6 @@ fn dispatch_tool_batch_with_options(
         });
     }
 
-    for tool_call in &tool_calls {
-        record_started_tool_call(
-            repo_root,
-            project_id,
-            run_id,
-            tool_call,
-            options
-                .approved_existing_write_call_ids
-                .contains(&tool_call.tool_call_id)
-                || options
-                    .operator_approved_call_ids
-                    .contains(&tool_call.tool_call_id),
-        )?;
-    }
-
     let run_record = project_store::load_agent_run_record(repo_root, project_id, run_id)?;
     let failure_log_context = AgentToolFailureLogContext::from_run_record(
         &run_record,
@@ -383,6 +368,18 @@ fn dispatch_tool_batch_with_options(
             "registryVersion": "tool_registry_v2",
             "preflight": "legacy_registry_descriptor_missing",
         });
+        record_started_tool_call(
+            repo_root,
+            project_id,
+            run_id,
+            tool_call,
+            options
+                .approved_existing_write_call_ids
+                .contains(&tool_call.tool_call_id)
+                || options
+                    .operator_approved_call_ids
+                    .contains(&tool_call.tool_call_id),
+        )?;
         log_preflight_tool_failure(
             project_id,
             run_id,
@@ -403,6 +400,21 @@ fn dispatch_tool_batch_with_options(
             results: Vec::new(),
             failure: Some(error),
         });
+    }
+
+    for tool_call in &tool_calls {
+        record_started_tool_call(
+            repo_root,
+            project_id,
+            run_id,
+            tool_call,
+            options
+                .approved_existing_write_call_ids
+                .contains(&tool_call.tool_call_id)
+                || options
+                    .operator_approved_call_ids
+                    .contains(&tool_call.tool_call_id),
+        )?;
     }
 
     let shared = Arc::new(AutonomousToolHandlerShared {
@@ -456,7 +468,12 @@ fn dispatch_tool_batch_with_options(
             .iter()
             .map(|tool_call| (tool_call.tool_call_id.clone(), tool_call.clone()))
             .collect::<BTreeMap<_, _>>();
-        let report = registry_v2.dispatch_batch(&calls, &config);
+        let report = registry_v2
+            .dispatch_batch_with_group_hook(&calls, &config, |group| {
+                finalize_isolated_tool_successes_in_group(group, &shared, &original_calls)
+                    .map_err(command_error_to_tool_execution_error)
+            })
+            .map_err(tool_execution_error_to_command_error)?;
         let batch = persist_tool_batch_report(
             repo_root,
             project_id,
@@ -468,7 +485,11 @@ fn dispatch_tool_batch_with_options(
         )?;
         for result in &batch.results {
             if result.ok {
-                tool_runtime.reconcile_isolated_tool_result(&result.tool_name, &result.output)?;
+                tool_runtime.reconcile_isolated_tool_result(
+                    &result.tool_call_id,
+                    &result.tool_name,
+                    &result.output,
+                )?;
             }
         }
         Ok(batch)
@@ -519,6 +540,99 @@ fn restore_workspace_guard(
     })?;
     *workspace_guard = std::mem::take(&mut *guard);
     Ok(())
+}
+
+fn finalize_isolated_tool_successes_in_group(
+    group: &mut xero_agent_core::ToolGroupDispatchReport,
+    shared: &AutonomousToolHandlerShared,
+    original_calls: &BTreeMap<String, AgentToolCall>,
+) -> CommandResult<()> {
+    for success in group
+        .outcomes
+        .iter_mut()
+        .filter_map(|outcome| match outcome {
+            ToolDispatchOutcome::Succeeded(success)
+                if success.post_hook_payload["mutationBoundary"]["isolationKind"] == "process" =>
+            {
+                Some(success)
+            }
+            ToolDispatchOutcome::Succeeded(_) | ToolDispatchOutcome::Failed(_) => None,
+        })
+    {
+        let tool_call = original_calls.get(&success.tool_call_id).ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_tool_isolated_call_missing",
+                format!(
+                    "Xero could not finalize isolated tool call `{}` because its original input was unavailable.",
+                    success.tool_call_id
+                ),
+            )
+        })?;
+        let tool_result = serde_json::from_value::<AutonomousToolResult>(success.output.clone())
+            .map_err(|error| {
+                CommandError::system_fault(
+                    "agent_tool_isolated_result_invalid",
+                    format!(
+                        "Xero could not decode isolated tool result `{}` for parent-side persistence: {error}",
+                        success.tool_call_id
+                    ),
+                )
+            })?;
+        let write_preflight = shared.get_write_preflight(&success.tool_call_id)?;
+        let completed = shared
+            .finalize_tool_result(tool_call, &tool_result, write_preflight.as_ref())
+            .map_err(tool_execution_error_to_command_error)?;
+        if let Some(completed) = completed.as_ref() {
+            extend_code_change_telemetry(&mut success.telemetry_attributes, completed);
+        }
+    }
+    Ok(())
+}
+
+fn extend_code_change_telemetry(
+    telemetry: &mut BTreeMap<String, String>,
+    completed: &project_store::CompletedCodeChangeGroup,
+) {
+    telemetry.insert(
+        "xero.code_change_group_id".into(),
+        completed.change_group_id.clone(),
+    );
+    telemetry.insert(
+        "xero.code_change_file_version_count".into(),
+        completed.file_version_count.to_string(),
+    );
+    let Some(metadata) = completed.history_metadata.as_ref() else {
+        return;
+    };
+    if let Some(commit_id) = metadata.commit_id.as_ref() {
+        telemetry.insert("xero.code_commit_id".into(), commit_id.clone());
+    }
+    if let Some(workspace_epoch) = metadata.workspace_epoch {
+        telemetry.insert(
+            "xero.code_workspace_epoch".into(),
+            workspace_epoch.to_string(),
+        );
+    }
+    telemetry.insert(
+        "xero.code_patch_available".into(),
+        metadata.patch_availability.available.to_string(),
+    );
+    telemetry.insert(
+        "xero.code_patch_affected_paths".into(),
+        serde_json::to_string(&metadata.patch_availability.affected_paths)
+            .unwrap_or_else(|_| "[]".into()),
+    );
+    telemetry.insert(
+        "xero.code_patch_file_change_count".into(),
+        metadata.patch_availability.file_change_count.to_string(),
+    );
+    telemetry.insert(
+        "xero.code_patch_text_hunk_count".into(),
+        metadata.patch_availability.text_hunk_count.to_string(),
+    );
+    if let Some(reason) = metadata.patch_availability.unavailable_reason.as_ref() {
+        telemetry.insert("xero.code_patch_unavailable_reason".into(), reason.clone());
+    }
 }
 
 fn record_started_tool_call(
@@ -638,7 +752,7 @@ impl AutonomousToolHandlerShared {
             tool_name: call.tool_name.clone(),
             input: call.input.clone(),
         };
-        let request = self
+        let mut request = self
             .legacy_registry
             .decode_call(&tool_call)
             .map_err(|error| {
@@ -684,6 +798,12 @@ impl AutonomousToolHandlerShared {
                     "Xero prepared write preflight metadata for a different tool action.",
                 ));
             }
+            if self
+                .approved_existing_write_call_ids
+                .contains(&tool_call.tool_call_id)
+            {
+                request = preflight.request.clone();
+            }
         }
         let tool_runtime = control
             .cloned()
@@ -697,14 +817,16 @@ impl AutonomousToolHandlerShared {
         let tool_execution = match request {
             AutonomousToolRequest::Command(command_request) => {
                 let mut emit_chunk = |chunk: &AutonomousCommandOutputChunk| {
-                    let _ = record_command_output_chunk_event(
-                        &self.repo_root,
-                        &self.project_id,
-                        &self.run_id,
-                        &tool_call.tool_call_id,
-                        &tool_call.tool_name,
-                        chunk,
-                    );
+                    if !xero_agent_core::mutation_boundary_child_active() {
+                        let _ = record_command_output_chunk_event(
+                            &self.repo_root,
+                            &self.project_id,
+                            &self.run_id,
+                            &tool_call.tool_call_id,
+                            &tool_call.tool_name,
+                            chunk,
+                        );
+                    }
                 };
                 if operator_approved {
                     tool_runtime.command_with_approval_and_output_callback_for_tool(
@@ -747,84 +869,23 @@ impl AutonomousToolHandlerShared {
             }
         };
 
-        let completed_code_change = match write_preflight
-            .as_ref()
-            .and_then(|preflight| preflight.code_capture.as_ref())
-        {
-            Some(code_capture) => match self.complete_code_capture(code_capture) {
-                Ok(completed) => Some(completed),
-                Err(error) => return Err(command_error_to_tool_execution_error(error)),
-            },
-            None => None,
-        };
-        let write_observations = write_preflight
-            .as_ref()
-            .map(|preflight| preflight.write_observations.as_slice())
-            .unwrap_or(&[]);
-        record_file_change_event(
-            &self.repo_root,
-            &self.project_id,
-            &self.run_id,
-            &tool_call.tool_call_id,
-            &tool_call.tool_name,
-            write_observations,
-            &tool_result.output,
-            completed_code_change.as_ref(),
-        )
-        .map_err(command_error_to_tool_execution_error)?;
-        if let Some(completed) = completed_code_change.as_ref() {
-            if !output_records_own_file_change_event(&tool_result.output) {
-                record_code_change_group_file_change_events(
-                    &self.repo_root,
-                    &self.project_id,
-                    &self.run_id,
-                    &tool_call.tool_call_id,
-                    &tool_call.tool_name,
-                    completed,
-                )
-                .map_err(command_error_to_tool_execution_error)?;
-            }
-        }
-        record_command_output_event(
-            &self.repo_root,
-            &self.project_id,
-            &self.run_id,
-            &tool_call.tool_call_id,
-            &tool_call.tool_name,
-            &tool_result.output,
-        )
-        .map_err(command_error_to_tool_execution_error)?;
-        record_rollback_checkpoints(
-            &self.repo_root,
-            &self.project_id,
-            &self.run_id,
-            &tool_call.tool_call_id,
-            write_preflight
-                .as_ref()
-                .map(|preflight| preflight.rollback_checkpoints.as_slice())
-                .unwrap_or(&[]),
-        )
-        .map_err(command_error_to_tool_execution_error)?;
-        self.release_write_preflight(&tool_call.tool_call_id, "tool_completed")
-            .map_err(command_error_to_tool_execution_error)?;
-        {
-            let mut guard = self.workspace_guard.lock().map_err(|_| {
+        if xero_agent_core::mutation_boundary_child_active() {
+            let summary = tool_result.summary.clone();
+            let output = serde_json::to_value(&tool_result).map_err(|error| {
                 ToolExecutionError::retryable(
-                    "agent_workspace_guard_lock_failed",
-                    "Xero could not lock owned-agent workspace observation state.",
+                    "agent_tool_result_serialize_failed",
+                    format!("Xero could not serialize owned-agent tool output: {error}"),
                 )
             })?;
-            guard
-                .record_tool_output(&self.repo_root, &tool_result.output)
-                .map_err(command_error_to_tool_execution_error)?;
-            if let Some(workspace_epoch) = completed_code_change
-                .as_ref()
-                .and_then(|completed| completed.history_metadata.as_ref())
-                .and_then(|metadata| metadata.workspace_epoch)
-            {
-                guard.record_code_workspace_epoch(workspace_epoch);
-            }
+            let mut handler_output = ToolHandlerOutput::new(summary, output);
+            handler_output
+                .telemetry_attributes
+                .insert("xero.tool.handler".into(), "autonomous_tool_runtime".into());
+            return Ok(handler_output);
         }
+
+        let completed_code_change =
+            self.finalize_tool_result(&tool_call, &tool_result, write_preflight.as_ref())?;
 
         let summary = tool_result.summary.clone();
         let output = serde_json::to_value(&tool_result).map_err(|error| {
@@ -885,10 +946,91 @@ impl AutonomousToolHandlerShared {
         Ok(handler_output)
     }
 
+    fn finalize_tool_result(
+        &self,
+        tool_call: &AgentToolCall,
+        tool_result: &AutonomousToolResult,
+        write_preflight: Option<&AgentToolWritePreflight>,
+    ) -> ToolRegistryResult<Option<project_store::CompletedCodeChangeGroup>> {
+        let completed_code_change =
+            match write_preflight.and_then(|preflight| preflight.code_capture.as_ref()) {
+                Some(code_capture) => self
+                    .complete_code_capture(code_capture)
+                    .map(Some)
+                    .map_err(command_error_to_tool_execution_error)?,
+                None => None,
+            };
+        let write_observations = write_preflight
+            .map(|preflight| preflight.write_observations.as_slice())
+            .unwrap_or(&[]);
+        record_file_change_event(
+            &self.repo_root,
+            &self.project_id,
+            &self.run_id,
+            &tool_call.tool_call_id,
+            &tool_call.tool_name,
+            write_observations,
+            &tool_result.output,
+            completed_code_change.as_ref(),
+        )
+        .map_err(command_error_to_tool_execution_error)?;
+        if let Some(completed) = completed_code_change.as_ref() {
+            if !output_records_own_file_change_event(&tool_result.output) {
+                record_code_change_group_file_change_events(
+                    &self.repo_root,
+                    &self.project_id,
+                    &self.run_id,
+                    &tool_call.tool_call_id,
+                    &tool_call.tool_name,
+                    completed,
+                )
+                .map_err(command_error_to_tool_execution_error)?;
+            }
+        }
+        record_command_output_event(
+            &self.repo_root,
+            &self.project_id,
+            &self.run_id,
+            &tool_call.tool_call_id,
+            &tool_call.tool_name,
+            &tool_result.output,
+        )
+        .map_err(command_error_to_tool_execution_error)?;
+        record_rollback_checkpoints(
+            &self.repo_root,
+            &self.project_id,
+            &self.run_id,
+            &tool_call.tool_call_id,
+            write_preflight
+                .map(|preflight| preflight.rollback_checkpoints.as_slice())
+                .unwrap_or(&[]),
+        )
+        .map_err(command_error_to_tool_execution_error)?;
+        self.release_write_preflight(&tool_call.tool_call_id, "tool_completed")
+            .map_err(command_error_to_tool_execution_error)?;
+        let mut guard = self.workspace_guard.lock().map_err(|_| {
+            ToolExecutionError::retryable(
+                "agent_workspace_guard_lock_failed",
+                "Xero could not lock owned-agent workspace observation state.",
+            )
+        })?;
+        guard
+            .record_tool_output(&self.repo_root, &tool_result.output)
+            .map_err(command_error_to_tool_execution_error)?;
+        if let Some(workspace_epoch) = completed_code_change
+            .as_ref()
+            .and_then(|completed| completed.history_metadata.as_ref())
+            .and_then(|metadata| metadata.workspace_epoch)
+        {
+            guard.record_code_workspace_epoch(workspace_epoch);
+        }
+        Ok(completed_code_change)
+    }
+
     fn prepare_write_preflight(
         &self,
         call: &ToolCallInput,
-        request: AutonomousToolRequest,
+        mut request: AutonomousToolRequest,
     ) -> CommandResult<Option<JsonValue>> {
         self.validate_repository_instruction_preflight(call)?;
         let planned = planned_file_reservation_operations(&request)?;
@@ -920,6 +1062,9 @@ impl AutonomousToolHandlerShared {
                 guard.validate_write_intent(&self.repo_root, &request, approved_existing_write)?
             }
         };
+        if approved_existing_write {
+            bind_approved_existing_write_hashes(&mut request, &write_observations);
+        }
         let rollback_checkpoints =
             rollback_checkpoints_for_request(&self.repo_root, &request, &write_observations)?;
         let auto_file_reservations = claim_file_reservations_for_request(
@@ -1147,6 +1292,65 @@ impl AutonomousToolHandlerShared {
     }
 }
 
+fn bind_approved_existing_write_hashes(
+    request: &mut AutonomousToolRequest,
+    observations: &[AgentWorkspaceWriteObservation],
+) {
+    let bind = |field: &mut Option<String>, path: &str| {
+        if field.is_none() {
+            *field = observed_file_hash_for_path(observations, path);
+        }
+    };
+
+    match request {
+        AutonomousToolRequest::Edit(request) => bind(&mut request.expected_hash, &request.path),
+        AutonomousToolRequest::Write(request) => bind(&mut request.expected_hash, &request.path),
+        AutonomousToolRequest::Patch(request) => {
+            if request.operations.is_empty() {
+                if let Some(path) = request.path.as_deref() {
+                    bind(&mut request.expected_hash, path);
+                }
+            } else {
+                for operation in &mut request.operations {
+                    bind(&mut operation.expected_hash, &operation.path);
+                }
+            }
+        }
+        AutonomousToolRequest::Copy(request) => {
+            bind(&mut request.expected_source_hash, &request.from);
+            bind(&mut request.expected_target_hash, &request.to);
+        }
+        AutonomousToolRequest::FsTransaction(request) => {
+            for operation in &mut request.operations {
+                if let Some(path) = operation.path.as_deref() {
+                    bind(&mut operation.expected_hash, path);
+                }
+                if let Some(path) = operation.from.as_deref().or(operation.from_path.as_deref()) {
+                    bind(&mut operation.expected_source_hash, path);
+                    bind(&mut operation.expected_hash, path);
+                }
+                if let Some(path) = operation.to.as_deref().or(operation.to_path.as_deref()) {
+                    bind(&mut operation.expected_target_hash, path);
+                }
+            }
+        }
+        AutonomousToolRequest::JsonEdit(request)
+        | AutonomousToolRequest::TomlEdit(request)
+        | AutonomousToolRequest::YamlEdit(request) => {
+            bind(&mut request.expected_hash, &request.path);
+        }
+        AutonomousToolRequest::NotebookEdit(request) => {
+            bind(&mut request.expected_hash, &request.path);
+        }
+        AutonomousToolRequest::Delete(request) => bind(&mut request.expected_hash, &request.path),
+        AutonomousToolRequest::Rename(request) => {
+            bind(&mut request.expected_hash, &request.from_path);
+            bind(&mut request.expected_target_hash, &request.to_path);
+        }
+        _ => {}
+    }
+}
+
 fn code_capture_plan_for_request(
     tool_name: &str,
     request: &AutonomousToolRequest,
@@ -1320,6 +1524,14 @@ struct AutonomousToolHandler {
 impl ToolHandler for AutonomousToolHandler {
     fn descriptor(&self) -> ToolDescriptorV2 {
         self.descriptor.clone()
+    }
+
+    fn requires_parent_process_execution(&self, call: &ToolCallInput) -> bool {
+        call.tool_name == AUTONOMOUS_TOOL_SUBAGENT
+            || self
+                .shared
+                .approved_existing_write_call_ids
+                .contains(&call.tool_call_id)
     }
 
     fn execute(
@@ -1622,6 +1834,10 @@ impl AgentToolRollback {
 }
 
 impl ToolRollback for AgentToolRollback {
+    fn requires_parent_process(&self) -> bool {
+        true
+    }
+
     fn checkpoint_before(
         &self,
         call: &ToolCallInput,

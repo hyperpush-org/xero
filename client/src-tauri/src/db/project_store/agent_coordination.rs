@@ -405,29 +405,33 @@ pub fn list_active_agent_coordination_presence(
         .prepare(
             r#"
             SELECT
-                project_id,
-                agent_session_id,
-                run_id,
-                trace_id,
-                lineage_kind,
-                parent_run_id,
-                parent_subagent_id,
-                role,
-                pane_id,
-                status,
-                current_phase,
-                activity_summary,
-                last_event_id,
-                last_event_kind,
-                started_at,
-                last_heartbeat_at,
-                updated_at,
-                expires_at
-            FROM agent_coordination_presence
-            WHERE project_id = ?1
-              AND expires_at > ?2
-              AND (?3 IS NULL OR run_id <> ?3)
-            ORDER BY updated_at DESC, run_id ASC
+                presence.project_id,
+                presence.agent_session_id,
+                presence.run_id,
+                presence.trace_id,
+                presence.lineage_kind,
+                presence.parent_run_id,
+                presence.parent_subagent_id,
+                presence.role,
+                presence.pane_id,
+                presence.status,
+                presence.current_phase,
+                presence.activity_summary,
+                presence.last_event_id,
+                presence.last_event_kind,
+                presence.started_at,
+                presence.last_heartbeat_at,
+                presence.updated_at,
+                presence.expires_at
+            FROM agent_coordination_presence presence
+            JOIN agent_runs runs
+              ON runs.project_id = presence.project_id
+             AND runs.run_id = presence.run_id
+            WHERE presence.project_id = ?1
+              AND presence.expires_at > ?2
+              AND runs.status IN ('starting', 'running', 'paused', 'cancelling')
+              AND (?3 IS NULL OR presence.run_id <> ?3)
+            ORDER BY presence.updated_at DESC, presence.run_id ASC
             LIMIT ?4
             "#,
         )

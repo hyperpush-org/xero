@@ -1497,6 +1497,64 @@ pub fn read_latest_agent_events(
     Ok(events)
 }
 
+pub fn read_agent_file_change_paths_for_tool_call(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    tool_call_id: &str,
+) -> Result<Vec<String>, CommandError> {
+    validate_non_empty_text(project_id, "projectId")?;
+    validate_non_empty_text(run_id, "runId")?;
+    validate_non_empty_text(tool_call_id, "toolCallId")?;
+    let connection = open_agent_database(repo_root)?;
+    let mut statement = connection
+        .prepare(
+            r#"
+            SELECT json_extract(payload_json, '$.path'),
+                   json_extract(payload_json, '$.toPath')
+            FROM agent_events
+            WHERE project_id = ?1
+              AND run_id = ?2
+              AND event_kind = ?3
+              AND json_extract(payload_json, '$.toolCallId') = ?4
+            ORDER BY id ASC
+            "#,
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_file_change_paths_prepare_failed", error)
+        })?;
+    let rows = statement
+        .query_map(
+            params![
+                project_id,
+                run_id,
+                agent_event_kind_sql_value(&AgentRunEventKind::FileChanged),
+                tool_call_id,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_file_change_paths_query_failed", error)
+        })?;
+    let mut paths = Vec::new();
+    for row in rows {
+        let (path, to_path) = row.map_err(|error| {
+            map_agent_store_query_error(repo_root, "agent_file_change_paths_decode_failed", error)
+        })?;
+        for path in [path, to_path].into_iter().flatten() {
+            if !paths.contains(&path) {
+                paths.push(path);
+            }
+        }
+    }
+    Ok(paths)
+}
+
 pub fn read_latest_agent_event_by_payload_kind(
     repo_root: &Path,
     project_id: &str,
@@ -6315,6 +6373,8 @@ mod tests {
             |stored_change| {
                 Ok(json!({
                     "path": stored_change.path.clone(),
+                    "toPath": "src/main.rs",
+                    "toolCallId": "tool-call-file-change-order",
                     "traceId": stored_change.trace_id.clone(),
                 }))
             },
@@ -6347,6 +6407,16 @@ mod tests {
             .position(|event| event.id == file_changed_event.id)
             .expect("file-changed event is stored");
         assert!(file_changed_index > prior_index);
+        assert_eq!(
+            read_agent_file_change_paths_for_tool_call(
+                &repo_root,
+                project_id,
+                run_id,
+                "tool-call-file-change-order",
+            )
+            .expect("read changed paths for tool call"),
+            vec!["src/lib.rs".to_string(), "src/main.rs".to_string()]
+        );
     }
 
     fn append_action(repo_root: &Path, project_id: &str, run_id: &str, action_id: &str) {

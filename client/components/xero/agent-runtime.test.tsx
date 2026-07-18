@@ -236,8 +236,25 @@ import type {
   RuntimeSessionView,
   RuntimeStreamToolItemView,
 } from '@/src/lib/xero-model'
+import type { WorkflowDefinitionSummaryDto } from '@/src/lib/xero-model/workflow-definition'
 
 const COMPOSER_SETTINGS_STORAGE_KEY = 'xero.agent.composer.settings.v1'
+
+function makeWorkflowDefinitionSummary(
+  overrides: Partial<WorkflowDefinitionSummaryDto> = {},
+): WorkflowDefinitionSummaryDto {
+  return {
+    id: 'release-pipeline',
+    projectId: 'project-1',
+    name: 'Release pipeline',
+    description: 'Build, verify, and hand off a release.',
+    activeVersionId: 'release-pipeline-v3',
+    activeVersionNumber: 3,
+    createdAt: '2026-07-16T20:00:00Z',
+    updatedAt: '2026-07-16T20:00:00Z',
+    ...overrides,
+  }
+}
 
 function makeProject(overrides: Partial<ProjectDetailView> = {}): ProjectDetailView {
   return {
@@ -5922,9 +5939,371 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent('Debug')
     fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
     expect(screen.getByRole('combobox', { name: 'Approval mode' })).toHaveTextContent('Auto-edit files')
+  })
+
+  it('groups Agents and Workflows and starts the selected Workflow without a prompt', async () => {
+    const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun())
+    const onStartWorkflowFromComposer = vi.fn(async () => undefined)
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+        })}
+        workflowDefinitions={[makeWorkflowDefinitionSummary()]}
+        onStartRuntimeRun={onStartRuntimeRun}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+      />,
+    )
+
+    const targetSelector = screen.getByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    fireEvent.click(targetSelector)
+
+    const agentsGroup = await screen.findByRole('group', { name: 'Agents' })
+    const workflowsGroup = screen.getByRole('group', { name: 'Workflows' })
+    expect(within(agentsGroup).getByRole('option', { name: 'Ask' })).toBeVisible()
+    expect(
+      within(workflowsGroup).getByRole('option', { name: /Release pipeline/i }),
+    ).toHaveTextContent('v3')
+    expect(
+      within(workflowsGroup).getByRole('option', { name: /Plan, build, verify/i }),
+    ).toHaveTextContent('Starter template')
+
+    fireEvent.click(within(workflowsGroup).getByRole('option', { name: /Release pipeline/i }))
+
+    expect(targetSelector).toHaveTextContent('Release pipeline')
+    expect(screen.getByLabelText('Workflow start')).toHaveValue('')
+    const sendButton = screen.getByRole('button', { name: 'Start Release pipeline' })
+    expect(sendButton).toBeEnabled()
+    fireEvent.click(sendButton)
+
+    await waitFor(() => expect(onStartWorkflowFromComposer).toHaveBeenCalledTimes(1))
+    expect(onStartWorkflowFromComposer).toHaveBeenCalledWith({
+      kind: 'definition',
+      workflowId: 'release-pipeline',
+    })
+    expect(onStartRuntimeRun).not.toHaveBeenCalled()
+  })
+
+  it('starts a built-in Workflow template from an otherwise empty Workflow list', async () => {
+    const onStartWorkflowFromComposer = vi.fn(async () => undefined)
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+        })}
+        workflowDefinitions={[]}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+      />,
+    )
+
+    const targetSelector = screen.getByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    fireEvent.click(targetSelector)
+    const workflowsGroup = await screen.findByRole('group', { name: 'Workflows' })
+    fireEvent.click(
+      within(workflowsGroup).getByRole('option', { name: /Plan, build, verify/i }),
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'Start Plan, build, verify' }))
+
+    await waitFor(() =>
+      expect(onStartWorkflowFromComposer).toHaveBeenCalledWith({
+        kind: 'template',
+        templateId: 'continuous_delivery',
+      }),
+    )
+  })
+
+  it('applies a one-shot saved Workflow selection after its target becomes available', async () => {
+    const onStartWorkflowFromComposer = vi.fn(async () => undefined)
+    const onPendingInitialWorkflowTargetConsumed = vi.fn()
+    const agent = makeAgent({
+      runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+      runtimeRun: null,
+      controlTruthSource: 'fallback',
+    })
+    const { rerender } = render(
+      <AgentRuntime
+        agent={agent}
+        workflowDefinitions={[]}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+        pendingInitialWorkflowTarget={{
+          kind: 'definition',
+          workflowId: 'release-pipeline',
+        }}
+        onPendingInitialWorkflowTargetConsumed={onPendingInitialWorkflowTargetConsumed}
+      />,
+    )
+
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent(
+      'Ask',
+    )
+    expect(onPendingInitialWorkflowTargetConsumed).not.toHaveBeenCalled()
+
+    rerender(
+      <AgentRuntime
+        agent={agent}
+        workflowDefinitions={[makeWorkflowDefinitionSummary()]}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+        pendingInitialWorkflowTarget={{
+          kind: 'definition',
+          workflowId: 'release-pipeline',
+        }}
+        onPendingInitialWorkflowTargetConsumed={onPendingInitialWorkflowTargetConsumed}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('combobox', { name: 'Agent or Workflow selector' }),
+      ).toHaveTextContent('Release pipeline'),
+    )
+    expect(onPendingInitialWorkflowTargetConsumed).toHaveBeenCalledTimes(1)
+    expect(onStartWorkflowFromComposer).not.toHaveBeenCalled()
+  })
+
+  it('applies a one-shot built-in Workflow template selection without starting it', async () => {
+    const onStartWorkflowFromComposer = vi.fn(async () => undefined)
+    const onPendingInitialWorkflowTargetConsumed = vi.fn()
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+        })}
+        workflowDefinitions={[]}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+        pendingInitialWorkflowTarget={{
+          kind: 'template',
+          templateId: 'continuous_delivery',
+        }}
+        onPendingInitialWorkflowTargetConsumed={onPendingInitialWorkflowTargetConsumed}
+      />,
+    )
+
+    await waitFor(() =>
+      expect(
+        screen.getByRole('combobox', { name: 'Agent or Workflow selector' }),
+      ).toHaveTextContent('Plan, build, verify'),
+    )
+    expect(onPendingInitialWorkflowTargetConsumed).toHaveBeenCalledTimes(1)
+    expect(onStartWorkflowFromComposer).not.toHaveBeenCalled()
+  })
+
+  it('cancels active dictation when a Workflow is selected', async () => {
+    const dictation = createDictationAdapter()
+    const onStartWorkflowFromComposer = vi.fn(async () => undefined)
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+        })}
+        desktopAdapter={dictation.adapter}
+        workflowDefinitions={[makeWorkflowDefinitionSummary()]}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+      />,
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Start dictation' }))
+    await waitFor(() => expect(screen.getByRole('button', { name: 'Stop dictation' })).toBeVisible())
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Agent or Workflow selector' }))
+    fireEvent.click(await screen.findByRole('option', { name: /Release pipeline/i }))
+
+    await waitFor(() => expect(dictation.session.cancel).toHaveBeenCalledTimes(1))
+    expect(screen.queryByRole('button', { name: 'Stop dictation' })).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Start Release pipeline' }))
+    await waitFor(() => expect(onStartWorkflowFromComposer).toHaveBeenCalledTimes(1))
+  })
+
+  it('does not carry a pending Workflow launch into another Agent session', async () => {
+    let resolveWorkflowStart!: () => void
+    const workflowStart = new Promise<void>((resolve) => {
+      resolveWorkflowStart = resolve
+    })
+    const onStartWorkflowFromComposer = vi.fn(() => workflowStart)
+    const runtimeSession = makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false })
+    const { rerender } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession,
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+        })}
+        workflowDefinitions={[makeWorkflowDefinitionSummary()]}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Agent or Workflow selector' }))
+    fireEvent.click(await screen.findByRole('option', { name: /Release pipeline/i }))
+    fireEvent.click(screen.getByRole('button', { name: 'Start Release pipeline' }))
+    await waitFor(() => expect(onStartWorkflowFromComposer).toHaveBeenCalledTimes(1))
+
+    rerender(
+      <AgentRuntime
+        agent={makeAgent({
+          project: makeProject({ selectedAgentSessionId: 'agent-session-next' }),
+          runtimeSession,
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+        })}
+        workflowDefinitions={[makeWorkflowDefinitionSummary()]}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+      />,
+    )
+
+    const nextSessionSelector = screen.getByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    expect(nextSessionSelector).toHaveTextContent('Ask')
+    await waitFor(() => expect(nextSessionSelector).toBeEnabled())
+
+    resolveWorkflowStart()
+    await workflowStart
+  })
+
+  it('ignores pane file drops while a Workflow is selected', async () => {
+    const dictation = createDictationAdapter()
+    const stageAgentAttachment = vi.fn(async (request: {
+      bytes: Uint8Array
+      mediaType: string
+      originalName: string
+      projectId: string
+      runId: string
+    }) => ({
+      kind: 'text' as const,
+      absolutePath: '/tmp/ignored.txt',
+      mediaType: request.mediaType,
+      originalName: request.originalName,
+      sizeBytes: request.bytes.byteLength,
+    }))
+    const { container } = render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: makeRuntimeRun(),
+        })}
+        desktopAdapter={{ ...dictation.adapter, stageAgentAttachment }}
+        workflowDefinitions={[makeWorkflowDefinitionSummary()]}
+        onUpdateRuntimeRunControls={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={vi.fn(async () => undefined)}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Agent or Workflow selector' }))
+    fireEvent.click(await screen.findByRole('option', { name: /Release pipeline/i }))
+
+    const dropTarget = container.firstElementChild
+    if (!dropTarget) throw new Error('Expected the Agent pane drop target.')
+    const file = new File(['ignored'], 'ignored.txt', { type: 'text/plain' })
+    const dataTransfer = { files: [file], types: ['Files'] }
+    fireEvent.dragEnter(dropTarget, { dataTransfer })
+    fireEvent.drop(dropTarget, { dataTransfer })
+
+    expect(screen.queryByTestId('agent-pane-drop-overlay')).not.toBeInTheDocument()
+    expect(stageAgentAttachment).not.toHaveBeenCalled()
+  })
+
+  it('shows a Workflow start failure in the composer and allows retry', async () => {
+    const onStartWorkflowFromComposer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('Workflow service is unavailable.'))
+      .mockResolvedValueOnce(undefined)
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+        })}
+        workflowDefinitions={[makeWorkflowDefinitionSummary()]}
+        onStartRuntimeRun={vi.fn(async () => makeRuntimeRun())}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+      />,
+    )
+
+    fireEvent.click(screen.getByRole('combobox', { name: 'Agent or Workflow selector' }))
+    fireEvent.click(await screen.findByRole('option', { name: /Release pipeline/i }))
+    const startButton = screen.getByRole('button', { name: 'Start Release pipeline' })
+    fireEvent.click(startButton)
+
+    expect(await screen.findByText('Workflow start failed')).toBeVisible()
+    expect(screen.getByText('Workflow service is unavailable.')).toBeVisible()
+    expect(startButton).toBeEnabled()
+
+    fireEvent.click(startButton)
+    await waitFor(() => expect(onStartWorkflowFromComposer).toHaveBeenCalledTimes(2))
+  })
+
+  it('preserves the draft when switching from a Workflow back to an Agent', async () => {
+    const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun())
+    const onStartWorkflowFromComposer = vi.fn(async () => undefined)
+
+    render(
+      <AgentRuntime
+        agent={makeAgent({
+          runtimeSession: makeRuntimeSession({ sessionId: 'session-1', isSignedOut: false }),
+          runtimeRun: null,
+          controlTruthSource: 'fallback',
+          composerModelOptions: [makeComposerModelOption()],
+        })}
+        workflowDefinitions={[makeWorkflowDefinitionSummary()]}
+        onStartRuntimeRun={onStartRuntimeRun}
+        onStartWorkflowFromComposer={onStartWorkflowFromComposer}
+      />,
+    )
+
+    const input = screen.getByLabelText('Agent input')
+    fireEvent.change(input, { target: { value: 'Keep this draft for the Agent.' } })
+
+    const targetSelector = screen.getByRole('combobox', {
+      name: 'Agent or Workflow selector',
+    })
+    fireEvent.click(targetSelector)
+    fireEvent.click(await screen.findByRole('option', { name: /Release pipeline/i }))
+
+    fireEvent.click(targetSelector)
+    fireEvent.click(await screen.findByRole('option', { name: 'Engineer' }))
+
+    expect(targetSelector).toHaveTextContent('Engineer')
+    expect(screen.getByLabelText('Agent input')).toHaveValue('Keep this draft for the Agent.')
+    fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
+
+    await waitFor(() =>
+      expect(onStartRuntimeRun).toHaveBeenCalledWith(
+        expect.objectContaining({
+          prompt: 'Keep this draft for the Agent.',
+          controls: expect.objectContaining({ runtimeAgentId: 'engineer' }),
+        }),
+      ),
+    )
+    expect(onStartWorkflowFromComposer).not.toHaveBeenCalled()
   })
 
   it('renders Agent Create as a built-in suggest-only composer agent', () => {
@@ -5938,7 +6317,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent Create')
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent('Agent Create')
     expect(screen.queryByRole('combobox', { name: 'Approval mode selector' })).not.toBeInTheDocument()
   })
 
@@ -5958,7 +6337,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent Create')
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent('Agent Create')
     expect(onConsumed).toHaveBeenCalled()
   })
 
@@ -5994,7 +6373,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent(
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent(
       'Security Reviewer',
     )
     expect(onConsumed).toHaveBeenCalled()
@@ -6013,7 +6392,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent')
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent('Agent')
     expect(window.localStorage.getItem(COMPOSER_SETTINGS_STORAGE_KEY)).toBeNull()
   })
 
@@ -6031,7 +6410,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Agent Create')
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent('Agent Create')
     expect(window.localStorage.getItem(COMPOSER_SETTINGS_STORAGE_KEY)).toBeNull()
   })
 
@@ -6078,7 +6457,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent('Debug')
     expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toHaveTextContent('Claude 3.5 Haiku')
     expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toHaveTextContent('Low')
     fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
@@ -6153,7 +6532,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    expect(screen.getByRole('combobox', { name: 'Agent selector' })).toHaveTextContent('Debug')
+    expect(screen.getByRole('combobox', { name: 'Agent or Workflow selector' })).toHaveTextContent('Debug')
     expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toHaveTextContent('Grok 4.3')
     expect(screen.getByRole('combobox', { name: 'Model and thinking selector' })).toHaveTextContent('Low')
     fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
@@ -6189,7 +6568,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    fireEvent.click(screen.getByRole('combobox', { name: 'Agent selector' }))
+    fireEvent.click(screen.getByRole('combobox', { name: 'Agent or Workflow selector' }))
     fireEvent.click(await screen.findByRole('option', { name: /Engineer/i }))
     fireEvent.click(screen.getByRole('button', { name: 'Composer settings' }))
     fireEvent.click(screen.getByRole('combobox', { name: 'Approval mode' }))
@@ -6385,7 +6764,7 @@ describe('AgentRuntime current UI', () => {
     expect(onUpdateRuntimeRunControls).not.toHaveBeenCalled()
   })
 
-  it.skip('starts a run with the draft prompt and current projected controls, then clears the draft after acknowledgement', async () => {
+  it('starts a run with the draft prompt and current projected controls, then clears the draft after acknowledgement', async () => {
     const onStartRuntimeRun = vi.fn(async () => makeRuntimeRun())
     const { rerender } = render(
       <AgentRuntime
@@ -6394,8 +6773,10 @@ describe('AgentRuntime current UI', () => {
           runtimeRun: null,
           controlTruthSource: 'fallback',
           selectedModelId: 'openai_codex',
+          selectedModelSelectionKey: 'openai_codex:openai_codex',
           selectedThinkingEffort: 'medium',
           selectedApprovalMode: 'suggest',
+          composerModelOptions: [makeComposerModelOption()],
         })}
         onStartRuntimeRun={onStartRuntimeRun}
       />,
@@ -6409,14 +6790,18 @@ describe('AgentRuntime current UI', () => {
     await waitFor(() =>
       expect(onStartRuntimeRun).toHaveBeenCalledWith({
         controls: {
-          providerProfileId: null,
+          runtimeAgentId: 'ask',
+          agentDefinitionId: null,
+          providerProfileId: 'openai_codex-default',
           modelId: 'openai_codex',
-          thinkingEffort: null,
+          thinkingEffort: 'medium',
           approvalMode: 'suggest',
           planModeRequired: false,
           autoCompactEnabled: true,
         },
         prompt: 'Kick off the first run.',
+        attachments: undefined,
+        linkedPaths: undefined,
       }),
     )
 
@@ -6429,8 +6814,10 @@ describe('AgentRuntime current UI', () => {
           selectedRuntimeAgentId: 'engineer',
           selectedRuntimeAgentLabel: 'Engineer',
           selectedModelId: 'openai_codex',
+          selectedModelSelectionKey: 'openai_codex:openai_codex',
           selectedThinkingEffort: 'medium',
           selectedApprovalMode: 'suggest',
+          composerModelOptions: [makeComposerModelOption()],
           selectedPrompt: {
             text: 'Kick off the first run.',
             queuedAt: '2026-04-20T12:05:00Z',
@@ -6479,7 +6866,7 @@ describe('AgentRuntime current UI', () => {
     await waitFor(() => expect(screen.getByLabelText('Agent input unavailable')).toHaveValue(''))
   })
 
-  it.skip('binds a ready provider profile and starts the first run from the send button', async () => {
+  it('binds a ready provider profile and starts the first run from the send button', async () => {
     const onStartRuntimeSession = vi.fn(async () =>
       makeRuntimeSession({
         runtimeKind: 'openrouter',
@@ -6505,7 +6892,25 @@ describe('AgentRuntime current UI', () => {
           selectedProviderId: 'openrouter',
           selectedProviderLabel: 'OpenRouter',
           selectedModelId: 'openai/gpt-4.1-mini',
+          selectedModelSelectionKey: 'openrouter:openai/gpt-4.1-mini',
           selectedThinkingEffort: 'medium',
+          composerModelOptions: [
+            makeComposerModelOption({
+              selectionKey: 'openrouter:openai/gpt-4.1-mini',
+              profileId: 'openrouter-default',
+              providerId: 'openrouter',
+              providerLabel: 'OpenRouter',
+              modelId: 'openai/gpt-4.1-mini',
+              displayName: 'OpenAI GPT-4.1 Mini',
+              thinking: {
+                supported: true,
+                effortOptions: ['low', 'medium', 'high'],
+                defaultEffort: 'medium',
+              },
+              thinkingEffortOptions: ['low', 'medium', 'high'],
+              defaultThinkingEffort: 'medium',
+            }),
+          ],
           providerModelCatalog: makeProviderModelCatalog({
             profileId: 'openrouter-default',
             profileLabel: 'OpenRouter',
@@ -6544,11 +6949,17 @@ describe('AgentRuntime current UI', () => {
     })
     fireEvent.click(screen.getByRole('button', { name: 'Send message' }))
 
-    await waitFor(() => expect(onStartRuntimeSession).toHaveBeenCalledTimes(1))
+    await waitFor(() =>
+      expect(onStartRuntimeSession).toHaveBeenCalledWith({
+        providerProfileId: 'openrouter-default',
+      }),
+    )
     await waitFor(() =>
       expect(onStartRuntimeRun).toHaveBeenCalledWith({
         controls: {
-          providerProfileId: null,
+          runtimeAgentId: 'ask',
+          agentDefinitionId: null,
+          providerProfileId: 'openrouter-default',
           modelId: 'openai/gpt-4.1-mini',
           thinkingEffort: 'medium',
           approvalMode: 'suggest',
@@ -6556,6 +6967,8 @@ describe('AgentRuntime current UI', () => {
           autoCompactEnabled: true,
         },
         prompt: 'Build the provider path.',
+        attachments: undefined,
+        linkedPaths: undefined,
       }),
     )
   })
@@ -6696,7 +7109,7 @@ describe('AgentRuntime current UI', () => {
       />,
     )
 
-    const agentSelector = screen.getByRole('combobox', { name: 'Agent selector' })
+    const agentSelector = screen.getByRole('combobox', { name: 'Agent or Workflow selector' })
     expect(agentSelector).not.toBeDisabled()
 
     fireEvent.click(agentSelector)

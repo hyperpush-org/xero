@@ -47,9 +47,15 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
 
     let canonical_root = fs::canonicalize(&repo_root).expect("canonical repo root");
     let root_path_string = canonical_root.to_string_lossy().into_owned();
+    let fixture_id = root
+        .path()
+        .file_name()
+        .expect("workflow-agent fixture root name")
+        .to_string_lossy()
+        .replace('.', "");
     let repository = CanonicalRepository {
-        project_id: "project-workflow-agents".into(),
-        repository_id: "repo-workflow-agents".into(),
+        project_id: format!("project-workflow-agents-{fixture_id}"),
+        repository_id: format!("repo-workflow-agents-{fixture_id}"),
         root_path: canonical_root.clone(),
         root_path_string: root_path_string.clone(),
         common_git_dir: canonical_root.join(".git"),
