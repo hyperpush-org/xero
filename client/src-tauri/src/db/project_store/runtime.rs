@@ -585,7 +585,7 @@ pub fn upsert_runtime_run(
             serialize_runtime_run_control_state(&expected.control_state)?;
         let matches = existing.as_ref().is_some_and(|row| {
             row.run_id == expected.run_id
-                && row.status == runtime_run_status_sql_value(&expected.status)
+                && runtime_run_status_matches_write_expectation(&row.status, &expected.status)
                 && row.last_checkpoint_sequence == expected.last_checkpoint_sequence
                 && row.control_state_json.as_deref() == Some(expected_control_state_json.as_str())
                 && row.updated_at == expected.updated_at
@@ -2446,6 +2446,15 @@ fn runtime_run_status_sql_value(value: &RuntimeRunStatus) -> &'static str {
     }
 }
 
+fn runtime_run_status_matches_write_expectation(
+    stored_status: &str,
+    expected_status: &RuntimeRunStatus,
+) -> bool {
+    stored_status == runtime_run_status_sql_value(expected_status)
+        || (*expected_status == RuntimeRunStatus::Stale
+            && matches!(stored_status, "starting" | "running"))
+}
+
 fn runtime_run_approval_mode_sql_value(value: &RuntimeRunApprovalModeDto) -> &'static str {
     match value {
         RuntimeRunApprovalModeDto::Suggest => "suggest",
@@ -2917,5 +2926,21 @@ mod queued_prompt_identity_tests {
         )
         .expect_err("stale status writer must lose");
         assert_eq!(error.code, "runtime_run_write_conflict");
+    }
+
+    #[test]
+    fn derived_stale_snapshot_can_win_cas_against_unchanged_running_row() {
+        assert!(runtime_run_status_matches_write_expectation(
+            "running",
+            &RuntimeRunStatus::Stale
+        ));
+        assert!(runtime_run_status_matches_write_expectation(
+            "starting",
+            &RuntimeRunStatus::Stale
+        ));
+        assert!(!runtime_run_status_matches_write_expectation(
+            "failed",
+            &RuntimeRunStatus::Stale
+        ));
     }
 }

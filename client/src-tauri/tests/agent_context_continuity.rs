@@ -542,7 +542,7 @@ fn context_manifest_persists_without_provider_call_and_retrieval_logs_round_trip
 }
 
 #[test]
-fn handoff_lineage_requires_same_type_and_deduplicates_by_idempotency_key() {
+fn handoff_lineage_supports_cross_agent_targets_and_deduplicates_by_idempotency_key() {
     let root = tempfile::tempdir().expect("temp dir");
     let (project_id, repo_root) = seed_project(&root);
     seed_agent_run(&repo_root, &project_id, "run-handoff-source");
@@ -591,21 +591,39 @@ fn handoff_lineage_requires_same_type_and_deduplicates_by_idempotency_key() {
     assert_eq!(duplicate.handoff_id, "handoff-1");
     assert_eq!(duplicate.id, inserted.id);
 
-    let mismatch = project_store::insert_agent_handoff_lineage(
+    project_store::update_agent_handoff_lineage(
+        &repo_root,
+        &project_store::AgentHandoffLineageUpdateRecord {
+            project_id: project_id.clone(),
+            handoff_id: inserted.handoff_id.clone(),
+            target_agent_session_id: None,
+            target_run_id: None,
+            status: project_store::AgentHandoffLineageStatus::Failed,
+            handoff_record_id: None,
+            bundle: inserted.bundle.clone(),
+            diagnostic: Some(json!({"reason": "fixture completed"})),
+            updated_at: "2026-05-01T12:04:01Z".into(),
+            completed_at: Some("2026-05-01T12:04:01Z".into()),
+        },
+    )
+    .expect("close the first handoff before starting another source transition");
+
+    let cross_agent = project_store::insert_agent_handoff_lineage(
         &repo_root,
         &project_store::NewAgentHandoffLineageRecord {
             target_runtime_agent_id: RuntimeAgentIdDto::Engineer,
             target_agent_definition_id: "engineer".into(),
             idempotency_key: "source-run-context-engineer".into(),
-            handoff_id: "handoff-invalid".into(),
+            handoff_id: "handoff-cross-agent".into(),
             ..record
         },
     )
-    .expect_err("cross-agent handoff should be rejected");
+    .expect("cross-agent handoff lineage is supported");
     assert_eq!(
-        mismatch.code,
-        "agent_handoff_lineage_target_definition_mismatch"
+        cross_agent.target_runtime_agent_id,
+        RuntimeAgentIdDto::Engineer
     );
+    assert_eq!(cross_agent.target_agent_definition_id, "engineer");
 }
 
 #[test]
@@ -1133,16 +1151,38 @@ fn phase5_provider_turn_manifests_use_tools_first_context_for_all_agents() {
             provider_preflight: None,
         })
         .expect("run owned agent task");
-        assert_eq!(
-            snapshot.run.status,
+        let expected_status = if runtime_agent_id == RuntimeAgentIdDto::Ask {
             project_store::AgentRunStatus::Completed
-        );
+        } else {
+            project_store::AgentRunStatus::Failed
+        };
+        assert_eq!(snapshot.run.status, expected_status);
+        if runtime_agent_id != RuntimeAgentIdDto::Ask {
+            assert_eq!(
+                snapshot
+                    .run
+                    .last_error
+                    .as_ref()
+                    .map(|error| error.code.as_str()),
+                Some("agent_stage_incomplete")
+            );
+        }
 
         let manifests =
             project_store::list_agent_context_manifests_for_run(&repo_root, &project_id, &run_id)
                 .expect("list provider context manifests");
-        assert_eq!(manifests.len(), 1);
-        let manifest = &manifests[0];
+        assert_eq!(
+            manifests.len(),
+            if runtime_agent_id == RuntimeAgentIdDto::Ask {
+                1
+            } else {
+                2
+            }
+        );
+        let manifest = manifests
+            .iter()
+            .find(|manifest| manifest.manifest["turnIndex"].as_u64() == Some(0))
+            .expect("first provider-turn manifest");
         assert_eq!(
             manifest.request_kind,
             project_store::AgentContextManifestRequestKind::ProviderTurn
@@ -1617,6 +1657,7 @@ fn phase4_handoff_orchestrator_hands_off_long_runs_to_same_type_targets() {
             repo_root: repo_root.clone(),
             project_id: project_id.clone(),
             run_id: source_run_id.clone(),
+            continuation_request_id: format!("continuation-{source_run_id}"),
             prompt: pending_prompt.clone(),
             attachments: Vec::new(),
             linked_paths: Vec::new(),
@@ -1634,11 +1675,42 @@ fn phase4_handoff_orchestrator_hands_off_long_runs_to_same_type_targets() {
 
         assert_ne!(target.run.run_id, source_run_id);
         assert_eq!(target.run.runtime_agent_id, runtime_agent_id);
-        assert_eq!(target.run.status, project_store::AgentRunStatus::Completed);
-        assert!(target
-            .messages
-            .iter()
-            .any(|message| message.role == project_store::AgentMessageRole::Assistant));
+        let expected_status = if runtime_agent_id == RuntimeAgentIdDto::Ask {
+            project_store::AgentRunStatus::Completed
+        } else {
+            project_store::AgentRunStatus::Failed
+        };
+        assert_eq!(
+            target.run.status, expected_status,
+            "unexpected handoff target state for {runtime_agent_id:?}: {:?}",
+            target.run.last_error
+        );
+        if runtime_agent_id != RuntimeAgentIdDto::Ask {
+            assert_eq!(
+                target
+                    .run
+                    .last_error
+                    .as_ref()
+                    .map(|error| error.code.as_str()),
+                Some("agent_stage_incomplete")
+            );
+        }
+        if runtime_agent_id == RuntimeAgentIdDto::Ask {
+            assert!(target
+                .messages
+                .iter()
+                .any(|message| message.role == project_store::AgentMessageRole::Assistant));
+        } else {
+            assert!(target.events.iter().any(|event| {
+                event.event_kind == project_store::AgentRunEventKind::AssistantCandidate
+                    && serde_json::from_str::<serde_json::Value>(&event.payload_json)
+                        .ok()
+                        .is_some_and(|payload| {
+                            payload["state"] == "superseded"
+                                && payload["disposition"] == "stage_gate"
+                        })
+            }));
+        }
         assert!(target.messages.iter().any(|message| {
             message.role == project_store::AgentMessageRole::Developer
                 && message.content.contains("Xero durable handoff context")
@@ -1813,6 +1885,7 @@ fn phase8_handoff_recovers_from_pending_lineage_after_simulated_crash() {
         repo_root: repo_root.clone(),
         project_id: project_id.clone(),
         run_id: source_run_id.clone(),
+        continuation_request_id: "continuation-phase8-crash-handoff".into(),
         prompt: pending_prompt.clone(),
         attachments: Vec::new(),
         linked_paths: Vec::new(),

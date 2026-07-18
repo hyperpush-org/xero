@@ -1908,6 +1908,8 @@ fn validate_subject_kind(kind: &str) -> Result<(), CommandError> {
             | "external_integration"
             | "browser_control"
             | "destructive_write"
+            | "skill_runtime_tool"
+            | "attached_skill_context"
     ) {
         Ok(())
     } else {
@@ -2226,6 +2228,62 @@ mod tests {
             .expect("review requirements")
             .iter()
             .any(|requirement| requirement["requirementId"] == json!("durable_context_review")));
+    }
+
+    #[test]
+    fn skill_capability_subjects_support_audit_and_revocation_queries() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "project-skill-capability-subjects";
+        create_project_database(&repo_root, project_id);
+
+        for (index, subject_kind) in ["skill_runtime_tool", "attached_skill_context"]
+            .into_iter()
+            .enumerate()
+        {
+            let subject_id = format!("fixture-skill-{index}");
+            let created_at = format!("2026-05-09T00:0{index}:00Z");
+            let revocation = revoke_agent_capability(
+                &repo_root,
+                &NewAgentCapabilityRevocationRecord {
+                    revocation_id: agent_capability_revocation_id(
+                        project_id,
+                        subject_kind,
+                        &subject_id,
+                    ),
+                    project_id: project_id.into(),
+                    subject_kind: subject_kind.into(),
+                    subject_id: subject_id.clone(),
+                    scope: json!({ "fixture": true }),
+                    reason: "Fixture capability revocation.".into(),
+                    created_by: "test-user".into(),
+                    created_at,
+                },
+            )
+            .unwrap_or_else(|error| panic!("{subject_kind} should be revocable: {error:?}"));
+
+            assert_eq!(revocation.subject_kind, subject_kind);
+            assert!(load_active_agent_capability_revocation(
+                &repo_root,
+                project_id,
+                subject_kind,
+                &subject_id,
+            )
+            .expect("load active skill capability revocation")
+            .is_some());
+            assert_eq!(
+                list_agent_runtime_audit_events_for_subject(
+                    &repo_root,
+                    project_id,
+                    subject_kind,
+                    &subject_id,
+                )
+                .expect("list skill capability audit events")
+                .len(),
+                1,
+            );
+        }
     }
 
     #[test]

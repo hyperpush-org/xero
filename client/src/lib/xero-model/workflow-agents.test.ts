@@ -13,6 +13,8 @@ import {
   resolveAgentAuthoringSkillRequestSchema,
   searchAgentAuthoringSkillsRequestSchema,
   searchAgentAuthoringSkillsResponseSchema,
+  setAgentDefaultModelRequestSchema,
+  setAgentDefaultModelResponseSchema,
   workflowAgentDetailSchema,
 } from './workflow-agents'
 
@@ -140,6 +142,95 @@ const availableAttachedRustSkill = {
 } as const
 
 describe('workflow agent model contracts', () => {
+  it('parses built-in and custom agent default-model writes and resets', () => {
+    expect(
+      setAgentDefaultModelRequestSchema.parse({
+        projectId: ' project-1 ',
+        ref: {
+          kind: 'built_in',
+          runtimeAgentId: 'engineer',
+          version: 1,
+        },
+        defaultModel: {
+          providerId: ' anthropic ',
+          providerProfileId: ' work ',
+          modelId: ' claude-sonnet-4-5 ',
+          selectionKey: ' anthropic:claude-sonnet-4-5 ',
+          thinkingEffort: 'high',
+        },
+      }),
+    ).toEqual({
+      projectId: 'project-1',
+      ref: {
+        kind: 'built_in',
+        runtimeAgentId: 'engineer',
+        version: 1,
+      },
+      defaultModel: {
+        providerId: 'anthropic',
+        providerProfileId: 'work',
+        modelId: 'claude-sonnet-4-5',
+        selectionKey: 'anthropic:claude-sonnet-4-5',
+        thinkingEffort: 'high',
+      },
+    })
+
+    expect(
+      setAgentDefaultModelRequestSchema.parse({
+        projectId: 'project-1',
+        ref: {
+          kind: 'custom',
+          definitionId: ' custom-reviewer ',
+          version: 3,
+        },
+        defaultModel: null,
+      }),
+    ).toEqual({
+      projectId: 'project-1',
+      ref: {
+        kind: 'custom',
+        definitionId: 'custom-reviewer',
+        version: 3,
+      },
+      defaultModel: null,
+    })
+
+    expect(
+      setAgentDefaultModelResponseSchema.parse({
+        defaultModel: null,
+      }),
+    ).toEqual({ defaultModel: null })
+  })
+
+  it('rejects invalid agent default-model command identities', () => {
+    for (const request of [
+      {
+        projectId: '',
+        ref: { kind: 'built_in', runtimeAgentId: 'engineer', version: 1 },
+      },
+      {
+        projectId: 'project-1',
+        ref: { kind: 'built_in', runtimeAgentId: 'engineer', version: 0 },
+      },
+      {
+        projectId: 'project-1',
+        ref: { kind: 'custom', definitionId: ' ', version: 1 },
+      },
+      {
+        projectId: 'project-1',
+        ref: { kind: 'custom', definitionId: 'reviewer', version: 1 },
+        defaultModel: { providerId: '', modelId: 'model' },
+      },
+      {
+        projectId: 'project-1',
+        ref: { kind: 'custom', definitionId: 'reviewer', version: 1 },
+        defaultModel: { providerId: 'provider', modelId: 'model', unexpected: true },
+      },
+    ]) {
+      expect(setAgentDefaultModelRequestSchema.safeParse(request).success).toBe(false)
+    }
+  })
+
   it('accepts a scoped authoring skill search query', () => {
     expect(
       getAgentAuthoringCatalogRequestSchema.parse({

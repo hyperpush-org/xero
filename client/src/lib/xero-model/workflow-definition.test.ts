@@ -4,6 +4,7 @@ import gsdAutoDefinitionFixture from '../../../test-fixtures/workflows/gsd_auto.
 
 import {
   validateWorkflowDefinition,
+  workflowCollectionLoopControlsSchema,
   type WorkflowDefinitionDto,
   type WorkflowNodeDto,
 } from './workflow-definition'
@@ -132,6 +133,19 @@ function linearWorkflow(): WorkflowDefinitionDto {
 }
 
 describe('validateWorkflowDefinition', () => {
+  it('rejects collection resume paths that the runtime cannot write', () => {
+    for (const path of ['$', '$.from', '$.phase.from']) {
+      expect(
+        workflowCollectionLoopControlsSchema.safeParse({ fromInputPath: path }).success,
+      ).toBe(true)
+    }
+    for (const path of ['from', '$.', '$.phase..from', '$.phases[0]', '$.phase from']) {
+      expect(
+        workflowCollectionLoopControlsSchema.safeParse({ fromInputPath: path }).success,
+      ).toBe(false)
+    }
+  })
+
   it('accepts a linear workflow with a custom downstream agent', () => {
     const report = validateWorkflowDefinition(linearWorkflow())
 

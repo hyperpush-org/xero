@@ -53,12 +53,19 @@ export const getAgentHandoffContextSummaryRequestSchema = z
   })
   .strict()
   .superRefine((request, ctx) => {
-    if (!request.handoffId && !request.targetRunId && !request.sourceRunId) {
+    const selectors = [request.handoffId, request.targetRunId, request.sourceRunId].filter(Boolean)
+    if (selectors.length === 0) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
         path: ['handoffId'],
         message:
-          'Provide handoffId, targetRunId, or sourceRunId to look up a handoff context summary.',
+          'Provide exactly one of handoffId, targetRunId, or sourceRunId to look up a handoff context summary.',
+      })
+    } else if (selectors.length > 1) {
+      ctx.addIssue({
+        code: z.ZodIssueCode.custom,
+        path: ['handoffId'],
+        message: 'Provide only one of handoffId, targetRunId, or sourceRunId.',
       })
     }
   })

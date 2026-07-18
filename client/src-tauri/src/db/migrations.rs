@@ -2,7 +2,7 @@ use std::sync::LazyLock;
 
 use rusqlite_migration::{Migrations, M};
 
-pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 54;
+pub const PROJECT_DATABASE_SCHEMA_VERSION: i64 = 55;
 
 pub fn migrations() -> &'static Migrations<'static> {
     static MIGRATIONS: LazyLock<Migrations<'static>> = LazyLock::new(|| {
@@ -66,6 +66,10 @@ pub fn migrations() -> &'static Migrations<'static> {
             M::up(MIGRATION_043_AGENT_START_IDENTITY_AND_LEASE_BIRTH_SQL),
             M::up(MIGRATION_044_WORKFLOW_LEASE_OWNER_BIRTH_SQL),
             M::up(MIGRATION_045_AGENT_RECOVERY_PAYLOADS_SQL),
+            // Capability revocations gained the two skill-backed subject kinds.
+            // Project state is epoch-versioned, so older app-data is rebuilt
+            // from the current schema instead of carrying compatibility DDL.
+            M::up(NOOP_SCHEMA_VERSION_MARKER_SQL),
         ])
     });
 
@@ -1615,7 +1619,7 @@ const MIGRATION_017_AGENT_AUDIT_AND_REVOCATION_SQL: &str = r#"
         created_at TEXT NOT NULL,
         cleared_at TEXT,
         CHECK (revocation_id <> ''),
-        CHECK (subject_kind IN ('custom_agent', 'tool_pack', 'external_integration', 'browser_control', 'destructive_write')),
+        CHECK (subject_kind IN ('custom_agent', 'tool_pack', 'external_integration', 'browser_control', 'destructive_write', 'skill_runtime_tool', 'attached_skill_context')),
         CHECK (subject_id <> ''),
         CHECK (reason <> ''),
         CHECK (created_by <> ''),
@@ -2677,7 +2681,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
         created_at TEXT NOT NULL,
         cleared_at TEXT,
         CHECK (revocation_id <> ''),
-        CHECK (subject_kind IN ('custom_agent', 'tool_pack', 'external_integration', 'browser_control', 'destructive_write')),
+        CHECK (subject_kind IN ('custom_agent', 'tool_pack', 'external_integration', 'browser_control', 'destructive_write', 'skill_runtime_tool', 'attached_skill_context')),
         CHECK (subject_id <> ''),
         CHECK (reason <> ''),
         CHECK (created_by <> ''),

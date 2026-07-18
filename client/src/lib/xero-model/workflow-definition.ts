@@ -434,11 +434,20 @@ export type WorkflowStateWriteOperationDto = z.infer<
   typeof workflowStateWriteOperationSchema
 >
 
+const workflowCollectionResumeInputPathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .regex(
+    /^\$(?:\.[^.\[\]\s]+)*$/,
+    'Collection loop resume paths must use $ or object fields such as $.phase.from; array indexes are not supported.',
+  )
+
 export const workflowCollectionLoopControlsSchema = z
   .object({
-    fromInputPath: z.string().trim().min(1).nullable().optional(),
-    toInputPath: z.string().trim().min(1).nullable().optional(),
-    onlyInputPath: z.string().trim().min(1).nullable().optional(),
+    fromInputPath: workflowCollectionResumeInputPathSchema.nullable().optional(),
+    toInputPath: workflowCollectionResumeInputPathSchema.nullable().optional(),
+    onlyInputPath: workflowCollectionResumeInputPathSchema.nullable().optional(),
   })
   .strict()
 export type WorkflowCollectionLoopControlsDto = z.infer<

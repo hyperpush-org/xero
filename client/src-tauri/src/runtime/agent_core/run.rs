@@ -1704,6 +1704,15 @@ pub fn prepare_owned_agent_continuation_for_drive(
     validate_prompt(&request.prompt)?;
     validate_continuation_request_id(&request.continuation_request_id)?;
     let continuation_payload_hash = continuation_request_payload_hash(request)?;
+    if let Some(existing) = project_store::load_agent_continuation_request_by_id(
+        &request.repo_root,
+        &request.project_id,
+        &request.continuation_request_id,
+    )? {
+        if existing.run_id != request.run_id {
+            return replay_handoff_target_continuation(request, existing);
+        }
+    }
     if let Some(mut existing) = project_store::load_agent_continuation_preparation(
         &request.repo_root,
         &request.project_id,
@@ -1896,6 +1905,97 @@ pub fn prepare_owned_agent_continuation_for_drive(
         drive_request: request.clone(),
         drive_required,
         handoff: None,
+        drive_lease: None,
+    })
+}
+
+fn replay_handoff_target_continuation(
+    request: &ContinueOwnedAgentRunRequest,
+    mut existing: project_store::AgentContinuationRequestRecord,
+) -> CommandResult<PreparedOwnedAgentContinuation> {
+    let conflict = || {
+        CommandError::user_fixable(
+            "agent_continuation_request_conflict",
+            format!(
+                "Continuation request `{}` was already used with different run input. Retry with its original payload or submit a new request id.",
+                request.continuation_request_id
+            ),
+        )
+    };
+    let source_snapshot =
+        project_store::load_agent_run(&request.repo_root, &request.project_id, &request.run_id)?;
+    let lineage = project_store::get_agent_handoff_lineage_by_target_run(
+        &request.repo_root,
+        &request.project_id,
+        &existing.run_id,
+    )?
+    .filter(|lineage| lineage.source_run_id == request.run_id)
+    .ok_or_else(&conflict)?;
+    let target = resolve_handoff_target_selection(request, &source_snapshot)?;
+    if lineage.target_runtime_agent_id != target.runtime_agent_id
+        || lineage.target_agent_definition_id != target.agent_definition_id
+        || lineage.target_agent_definition_version != target.agent_definition_version
+    {
+        return Err(conflict());
+    }
+    let target_request =
+        request_for_handoff_target(request, &source_snapshot, &target, &existing.run_id);
+    if continuation_request_payload_hash(&target_request)? != existing.payload_hash {
+        return Err(conflict());
+    }
+    decode_owned_agent_continuation_recovery_payload(&existing)?;
+
+    if existing.state == project_store::AgentContinuationRequestState::Driving {
+        existing = project_store::reconcile_completed_agent_continuation(
+            &request.repo_root,
+            &request.project_id,
+            &target_request.run_id,
+            &request.continuation_request_id,
+            &now_timestamp(),
+        )?
+        .ok_or_else(|| {
+            CommandError::system_fault(
+                "agent_continuation_request_missing",
+                "The handoff target continuation disappeared during completion reconciliation.",
+            )
+        })?;
+    }
+    let lineage = project_store::reconcile_agent_handoff_lineage_record(
+        &request.repo_root,
+        &lineage,
+        &now_timestamp(),
+    )?;
+    let snapshot = project_store::load_agent_run(
+        &request.repo_root,
+        &request.project_id,
+        &target_request.run_id,
+    )?;
+    let snapshot = if existing.state == project_store::AgentContinuationRequestState::Prepared {
+        finish_post_commit_continuation_preparation(&target_request, &snapshot)?
+    } else {
+        snapshot
+    };
+    let drive_required = existing.state == project_store::AgentContinuationRequestState::Prepared
+        && snapshot.run.status == AgentRunStatus::Running;
+    let handoff_record_id = lineage.handoff_record_id.clone().ok_or_else(|| {
+        CommandError::system_fault(
+            "agent_handoff_record_missing",
+            format!(
+                "Handoff `{}` has no durable project record after reconciliation.",
+                lineage.handoff_id
+            ),
+        )
+    })?;
+    Ok(PreparedOwnedAgentContinuation {
+        snapshot,
+        drive_request: target_request,
+        drive_required,
+        handoff: Some(PreparedAgentHandoff {
+            handoff_id: lineage.handoff_id,
+            source_run_id: lineage.source_run_id,
+            target_run_id: existing.run_id,
+            handoff_record_id,
+        }),
         drive_lease: None,
     })
 }
@@ -8490,6 +8590,33 @@ mod tests {
             message.role == AgentMessageRole::Developer
                 && message.content.contains("Xero durable handoff context")
         }));
+
+        let target_message_count = prepared.snapshot.messages.len();
+        let replay = prepare_owned_agent_continuation_for_drive(&request)
+            .expect("replay routed continuation against its handoff target");
+        let replay_handoff = replay.handoff.expect("replay preserves handoff metadata");
+        assert_eq!(replay.snapshot.run.run_id, prepared.snapshot.run.run_id);
+        assert_eq!(replay_handoff.handoff_id, handoff.handoff_id);
+        assert_eq!(replay_handoff.target_run_id, handoff.target_run_id);
+        assert_eq!(replay.snapshot.messages.len(), target_message_count);
+        assert!(replay.drive_required);
+        assert_eq!(
+            project_store::list_agent_handoff_lineage_for_source(
+                &repo_root,
+                project_id,
+                source_run_id,
+            )
+            .expect("list replayed handoff lineage")
+            .len(),
+            1
+        );
+
+        let conflict = prepare_owned_agent_continuation_for_drive(&ContinueOwnedAgentRunRequest {
+            prompt: "A different accepted routing prompt with the same request id.".into(),
+            ..request
+        })
+        .expect_err("handoff replay with different input must conflict");
+        assert_eq!(conflict.code, "agent_continuation_request_conflict");
     }
 
     #[test]

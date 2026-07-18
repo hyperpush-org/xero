@@ -2364,7 +2364,11 @@ pub(crate) fn prompt_relevant_paths_from_provider_messages(
 }
 
 fn collect_explicit_prompt_paths(repo_root: &Path, content: &str, paths: &mut BTreeSet<String>) {
-    for candidate in content.split('`').skip(1).step_by(2) {
+    let unfenced_content = markdown_without_fenced_code_blocks(content);
+    for candidate in unfenced_content.split('`').skip(1).step_by(2) {
+        if candidate.contains('\n') || candidate.contains('\r') {
+            continue;
+        }
         if let Some(path) =
             normalize_relevant_prompt_path(repo_root, trim_serialized_prompt_path_suffix(candidate))
                 .ok()
@@ -2373,7 +2377,7 @@ fn collect_explicit_prompt_paths(repo_root: &Path, content: &str, paths: &mut BT
             paths.insert(path);
         }
     }
-    for candidate in content.split(|character: char| {
+    for candidate in unfenced_content.split(|character: char| {
         character.is_whitespace()
             || matches!(
                 character,
@@ -2391,6 +2395,41 @@ fn collect_explicit_prompt_paths(repo_root: &Path, content: &str, paths: &mut BT
             paths.insert(path);
         }
     }
+}
+
+fn markdown_without_fenced_code_blocks(content: &str) -> String {
+    let mut unfenced = String::with_capacity(content.len());
+    let mut active_fence: Option<(char, usize)> = None;
+    for line in content.split_inclusive('\n') {
+        let trimmed = line.trim_start();
+        let fence_character = trimmed
+            .chars()
+            .next()
+            .filter(|character| matches!(character, '`' | '~'));
+        let fence_length = fence_character
+            .map(|character| {
+                trimmed
+                    .chars()
+                    .take_while(|candidate| *candidate == character)
+                    .count()
+            })
+            .unwrap_or_default();
+        match active_fence {
+            None if fence_length >= 3 => {
+                active_fence = fence_character.map(|character| (character, fence_length));
+            }
+            Some((character, minimum_length))
+                if fence_character == Some(character)
+                    && fence_length >= minimum_length
+                    && trimmed[fence_length..].trim().is_empty() =>
+            {
+                active_fence = None;
+            }
+            Some(_) => {}
+            None => unfenced.push_str(line),
+        }
+    }
+    unfenced
 }
 
 fn trim_serialized_prompt_path_suffix(mut candidate: &str) -> &str {
@@ -10403,6 +10442,28 @@ mod tests {
         let relevant_paths = prompt_relevant_paths_from_provider_messages(root.path(), &messages);
 
         assert_eq!(relevant_paths, BTreeSet::from(["client".to_string()]));
+    }
+
+    #[test]
+    fn fenced_handoff_payload_does_not_seed_repository_instruction_paths() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let messages = vec![ProviderMessage::Developer {
+            content: concat!(
+                "Xero durable handoff context.\n\n",
+                "```json\n",
+                "{\"path\":\"server/private.rs\",\"summary\":\"not/a/real/path\"}\n",
+                "```\n\n",
+                "The current task explicitly targets `client/src/main.rs`."
+            )
+            .into(),
+        }];
+
+        let relevant_paths = prompt_relevant_paths_from_provider_messages(root.path(), &messages);
+
+        assert_eq!(
+            relevant_paths,
+            BTreeSet::from(["client/src/main.rs".to_string()])
+        );
     }
 
     #[test]

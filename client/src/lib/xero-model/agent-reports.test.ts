@@ -70,6 +70,13 @@ describe('agent report command contracts', () => {
     expect(() => getAgentHandoffContextSummaryRequestSchema.parse({ projectId })).toThrow(
       /handoffId, targetRunId, or sourceRunId/i,
     )
+    expect(() =>
+      getAgentHandoffContextSummaryRequestSchema.parse({
+        projectId,
+        handoffId,
+        targetRunId: 'run-target',
+      }),
+    ).toThrow(/only one/i)
     expect(getAgentSupportDiagnosticsBundleRequestSchema.parse({ projectId, runId }).runId).toBe(runId)
     expect(
       getCapabilityPermissionExplanationRequestSchema.parse({
@@ -77,6 +84,14 @@ describe('agent report command contracts', () => {
         subjectId: 'project_context_tools',
       }).subjectKind,
     ).toBe('tool_pack')
+    for (const subjectKind of ['skill_runtime_tool', 'attached_skill_context'] as const) {
+      expect(
+        getCapabilityPermissionExplanationRequestSchema.parse({
+          subjectKind,
+          subjectId: 'fixture-skill',
+        }).subjectKind,
+      ).toBe(subjectKind)
+    }
     expect(
       getAgentDatabaseTouchpointExplanationRequestSchema.parse({
         projectId,

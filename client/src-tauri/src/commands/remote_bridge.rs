@@ -4481,7 +4481,7 @@ mod tests {
     #[test]
     fn remote_session_summaries_follow_client_visible_project_filter() {
         let tempdir = tempfile::tempdir().expect("tempdir");
-        let registry_path = tempdir.path().join("xero.db");
+        let registry_path = tempdir.path().join("app-data").join("xero.db");
         let visible_root = tempdir.path().join("clippster-mono");
         let fixture_root = tempdir
             .path()

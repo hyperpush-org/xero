@@ -989,7 +989,7 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
     assert!(response
         .compaction
         .summary
-        .contains("Pending action requests are still unresolved"));
+        .contains("unresolved actions remain unresolved"));
     assert!(!response.compaction.summary.contains("sk-history-secret"));
     assert!(response
         .context_snapshot
@@ -1018,6 +1018,10 @@ fn manual_compact_persists_supersedes_and_preserves_raw_history() {
         .messages
         .iter()
         .any(|message| message.content.contains("sk-history-secret")));
+    assert!(raw_snapshot
+        .action_requests
+        .iter()
+        .any(|action| action.status == "pending"));
 
     let second = compact_session_history(
         app.handle().clone(),
@@ -1281,7 +1285,7 @@ fn rewind_agent_session_branches_from_message_and_checkpoint_boundaries() {
 }
 
 #[test]
-fn memory_extraction_and_context_injection_use_enabled_retrievable_memories() {
+fn memory_extraction_review_and_context_injection_use_approved_retrievable_memories() {
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_fake_provider_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -1303,16 +1307,16 @@ fn memory_extraction_and_context_injection_use_enabled_retrievable_memories() {
     assert!(extracted
         .diagnostics
         .iter()
-        .any(|diagnostic| diagnostic.code == "session_memory_candidate_low_confidence"));
+        .any(|diagnostic| diagnostic.code == "memory_promotion_gate_low_confidence"));
     assert!(extracted
         .diagnostics
         .iter()
         .any(|diagnostic| diagnostic.code == "session_memory_candidate_secret"));
     assert!(extracted.memories.iter().all(|memory| {
         validate_session_memory_record_contract(memory).is_ok()
-            && memory.enabled
-            && memory.retrievable
-            && memory.promotion_status == "approved_enabled"
+            && !memory.enabled
+            && !memory.retrievable
+            && memory.promotion_status == "pending"
     }));
     assert!(extracted.memories.iter().any(|memory| {
         memory.scope == SessionMemoryScopeDto::Project
@@ -1347,9 +1351,9 @@ fn memory_extraction_and_context_injection_use_enabled_retrievable_memories() {
     assert_eq!(review_queue["total"], json!(4));
     assert_eq!(review_queue["hasMore"], json!(true));
     assert_eq!(review_queue["nextOffset"], json!(2));
-    assert_eq!(review_queue["counts"]["enabled"], json!(4));
-    assert_eq!(review_queue["counts"]["disabled"], json!(0));
-    assert_eq!(review_queue["counts"]["retrievable"], json!(4));
+    assert_eq!(review_queue["counts"]["enabled"], json!(0));
+    assert_eq!(review_queue["counts"]["disabled"], json!(4));
+    assert_eq!(review_queue["counts"]["retrievable"], json!(0));
     assert_eq!(
         review_queue["items"]
             .as_array()
@@ -2218,6 +2222,7 @@ fn seed_runtime_only_run(
         queued_at: queued_at.clone(),
         queued_prompt: Some(prompt.into()),
         queued_prompt_at: Some(queued_at.clone()),
+        queued_prompt_continuation_request_id: Some(format!("continuation-{run_id}")),
         queued_attachments: Vec::new(),
         queued_linked_paths: Vec::new(),
     };
@@ -2263,6 +2268,7 @@ fn seed_runtime_only_run(
                 active,
                 pending: Some(pending),
             }),
+            expected_snapshot: None,
         },
     )
     .expect("seed failed runtime-only run");
@@ -2323,7 +2329,7 @@ fn seed_memory_candidate_run(repo_root: &Path, project_id: &str) {
         ),
         (
             project_store::AgentMessageRole::Assistant,
-            "Troubleshooting: If provider replay grows, compact before extracting.",
+            "Troubleshooting: Symptom: provider replay grows. Fix: compact before extracting.",
         ),
         (
             project_store::AgentMessageRole::Assistant,

@@ -402,6 +402,7 @@ fn validate_graph<'a>(
             }
             WorkflowNodeDto::CollectionLoop {
                 collection,
+                controls,
                 sort_key,
                 max_item_count,
                 ..
@@ -423,6 +424,19 @@ fn validate_graph<'a>(
                         format!("{node_path}.sortKey"),
                         "Collection loop sort keys must use a JSON path that starts with `$`.",
                     ));
+                }
+                for (field, path) in [
+                    ("fromInputPath", controls.from_input_path.as_deref()),
+                    ("toInputPath", controls.to_input_path.as_deref()),
+                    ("onlyInputPath", controls.only_input_path.as_deref()),
+                ] {
+                    if path.is_some_and(|path| !workflow_resume_control_input_path_valid(path)) {
+                        diagnostics.push(error(
+                            "collection_loop_control_input_path_invalid",
+                            format!("{node_path}.controls.{field}"),
+                            "Collection loop resume controls must use `$` or an object-field JSON path such as `$.phase.from`; array indexes are not supported.",
+                        ));
+                    }
                 }
             }
             WorkflowNodeDto::Subgraph { subgraph_id, .. } => {
@@ -581,6 +595,23 @@ fn validate_graph<'a>(
         &outgoing_edges,
         format!("{path_prefix}edges"),
     ));
+}
+
+fn workflow_resume_control_input_path_valid(path: &str) -> bool {
+    let path = path.trim();
+    if path == "$" {
+        return true;
+    }
+    let Some(path) = path.strip_prefix("$.") else {
+        return false;
+    };
+    !path.is_empty()
+        && path.split('.').all(|segment| {
+            !segment.is_empty()
+                && !segment
+                    .chars()
+                    .any(|character| character.is_whitespace() || matches!(character, '[' | ']'))
+        })
 }
 
 pub fn validate_workflow_definition_with_registry(
@@ -2271,5 +2302,45 @@ mod tests {
         let report = validate_workflow_definition(&definition);
 
         assert_eq!(report.status, WorkflowValidationStatusDto::Valid);
+    }
+
+    #[test]
+    fn validator_rejects_collection_resume_paths_the_runtime_cannot_write() {
+        for path in ["$", "$.from", "$.phase.from", "  $.phase.from  "] {
+            assert!(workflow_resume_control_input_path_valid(path), "{path}");
+        }
+        for path in ["from", "$.", "$.phase..from", "$.phase[0]", "$.phase from"] {
+            assert!(!workflow_resume_control_input_path_valid(path), "{path}");
+        }
+
+        let mut definition = linear_definition();
+        definition.nodes.push(
+            serde_json::from_value(json!({
+                "id": "invalid-loop",
+                "type": "collection_loop",
+                "title": "Invalid loop",
+                "description": "",
+                "position": { "x": 0, "y": 0 },
+                "collection": {
+                    "entityType": "delivery_phase",
+                    "filters": [],
+                    "includeArchived": false
+                },
+                "itemArtifactType": "collection_item",
+                "itemVariableName": "item",
+                "sortKey": "$.sortOrder",
+                "afterItemRequery": true,
+                "maxItemCount": 10,
+                "controls": { "fromInputPath": "$.phases[0]" }
+            }))
+            .expect("collection loop fixture"),
+        );
+
+        let report = validate_workflow_definition(&definition);
+
+        assert!(report.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == "collection_loop_control_input_path_invalid"
+                && diagnostic.path == "nodes.3.controls.fromInputPath"
+        }));
     }
 }

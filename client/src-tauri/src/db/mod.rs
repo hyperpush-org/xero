@@ -164,6 +164,8 @@ pub fn configure_project_database_paths(global_db_path: &Path) {
         .expect("project database path config lock poisoned");
     config.project_root = Some(project_root.clone());
     config.registry_path = Some(registry_path.clone());
+    config.project_id_to_database_path.clear();
+    config.repo_root_to_database_path.clear();
     drop(config);
 
     THREAD_PROJECT_DATABASE_PATH_CONFIG.with(|thread_config| {
@@ -1037,6 +1039,34 @@ mod tests {
         assert_eq!(synchronous, 1);
         assert_eq!(busy_timeout_ms, 5_000);
         assert_eq!(wal_autocheckpoint, 1_000);
+    }
+
+    #[test]
+    fn reconfiguring_app_data_clears_registered_project_database_paths() {
+        let tempdir = tempdir().expect("tempdir");
+        let first_root = tempdir.path().join("first");
+        let second_root = tempdir.path().join("second");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let first_registry = first_root.join("xero.db");
+        let first_project_database = first_root.join("projects/project-shared/state.db");
+        configure_project_database_paths(&first_registry);
+        register_project_database_path_for_project(
+            "project-shared",
+            &repo_root,
+            &first_project_database,
+        );
+        assert_eq!(
+            database_path_for_project("project-shared"),
+            first_project_database
+        );
+
+        configure_project_database_paths(&second_root.join("xero.db"));
+
+        assert_eq!(
+            database_path_for_project("project-shared"),
+            second_root.join("projects/project-shared/state.db")
+        );
     }
 
     #[test]

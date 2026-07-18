@@ -114,6 +114,7 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
     let mut verification_gate_prompt_count = 0_u8;
     let mut custom_output_contract_prompt_count = 0_u8;
     let mut subagent_resolution_prompt_count = 0_u8;
+    let mut stage_gate_reprompted_since_tool_turn = false;
     let mut harness_order_gate = HarnessTestOrderGate::for_controls(&controls);
 
     for turn_index in 0..MAX_PROVIDER_TURNS {
@@ -382,6 +383,13 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
                             &usage_total,
                         )?;
                     }
+                    if stage_gate_reprompted_since_tool_turn {
+                        return Err(CommandError::user_fixable(
+                            "agent_stage_incomplete",
+                            "The provider returned another final response without completing the active Stage checks.",
+                        ));
+                    }
+                    stage_gate_reprompted_since_tool_turn = true;
                     append_message(
                         repo_root,
                         project_id,
@@ -870,6 +878,7 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
                     tool_calls,
                     active_repository_instruction_hashes,
                 )?;
+                stage_gate_reprompted_since_tool_turn = false;
                 for result in &batch.results {
                     record_plan_artifact_from_tool_result(repo_root, project_id, run_id, result)?;
                 }
@@ -12667,6 +12676,77 @@ mod tests {
                 (AssistantCandidateState::Accepted, None),
             ]
         );
+    }
+
+    #[test]
+    fn stage_gate_stops_repeated_final_responses_without_tool_progress() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .expect("project state test lock");
+        let run_id = "stage-gate-repeated-final";
+        let (_tempdir, repo_root, project_id, controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        let workflow_policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "inspect",
+                "phases": [{
+                    "id": "inspect",
+                    "title": "Inspect",
+                    "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                    "requiredChecks": [{
+                        "kind": "todo_completed",
+                        "todoId": "inspect_done"
+                    }]
+                }]
+            }
+        }))
+        .expect("workflow policy");
+        let tool_runtime = tool_runtime.with_agent_workflow_policy(Some(workflow_policy));
+        let stage_allowed_tools = [AUTONOMOUS_TOOL_TODO]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        let registry = ToolRegistry::for_tool_names_with_options(
+            stage_allowed_tools.clone(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                stage_allowed_tools: Some(stage_allowed_tools),
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let provider = ScriptedProvider::new(vec![
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+        ]);
+
+        let error = drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry,
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect_err("a repeated final response must not spin until the global turn limit");
+
+        assert_eq!(error.code, "agent_stage_incomplete");
+        assert_eq!(provider.captured_turn_indices(), vec![0, 1]);
     }
 
     #[test]

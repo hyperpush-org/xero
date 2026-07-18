@@ -578,13 +578,9 @@ fn incomplete_delivery_phase_record(record: &JsonValue) -> bool {
 }
 
 fn delivery_phase_resume_key(record: &JsonValue) -> Option<String> {
-    record
-        .get("phaseKey")
-        .or_else(|| record.get("phase_key"))
-        .or_else(|| record.get("id"))
-        .or_else(|| record.get("sortOrder"))
-        .or_else(|| record.get("sort_order"))
-        .and_then(json_value_to_resume_key)
+    ["phaseKey", "phase_key", "id", "sortOrder", "sort_order"]
+        .into_iter()
+        .find_map(|field| record.get(field).and_then(json_value_to_resume_key))
 }
 
 fn json_value_to_resume_key(value: &JsonValue) -> Option<String> {
@@ -599,6 +595,7 @@ fn json_value_to_resume_key(value: &JsonValue) -> Option<String> {
 }
 
 fn set_json_path_value(root: &mut JsonValue, path: &str, value: JsonValue) -> CommandResult<()> {
+    let path = path.trim();
     if path == "$" {
         *root = value;
         return Ok(());
@@ -610,21 +607,22 @@ fn set_json_path_value(root: &mut JsonValue, path: &str, value: JsonValue) -> Co
         )
     })?;
     let segments = path.split('.').collect::<Vec<_>>();
-    if segments.is_empty() || segments.iter().any(|segment| segment.trim().is_empty()) {
+    if segments.is_empty()
+        || segments.iter().any(|segment| {
+            segment.is_empty()
+                || segment
+                    .chars()
+                    .any(|character| character.is_whitespace() || matches!(character, '[' | ']'))
+        })
+    {
         return Err(CommandError::user_fixable(
             "workflow_resume_input_path_invalid",
-            "Workflow resume input paths must contain non-empty field segments.",
+            "Workflow resume input paths must contain non-empty object field segments without whitespace or array indexes.",
         ));
     }
 
     let mut cursor = root;
     for segment in &segments[..segments.len().saturating_sub(1)] {
-        if segment.contains('[') || segment.contains(']') {
-            return Err(CommandError::user_fixable(
-                "workflow_resume_input_path_invalid",
-                "Workflow resume input paths support object fields, not array indexes.",
-            ));
-        }
         if !cursor.is_object() {
             *cursor = serde_json::json!({});
         }
@@ -640,12 +638,6 @@ fn set_json_path_value(root: &mut JsonValue, path: &str, value: JsonValue) -> Co
     }
 
     let last = segments.last().expect("validated non-empty path segments");
-    if last.contains('[') || last.contains(']') {
-        return Err(CommandError::user_fixable(
-            "workflow_resume_input_path_invalid",
-            "Workflow resume input paths support object fields, not array indexes.",
-        ));
-    }
     if !cursor.is_object() {
         *cursor = serde_json::json!({});
     }
@@ -978,11 +970,14 @@ pub fn wipe_workflow_delivery_state<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
+    use std::cmp::Ordering;
     use std::sync::{Arc, Barrier};
 
     use super::*;
     use crate::{
-        commands::contracts::workflows::WorkflowRunPolicyDto,
+        commands::contracts::workflows::{
+            WorkflowEventDto, WorkflowRunNodeDto, WorkflowRunPolicyDto, WorkflowRunStatusDto,
+        },
         db::{
             configure_connection, migrations::migrations, register_project_database_path_for_tests,
         },
@@ -1065,6 +1060,76 @@ mod tests {
         let created = project_store::create_workflow_definition(temp.path(), &definition)
             .expect("create workflow");
         (temp, created)
+    }
+
+    fn run_node(
+        id: &str,
+        node_id: &str,
+        status: WorkflowNodeRunStatusDto,
+        updated_at: &str,
+        failure_class: Option<&str>,
+    ) -> WorkflowRunNodeDto {
+        WorkflowRunNodeDto {
+            id: id.into(),
+            workflow_run_id: "run-1".into(),
+            node_id: node_id.into(),
+            node_type: "agent".into(),
+            status,
+            attempt_number: 1,
+            runtime_run_id: None,
+            agent_session_id: None,
+            failure_class: failure_class.map(str::to_string),
+            started_at: None,
+            updated_at: updated_at.into(),
+            completed_at: None,
+            idempotency_key: format!("{id}-attempt-1"),
+        }
+    }
+
+    fn run_event(
+        id: &str,
+        node_run_id: Option<&str>,
+        event_type: &str,
+        event: JsonValue,
+    ) -> WorkflowEventDto {
+        WorkflowEventDto {
+            id: id.into(),
+            workflow_run_id: "run-1".into(),
+            node_run_id: node_run_id.map(str::to_string),
+            event_type: event_type.into(),
+            event,
+            created_at: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn workflow_run_fixture(
+        status: WorkflowRunStatusDto,
+        nodes: Vec<WorkflowRunNodeDto>,
+        events: Vec<WorkflowEventDto>,
+    ) -> WorkflowRunDto {
+        WorkflowRunDto {
+            id: "run-1".into(),
+            project_id: "project-1".into(),
+            workflow_version_id: "workflow-version-1".into(),
+            workflow_id: "workflow-1".into(),
+            workflow_version_number: 1,
+            status,
+            terminal_status: None,
+            definition_snapshot: definition_with_delivery_phase_loop(
+                WorkflowCollectionLoopControlsDto::default(),
+            ),
+            initial_input: None,
+            started_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+            completed_at: None,
+            cancellation_reason: None,
+            nodes,
+            edge_decisions: Vec::new(),
+            artifacts: Vec::new(),
+            gate_decisions: Vec::new(),
+            loop_attempts: Vec::new(),
+            events,
+        }
     }
 
     #[test]
@@ -1248,5 +1313,274 @@ mod tests {
         .expect_err("complete phases should not produce a resume input");
 
         assert_eq!(error.code, "workflow_no_incomplete_delivery_phase");
+    }
+
+    #[test]
+    fn required_run_input_validation_reports_labels_once_and_accepts_non_strings() {
+        let mut definition =
+            definition_with_delivery_phase_loop(WorkflowCollectionLoopControlsDto::default());
+        definition.nodes = vec![serde_json::from_value(json!({
+            "type": "agent",
+            "id": "agent-1",
+            "title": "Agent",
+            "agentRef": {
+                "kind": "built_in",
+                "runtimeAgentId": "ask",
+                "version": 1
+            },
+            "inputBindings": [
+                {
+                    "source": "run_input",
+                    "name": "goal",
+                    "required": true,
+                    "path": "$.payload.goal",
+                    "promptLabel": "Goal"
+                },
+                {
+                    "source": "run_input",
+                    "name": "duplicate_goal",
+                    "required": true,
+                    "path": "$.payload.duplicateGoal",
+                    "promptLabel": "Goal"
+                },
+                {
+                    "source": "run_input",
+                    "name": "approved",
+                    "required": true
+                },
+                {
+                    "source": "run_input",
+                    "name": "optional",
+                    "required": false
+                },
+                {
+                    "source": "artifact",
+                    "name": "prior",
+                    "artifactRef": "prior.output"
+                }
+            ]
+        }))
+        .expect("agent node fixture")];
+        definition.start_node_id = "agent-1".into();
+
+        let error = validate_workflow_initial_input(
+            &definition,
+            Some(&json!({
+                "payload": { "goal": "  ", "duplicateGoal": null },
+                "approved": false
+            })),
+        )
+        .expect_err("blank and null required inputs must be missing");
+        assert_eq!(error.code, "workflow_required_input_missing");
+        assert!(error.message.ends_with("required input is missing: Goal."));
+
+        validate_workflow_initial_input(
+            &definition,
+            Some(&json!({
+                "payload": { "goal": { "value": "ship" }, "duplicateGoal": 0 },
+                "approved": false
+            })),
+        )
+        .expect("objects, numbers, and booleans are present input values");
+
+        assert!(!workflow_input_value_present(&JsonValue::Null));
+        assert!(!workflow_input_value_present(&json!(" \n ")));
+        assert!(workflow_input_value_present(&json!([])));
+    }
+
+    #[test]
+    fn resume_input_path_writer_supports_root_and_nested_object_fields() {
+        let mut input = json!({ "phase": "stale", "keep": true });
+        set_json_path_value(&mut input, "  $.phase.from  ", json!("2")).expect("write nested path");
+        assert_eq!(input, json!({ "phase": { "from": "2" }, "keep": true }));
+
+        set_json_path_value(&mut input, "$", json!({ "replaced": true }))
+            .expect("replace root input");
+        assert_eq!(input, json!({ "replaced": true }));
+
+        let mut scalar = json!(false);
+        set_json_path_value(&mut scalar, "$.phase.only", json!(3))
+            .expect("replace scalar parents with objects");
+        assert_eq!(scalar, json!({ "phase": { "only": 3 } }));
+
+        for invalid_path in ["from", "$.", "$.phase..from", "$.items[0]", "$.phase from"] {
+            let error = set_json_path_value(&mut json!({}), invalid_path, json!(1))
+                .expect_err("unsupported resume path must fail");
+            assert_eq!(error.code, "workflow_resume_input_path_invalid");
+        }
+    }
+
+    #[test]
+    fn delivery_phase_helpers_cover_status_key_and_sort_variants() {
+        for status in ["complete", " COMPLETED ", "Archived"] {
+            assert!(!incomplete_delivery_phase_record(
+                &json!({ "status": status })
+            ));
+        }
+        assert!(incomplete_delivery_phase_record(
+            &json!({ "status": "running" })
+        ));
+        assert!(incomplete_delivery_phase_record(&json!({})));
+
+        assert_eq!(
+            delivery_phase_resume_key(&json!({ "phaseKey": " 3 " })),
+            Some("3".into())
+        );
+        assert_eq!(
+            delivery_phase_resume_key(&json!({ "phase_key": 4 })),
+            Some("4".into())
+        );
+        assert_eq!(
+            delivery_phase_resume_key(&json!({ "id": "phase-5" })),
+            Some("phase-5".into())
+        );
+        assert_eq!(
+            delivery_phase_resume_key(&json!({ "sortOrder": 6 })),
+            Some("6".into())
+        );
+        assert_eq!(
+            delivery_phase_resume_key(&json!({ "sort_order": 7 })),
+            Some("7".into())
+        );
+        assert_eq!(
+            delivery_phase_resume_key(&json!({ "phaseKey": "  " })),
+            None
+        );
+        assert_eq!(
+            delivery_phase_resume_key(&json!({ "phaseKey": null, "id": "phase-8" })),
+            Some("phase-8".into())
+        );
+        assert_eq!(
+            delivery_phase_resume_key(&json!({ "phaseKey": "  ", "id": "phase-9" })),
+            Some("phase-9".into())
+        );
+        assert_eq!(json_value_to_resume_key(&json!(true)), None);
+
+        assert_eq!(
+            compare_json_values_for_resume(Some(&json!(2)), Some(&json!(10))),
+            Ordering::Less,
+        );
+        assert_eq!(
+            compare_json_values_for_resume(Some(&json!("beta")), Some(&json!("alpha"))),
+            Ordering::Greater,
+        );
+        assert_eq!(
+            compare_json_values_for_resume(Some(&json!(1)), None),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_json_values_for_resume(None, Some(&json!(1))),
+            Ordering::Greater
+        );
+        assert_eq!(compare_json_values_for_resume(None, None), Ordering::Equal);
+        assert_eq!(json_sort_key(&json!({ "b": 2 })), "{\"b\":2}");
+    }
+
+    #[test]
+    fn next_incomplete_phase_selection_covers_fallback_and_invalid_records() {
+        let definition = definition_with_delivery_phase_loop(WorkflowCollectionLoopControlsDto {
+            from_input_path: None,
+            to_input_path: Some("$.to".into()),
+            only_input_path: Some("$.phase.only".into()),
+        });
+        let selection = next_incomplete_phase_resume_selection(
+            &definition,
+            None,
+            vec![json!({ "id": "phase-1", "status": "running" })],
+        )
+        .expect("only input path fallback");
+        assert_eq!(selection.input_path, "$.phase.only");
+        assert_eq!(selection.phase_key, "phase-1");
+        assert_eq!(
+            selection.initial_input,
+            json!({ "phase": { "only": "phase-1" } })
+        );
+
+        let error = next_incomplete_phase_resume_selection(
+            &definition,
+            None,
+            vec![json!({ "phaseKey": "1", "status": "running" })],
+        )
+        .expect_err("incomplete phase id is required");
+        assert_eq!(error.code, "workflow_delivery_phase_id_missing");
+
+        let mut missing_loop = definition;
+        missing_loop.nodes.clear();
+        let error = delivery_phase_collection_loop(&missing_loop)
+            .expect_err("delivery phase loop is required");
+        assert_eq!(error.code, "workflow_delivery_phase_loop_missing");
+    }
+
+    #[test]
+    fn workflow_blocker_prioritizes_human_failures_routes_and_fallback_status() {
+        let mut run = workflow_run_fixture(
+            WorkflowRunStatusDto::Running,
+            vec![
+                run_node(
+                    "failed-run",
+                    "failed-node",
+                    WorkflowNodeRunStatusDto::Failed,
+                    "2026-01-01T00:00:03Z",
+                    Some("provider_error"),
+                ),
+                run_node(
+                    "gate-old",
+                    "approval-old",
+                    WorkflowNodeRunStatusDto::WaitingOnGate,
+                    "2026-01-01T00:00:01Z",
+                    None,
+                ),
+                run_node(
+                    "gate-new",
+                    "approval-new",
+                    WorkflowNodeRunStatusDto::WaitingOnGate,
+                    "2026-01-01T00:00:02Z",
+                    None,
+                ),
+            ],
+            vec![
+                run_event(
+                    "event-1",
+                    Some("gate-new"),
+                    "checkpoint",
+                    json!({ "sequence": 1 }),
+                ),
+                run_event(
+                    "event-2",
+                    Some("gate-new"),
+                    "checkpoint",
+                    json!({ "sequence": 2 }),
+                ),
+            ],
+        );
+        let blocker = workflow_run_blocker(&run);
+        assert_eq!(blocker.status, "waiting_on_human");
+        assert_eq!(blocker.node_id.as_deref(), Some("approval-new"));
+        assert_eq!(blocker.event, Some(json!({ "sequence": 2 })));
+
+        run.nodes
+            .retain(|node| node.status != WorkflowNodeRunStatusDto::WaitingOnGate);
+        let blocker = workflow_run_blocker(&run);
+        assert_eq!(blocker.status, "failed");
+        assert_eq!(blocker.failure_class.as_deref(), Some("provider_error"));
+
+        run.nodes.clear();
+        run.events.push(run_event(
+            "event-3",
+            Some("router-run"),
+            "workflow_route_missing",
+            json!({ "nodeId": "router" }),
+        ));
+        let blocker = workflow_run_blocker(&run);
+        assert_eq!(blocker.status, "route_missing");
+        assert_eq!(blocker.node_id.as_deref(), Some("router"));
+        assert_eq!(blocker.node_run_id.as_deref(), Some("router-run"));
+
+        run.events.clear();
+        run.status = WorkflowRunStatusDto::Paused;
+        let blocker = workflow_run_blocker(&run);
+        assert_eq!(blocker.status, "paused");
+        assert_eq!(blocker.summary, "Workflow run is `paused`.");
+        assert_eq!(blocker.event, None);
     }
 }

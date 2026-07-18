@@ -1073,9 +1073,11 @@ fn classify_provider_preflight_error(code: &str, message: &str) -> ProviderPrefl
         || xero_agent_core::provider_preflight_message_indicates_credit_limit(&text)
     {
         ProviderPreflightErrorClass::CreditLimit
-    } else if text.contains("403") || text.contains("forbidden") {
-        ProviderPreflightErrorClass::Authorization
-    } else if text.contains("authorization") || text.contains("not authorized") {
+    } else if text.contains("403")
+        || text.contains("forbidden")
+        || text.contains("authorization")
+        || text.contains("not authorized")
+    {
         ProviderPreflightErrorClass::Authorization
     } else if text.contains("401") || text.contains("unauthorized") || text.contains("auth") {
         ProviderPreflightErrorClass::Authentication

@@ -21,6 +21,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
             run: running.clone(),
             checkpoint: None,
             control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+            expected_snapshot: None,
         },
     )
     .expect("persist running runtime run without checkpoints");
@@ -56,6 +57,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
                 "2099-04-15T19:00:20Z",
             )),
             control_state: None,
+            expected_snapshot: None,
         },
     )
     .expect("persist checkpoint one");
@@ -77,6 +79,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
                 "2099-04-15T19:00:35Z",
             )),
             control_state: None,
+            expected_snapshot: None,
         },
     )
     .expect("persist checkpoint two");
@@ -113,6 +116,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
             },
             checkpoint: None,
             control_state: None,
+            expected_snapshot: None,
         },
     )
     .expect("persist stale runtime run");
@@ -130,6 +134,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
             },
             checkpoint: None,
             control_state: None,
+            expected_snapshot: None,
         },
     )
     .expect("persist stopped runtime run");
@@ -153,6 +158,7 @@ pub(crate) fn runtime_run_recovery_distinguishes_running_stale_stopped_and_faile
             },
             checkpoint: None,
             control_state: None,
+            expected_snapshot: None,
         },
     )
     .expect("persist failed runtime run");
@@ -190,6 +196,7 @@ pub(crate) fn runtime_run_persists_active_and_pending_control_snapshots_with_que
             run: sample_run(project_id, run_id),
             checkpoint: None,
             control_state: Some(control_state.clone()),
+            expected_snapshot: None,
         },
     )
     .expect("persist runtime run with queued control snapshot");
@@ -306,6 +313,7 @@ pub(crate) fn runtime_run_persistence_isolates_runs_by_agent_session() {
                 "2099-04-15T19:00:20Z",
             )),
             control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+            expected_snapshot: None,
         },
     )
     .expect("persist default session runtime run");
@@ -326,6 +334,7 @@ pub(crate) fn runtime_run_persistence_isolates_runs_by_agent_session() {
                 "2099-04-15T19:01:20Z",
             )),
             control_state: Some(sample_control_state("2099-04-15T19:01:00Z")),
+            expected_snapshot: None,
         },
     )
     .expect("persist secondary session runtime run");
@@ -399,6 +408,7 @@ pub(crate) fn runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_
                 "2099-04-15T19:00:20Z",
             )),
             control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+            expected_snapshot: None,
         },
     )
     .expect("persist safe checkpoint");
@@ -420,6 +430,7 @@ pub(crate) fn runtime_run_checkpoint_writes_reject_secret_bearing_summaries_and_
                 "2099-04-15T19:00:25Z",
             )),
             control_state: None,
+            expected_snapshot: None,
         },
     )
     .expect_err("secret-bearing checkpoint summary should fail closed");
@@ -461,6 +472,7 @@ pub(crate) fn runtime_run_decode_fails_closed_for_malformed_status_transport_che
                 "2099-04-15T19:00:20Z",
             )),
             control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+            expected_snapshot: None,
         },
     )
     .expect("persist runtime run for corruption tests");
@@ -601,6 +613,7 @@ pub(crate) fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
                 "2099-04-15T19:00:20Z",
             )),
             control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+            expected_snapshot: None,
         },
     )
     .expect("persist first checkpoint");
@@ -622,6 +635,7 @@ pub(crate) fn runtime_run_checkpoint_sequence_must_increase_monotonically() {
                 "2099-04-15T19:00:25Z",
             )),
             control_state: None,
+            expected_snapshot: None,
         },
     )
     .expect_err("duplicate checkpoint sequence should fail closed");
@@ -659,6 +673,7 @@ pub(crate) fn runtime_run_rotation_clears_prior_autonomous_projection() {
                 "2099-04-15T19:00:20Z",
             )),
             control_state: Some(sample_control_state("2099-04-15T19:00:00Z")),
+            expected_snapshot: None,
         },
     )
     .expect("persist first runtime run");
@@ -711,6 +726,7 @@ pub(crate) fn runtime_run_rotation_clears_prior_autonomous_projection() {
                 "2099-04-15T19:01:20Z",
             )),
             control_state: Some(sample_control_state("2099-04-15T19:01:00Z")),
+            expected_snapshot: None,
         },
     )
     .expect("rotate runtime run after prior autonomous projection");

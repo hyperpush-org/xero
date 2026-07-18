@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   ALL_RUNTIME_AGENT_DESCRIPTORS,
+  agentToolingSettingsSchema,
   CURSOR_AUTO_MODEL_ID,
   getRuntimeAgentAvailability,
   getRuntimeAgentDescriptor,
@@ -14,6 +15,7 @@ import {
   runtimeSettingsSchema,
   runtimeRunSchema,
   startRuntimeRunRequestSchema,
+  upsertAgentToolingSettingsRequestSchema,
   updateRuntimeRunControlsRequestSchema,
 } from './runtime'
 
@@ -71,6 +73,110 @@ function makeRuntimeRunDto(overrides: Record<string, unknown> = {}) {
 }
 
 describe('runtime run control schemas', () => {
+  it('parses Agent Tooling defaults, overrides, and removal requests', () => {
+    expect(
+      agentToolingSettingsSchema.parse({
+        globalDefault: 'conservative',
+        modelOverrides: [
+          {
+            providerId: ' provider-a ',
+            modelId: ' model-a ',
+            style: 'declarative_first',
+            updatedAt: '2026-07-17T20:00:00Z',
+          },
+        ],
+        updatedAt: '2026-07-17T20:01:00Z',
+      }),
+    ).toEqual({
+      globalDefault: 'conservative',
+      modelOverrides: [
+        {
+          providerId: 'provider-a',
+          modelId: 'model-a',
+          style: 'declarative_first',
+          updatedAt: '2026-07-17T20:00:00Z',
+        },
+      ],
+      updatedAt: '2026-07-17T20:01:00Z',
+    })
+
+    expect(
+      agentToolingSettingsSchema.parse({
+        globalDefault: 'balanced',
+      }),
+    ).toEqual({
+      globalDefault: 'balanced',
+      modelOverrides: [],
+    })
+
+    expect(
+      upsertAgentToolingSettingsRequestSchema.parse({
+        modelOverrides: [
+          {
+            providerId: 'provider-a',
+            modelId: 'model-a',
+            style: null,
+          },
+        ],
+      }),
+    ).toEqual({
+      modelOverrides: [
+        {
+          providerId: 'provider-a',
+          modelId: 'model-a',
+          style: null,
+        },
+      ],
+    })
+  })
+
+  it('rejects malformed Agent Tooling settings and override requests', () => {
+    for (const payload of [
+      { globalDefault: 'fast' },
+      {
+        globalDefault: 'balanced',
+        modelOverrides: [
+          {
+            providerId: ' ',
+            modelId: 'model-a',
+            style: 'balanced',
+            updatedAt: '2026-07-17T20:00:00Z',
+          },
+        ],
+      },
+      {
+        globalDefault: 'balanced',
+        modelOverrides: [],
+        updatedAt: 'not-a-timestamp',
+      },
+      {
+        globalDefault: 'balanced',
+        modelOverrides: [],
+        unexpected: true,
+      },
+    ]) {
+      expect(agentToolingSettingsSchema.safeParse(payload).success).toBe(false)
+    }
+
+    for (const payload of [
+      {
+        modelOverrides: [{ providerId: 'provider-a', modelId: '', style: 'balanced' }],
+      },
+      {
+        modelOverrides: [
+          { providerId: 'provider-a', modelId: 'model-a', style: 'unsupported' },
+        ],
+      },
+      {
+        globalDefault: 'balanced',
+        modelOverrides: [],
+        unexpected: true,
+      },
+    ]) {
+      expect(upsertAgentToolingSettingsRequestSchema.safeParse(payload).success).toBe(false)
+    }
+  })
+
   it('accepts DeepSeek as a first-party runtime provider id', () => {
     expect(runtimeProviderIdSchema.parse('deepseek')).toBe('deepseek')
   })
