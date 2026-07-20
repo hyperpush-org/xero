@@ -1046,4 +1046,65 @@ mod tests {
             .iter()
             .any(|limitation| limitation.contains("Imagine")));
     }
+
+    #[test]
+    fn provider_catalog_matrix_covers_every_owned_static_adapter_and_unknown_fallback() {
+        let providers = [
+            "fake_provider",
+            "openai_codex",
+            "anthropic",
+            "github_models",
+            "openai_api",
+            "ollama",
+            "azure_openai",
+            "gemini_ai_studio",
+            "gemini",
+            "vertex",
+            "external_claude_code",
+            "external_gemini_cli",
+            "external_custom_agent",
+            "provider_not_registered",
+        ];
+        let sources = ["live", "cache", "manual", "unavailable", "other"];
+
+        for (index, provider_id) in providers.into_iter().enumerate() {
+            let mut provider_input = input(provider_id);
+            provider_input.catalog_source = sources[index % sources.len()].into();
+            provider_input.cache_ttl_seconds = (index != 0).then_some(1);
+            provider_input.cache_age_seconds = Some(2);
+            provider_input.thinking_supported = false;
+            provider_input.thinking_efforts.clear();
+            provider_input.thinking_default_effort = None;
+            provider_input.input_modalities.clear();
+            provider_input.input_modalities_source = None;
+            provider_input.context_window_tokens = None;
+            provider_input.max_output_tokens = None;
+            provider_input.context_limit_source = None;
+            provider_input.context_limit_confidence = None;
+
+            let catalog = provider_capability_catalog(provider_input);
+
+            assert!(!catalog.provider_id.is_empty());
+            assert!(!catalog.provider_label.is_empty());
+            assert!(!catalog.request_preview.route.is_empty());
+            assert_eq!(
+                catalog.capabilities.reasoning.status,
+                if catalog.external_agent_adapter {
+                    "not_applicable"
+                } else {
+                    "unavailable"
+                }
+            );
+            assert_eq!(
+                catalog.capabilities.attachments.status,
+                if catalog.external_agent_adapter {
+                    "not_applicable"
+                } else {
+                    "unknown"
+                }
+            );
+            assert_eq!(catalog.capabilities.context_limits.status, "unknown");
+            assert_eq!(catalog.cache.stale, index != 0);
+        }
+    }
 }

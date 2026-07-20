@@ -365,8 +365,16 @@ pub(crate) fn agent_session_lineage_dto(
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
+    use tauri::Manager;
+
     use super::*;
-    use crate::db::project_store::AgentSessionLineageDiagnosticRecord;
+    use crate::{
+        db::{self, project_store::AgentSessionLineageDiagnosticRecord},
+        git::repository::CanonicalRepository,
+        registry::RegistryProjectRecord,
+    };
 
     fn create_request(
         session_kind: Option<AgentSessionKindDto>,
@@ -548,5 +556,246 @@ mod tests {
                 Some("2026-07-18T00:00:00Z")
             );
         }
+    }
+
+    #[test]
+    fn agent_session_command_fixture_covers_crud_archive_restore_filtering_and_validation() {
+        let fixture = tempfile::tempdir().expect("session command fixture");
+        let repo_root = fixture.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create session repository");
+        let repo_root = fs::canonicalize(repo_root).expect("canonical session repository");
+        let project_id = "project-session-commands";
+        let registry_path = fixture.path().join("app-data/global.db");
+        let state = DesktopState::default().with_global_db_path_override(registry_path.clone());
+        let app = crate::configure_builder_with_state(tauri::test::mock_builder(), state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build session command app");
+        db::configure_project_database_paths(&registry_path);
+        let repository = CanonicalRepository {
+            project_id: project_id.into(),
+            repository_id: "repository-session-commands".into(),
+            root_path: repo_root.clone(),
+            root_path_string: repo_root.to_string_lossy().into_owned(),
+            common_git_dir: repo_root.join(".git"),
+            display_name: "Session commands".into(),
+            branch_name: Some("main".into()),
+            head_sha: Some("abc123".into()),
+            branch: None,
+            last_commit: None,
+            status_entries: Vec::new(),
+            has_staged_changes: false,
+            has_unstaged_changes: false,
+            has_untracked_changes: false,
+            additions: 0,
+            deletions: 0,
+        };
+        db::import_project(
+            &repository,
+            app.state::<DesktopState>().import_failpoints(),
+        )
+        .expect("import session command project");
+        crate::registry::replace_projects(
+            &registry_path,
+            vec![RegistryProjectRecord {
+                project_id: project_id.into(),
+                repository_id: repository.repository_id,
+                root_path: repo_root.to_string_lossy().into_owned(),
+                is_git_repo: true,
+            }],
+        )
+        .expect("seed session command registry");
+
+        assert_eq!(
+            create_agent_session(
+                app.handle().clone(),
+                app.state::<DesktopState>(),
+                CreateAgentSessionRequestDto {
+                    project_id: " ".into(),
+                    title: None,
+                    summary: String::new(),
+                    selected: false,
+                    session_kind: None,
+                    runtime_agent_id: None,
+                },
+            )
+            .expect_err("blank project is invalid")
+            .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            create_agent_session(
+                app.handle().clone(),
+                app.state::<DesktopState>(),
+                CreateAgentSessionRequestDto {
+                    project_id: project_id.into(),
+                    title: Some(" ".into()),
+                    summary: String::new(),
+                    selected: false,
+                    session_kind: None,
+                    runtime_agent_id: None,
+                },
+            )
+            .expect_err("blank title is invalid")
+            .code,
+            "invalid_request"
+        );
+
+        let standard = create_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            CreateAgentSessionRequestDto {
+                project_id: project_id.into(),
+                title: Some("Lifecycle fixture".into()),
+                summary: "Initial summary".into(),
+                selected: true,
+                session_kind: Some(AgentSessionKindDto::Standard),
+                runtime_agent_id: Some(RuntimeAgentIdDto::Engineer),
+            },
+        )
+        .expect("create standard session");
+        let computer_use = create_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            CreateAgentSessionRequestDto {
+                project_id: project_id.into(),
+                title: None,
+                summary: String::new(),
+                selected: false,
+                session_kind: None,
+                runtime_agent_id: Some(RuntimeAgentIdDto::ComputerUse),
+            },
+        )
+        .expect("create computer-use session");
+        assert_eq!(computer_use.session_kind, AgentSessionKindDto::ComputerUse);
+        assert_eq!(computer_use.title, COMPUTER_USE_AGENT_SESSION_TITLE);
+
+        let listed = list_agent_sessions(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            ListAgentSessionsRequestDto {
+                project_id: project_id.into(),
+                include_archived: false,
+            },
+        )
+        .expect("list visible sessions");
+        assert!(listed
+            .sessions
+            .iter()
+            .any(|session| session.agent_session_id == standard.agent_session_id));
+        assert!(!listed
+            .sessions
+            .iter()
+            .any(|session| session.agent_session_id == computer_use.agent_session_id));
+
+        let fetched = get_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            GetAgentSessionRequestDto {
+                project_id: project_id.into(),
+                agent_session_id: standard.agent_session_id.clone(),
+            },
+        )
+        .expect("get standard session")
+        .expect("standard session exists");
+        assert_eq!(fetched.title, "Lifecycle fixture");
+
+        let updated = update_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            UpdateAgentSessionRequestDto {
+                project_id: project_id.into(),
+                agent_session_id: standard.agent_session_id.clone(),
+                title: Some("Updated lifecycle".into()),
+                summary: Some("Updated summary".into()),
+                selected: Some(false),
+            },
+        )
+        .expect("update standard session");
+        assert_eq!(updated.title, "Updated lifecycle");
+        assert_eq!(updated.summary, "Updated summary");
+        assert!(!updated.selected);
+
+        let archived = archive_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            app.state::<RemoteBridgeRuntimeState>(),
+            ArchiveAgentSessionRequestDto {
+                project_id: project_id.into(),
+                agent_session_id: standard.agent_session_id.clone(),
+            },
+        )
+        .expect("archive standard session");
+        assert_eq!(archived.status, AgentSessionStatusDto::Archived);
+        assert!(!archived.remote_visible);
+
+        let restored = restore_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            RestoreAgentSessionRequestDto {
+                project_id: project_id.into(),
+                agent_session_id: standard.agent_session_id.clone(),
+            },
+        )
+        .expect("restore standard session");
+        assert_eq!(restored.status, AgentSessionStatusDto::Active);
+
+        assert_eq!(
+            delete_agent_session(
+                app.handle().clone(),
+                app.state::<DesktopState>(),
+                app.state::<RemoteBridgeRuntimeState>(),
+                DeleteAgentSessionRequestDto {
+                    project_id: project_id.into(),
+                    agent_session_id: standard.agent_session_id.clone(),
+                },
+            )
+            .expect_err("active nonblank session cannot be deleted")
+            .code,
+            "agent_session_not_archived"
+        );
+        archive_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            app.state::<RemoteBridgeRuntimeState>(),
+            ArchiveAgentSessionRequestDto {
+                project_id: project_id.into(),
+                agent_session_id: standard.agent_session_id.clone(),
+            },
+        )
+        .expect("re-archive standard session");
+        delete_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            app.state::<RemoteBridgeRuntimeState>(),
+            DeleteAgentSessionRequestDto {
+                project_id: project_id.into(),
+                agent_session_id: standard.agent_session_id.clone(),
+            },
+        )
+        .expect("delete standard session");
+        assert!(get_agent_session(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            GetAgentSessionRequestDto {
+                project_id: project_id.into(),
+                agent_session_id: standard.agent_session_id.clone(),
+            },
+        )
+        .expect("get deleted session")
+        .is_none());
+        assert_eq!(
+            delete_agent_session(
+                app.handle().clone(),
+                app.state::<DesktopState>(),
+                app.state::<RemoteBridgeRuntimeState>(),
+                DeleteAgentSessionRequestDto {
+                    project_id: project_id.into(),
+                    agent_session_id: "missing-session".into(),
+                },
+            )
+            .expect_err("missing session deletion is typed")
+            .code,
+            "agent_session_missing"
+        );
     }
 }

@@ -246,6 +246,8 @@ mod tests {
     use super::*;
 
     use serde_json::json;
+    use std::fs;
+    use tauri::Manager;
 
     fn valid_manifest() -> JsonValue {
         json!({
@@ -332,5 +334,119 @@ mod tests {
             Some("agent_tool_extension_fixture_missing")
         );
         assert!(!report.ui_deferred);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn extension_command_fixture_covers_install_list_enable_disable_remove_and_validation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let fixture = tempfile::tempdir().expect("extension command fixture");
+        let source = fixture.path().join("source");
+        fs::create_dir_all(&source).expect("create extension source");
+        fs::write(
+            source.join("manifest.json"),
+            serde_json::to_vec_pretty(&valid_manifest()).expect("encode extension manifest"),
+        )
+        .expect("write extension manifest");
+        let handler = source.join("handler");
+        fs::write(
+            &handler,
+            "#!/bin/sh\nread request\nprintf '{\"summary\":\"fixture hello\",\"output\":{}}\\n'\n",
+        )
+        .expect("write extension handler");
+        fs::set_permissions(&handler, fs::Permissions::from_mode(0o700))
+            .expect("make extension handler executable");
+
+        let global_db_path = fixture.path().join("app-data/global.db");
+        let state = DesktopState::default().with_global_db_path_override(global_db_path);
+        let app = crate::configure_builder_with_state(tauri::test::mock_builder(), state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build extension command app");
+
+        let empty = list_agent_tool_extensions(app.handle().clone(), app.state::<DesktopState>())
+            .expect("list empty extension catalog");
+        assert!(empty.extensions.is_empty());
+
+        let installed = install_agent_tool_extension(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            InstallAgentToolExtensionRequestDto {
+                source_directory: source,
+            },
+        )
+        .expect("install extension through command");
+        assert_eq!(installed.extensions.len(), 1);
+        assert!(!installed.extensions[0].enabled);
+
+        let enabled = set_agent_tool_extension_enabled(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            SetAgentToolExtensionEnabledRequestDto {
+                extension_id: "demo_extension".into(),
+                enabled: true,
+                permission_id: Some("demo_extension_read".into()),
+            },
+        )
+        .expect("enable extension through command");
+        assert!(enabled.extensions[0].enabled);
+        assert!(enabled.extensions[0].eligible);
+
+        let listed = list_agent_tool_extensions(app.handle().clone(), app.state::<DesktopState>())
+            .expect("list installed extension");
+        assert_eq!(listed.extensions[0].tool_name, "demo_tool");
+
+        let disabled = set_agent_tool_extension_enabled(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            SetAgentToolExtensionEnabledRequestDto {
+                extension_id: "demo_extension".into(),
+                enabled: false,
+                permission_id: None,
+            },
+        )
+        .expect("disable extension through command");
+        assert!(!disabled.extensions[0].enabled);
+
+        let removed = remove_agent_tool_extension(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            RemoveAgentToolExtensionRequestDto {
+                extension_id: "demo_extension".into(),
+            },
+        )
+        .expect("remove extension through command");
+        assert!(removed.extensions.is_empty());
+
+        let blank_enable = set_agent_tool_extension_enabled(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            SetAgentToolExtensionEnabledRequestDto {
+                extension_id: " ".into(),
+                enabled: true,
+                permission_id: None,
+            },
+        )
+        .expect_err("blank extension id is rejected before storage");
+        assert_eq!(blank_enable.code, "invalid_request");
+        let blank_remove = remove_agent_tool_extension(
+            app.handle().clone(),
+            app.state::<DesktopState>(),
+            RemoveAgentToolExtensionRequestDto {
+                extension_id: String::new(),
+            },
+        )
+        .expect_err("blank remove id is rejected before storage");
+        assert_eq!(blank_remove.code, "invalid_request");
+
+        let malformed = validate_tool_extension_manifest_payload(
+            "project-1".into(),
+            json!({ "contractVersion": "wrong" }),
+        );
+        assert!(!malformed.valid);
+        assert_eq!(
+            malformed.diagnostics[0].code,
+            "agent_tool_extension_manifest_malformed"
+        );
     }
 }

@@ -10,9 +10,9 @@ use xero_agent_core::{
     SandboxPlatform, ToolBatchDispatchReport, ToolBudget, ToolCallInput, ToolDescriptorV2,
     ToolDispatchConfig, ToolDispatchFailure, ToolDispatchOutcome, ToolDispatchSuccess,
     ToolErrorCategory, ToolExecutionContext, ToolExecutionControl, ToolExecutionError,
-    ToolGroupExecutionMode, ToolHandler, ToolHandlerOutput, ToolPolicy, ToolPolicyDecision,
-    ToolRegistryResult, ToolRegistryV2, ToolRollback, ToolSandbox, ToolSandboxResult,
-    MUTATION_EXECUTION_SCOPE_ATTRIBUTE,
+    ToolGroupExecutionMode, ToolHandler, ToolHandlerOutput, ToolMutability, ToolPolicy,
+    ToolPolicyDecision, ToolRegistryResult, ToolRegistryV2, ToolRollback, ToolSandbox,
+    ToolSandboxResult, MUTATION_EXECUTION_SCOPE_ATTRIBUTE,
 };
 
 #[derive(Debug, Clone, Default)]
@@ -1521,17 +1521,21 @@ struct AutonomousToolHandler {
     shared: Arc<AutonomousToolHandlerShared>,
 }
 
+fn autonomous_handler_requires_parent_process(descriptor: &ToolDescriptorV2) -> bool {
+    descriptor.mutability == ToolMutability::Mutating
+}
+
 impl ToolHandler for AutonomousToolHandler {
     fn descriptor(&self) -> ToolDescriptorV2 {
         self.descriptor.clone()
     }
 
-    fn requires_parent_process_execution(&self, call: &ToolCallInput) -> bool {
-        call.tool_name == AUTONOMOUS_TOOL_SUBAGENT
-            || self
-                .shared
-                .approved_existing_write_call_ids
-                .contains(&call.tool_call_id)
+    fn requires_parent_process_execution(&self, _call: &ToolCallInput) -> bool {
+        // AutonomousToolRuntime owns shared mutexes, SQLite-backed state, and async process
+        // registries. Entering any of those from a post-fork worker can inherit a lock held by
+        // another parent thread and deadlock permanently. The registry still applies policy,
+        // sandbox, checkpoint, rollback, budget, and cooperative cancellation in the parent.
+        autonomous_handler_requires_parent_process(&self.descriptor)
     }
 
     fn execute(
@@ -3011,6 +3015,8 @@ fn finish_failed_tool_call_with_dispatch(
 mod tests {
     use super::*;
 
+    use crate::runtime::AutonomousCommandSessionStartRequest;
+
     use std::{
         env, fs,
         path::Path,
@@ -3076,6 +3082,143 @@ mod tests {
                 "`{tool_name}` must not claim handler-reported approval without verified wiring"
             );
         }
+    }
+
+    #[test]
+    fn desktop_mutation_handlers_never_enter_a_post_fork_runtime() {
+        let registry = ToolRegistry::for_tool_names_with_options(
+            BTreeSet::from([
+                AUTONOMOUS_TOOL_READ.to_string(),
+                AUTONOMOUS_TOOL_EDIT.to_string(),
+                AUTONOMOUS_TOOL_COMMAND_VERIFY.to_string(),
+            ]),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                ..ToolRegistryOptions::default()
+            },
+        );
+
+        for (tool_name, expected) in [
+            (AUTONOMOUS_TOOL_READ, false),
+            (AUTONOMOUS_TOOL_EDIT, true),
+            (AUTONOMOUS_TOOL_COMMAND_VERIFY, true),
+        ] {
+            let descriptor = registry
+                .descriptor(tool_name)
+                .map(|descriptor| registry.descriptor_v2(descriptor))
+                .unwrap_or_else(|| panic!("missing `{tool_name}` descriptor"));
+            assert_eq!(
+                autonomous_handler_requires_parent_process(&descriptor),
+                expected,
+                "unexpected process boundary for `{tool_name}`"
+            );
+        }
+    }
+
+    #[test]
+    fn developer_harness_dry_run_fixture_reports_decode_policy_and_sandbox_boundaries() {
+        let fixture = tempfile::tempdir().expect("create dry-run fixture");
+        let repo_root = fixture.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create dry-run repository");
+        fs::write(repo_root.join("README.md"), "fixture\n").expect("write fixture file");
+        let runtime = AutonomousToolRuntime::new(&repo_root).expect("create tool runtime");
+        let registry =
+            ToolRegistry::for_tool_names(BTreeSet::from([AUTONOMOUS_TOOL_READ.to_string()]));
+
+        let allowed = dry_run_tool_call(
+            &registry,
+            &runtime,
+            &repo_root,
+            "project-dry-run",
+            AgentToolCall {
+                tool_call_id: "dry-run-read".into(),
+                tool_name: AUTONOMOUS_TOOL_READ.into(),
+                input: json!({ "path": "README.md" }),
+            },
+            false,
+        )
+        .expect("dry-run valid read");
+        assert!(allowed.decoded);
+        assert_eq!(allowed.tool_call_id, "dry-run-read");
+        assert_eq!(allowed.tool_name, AUTONOMOUS_TOOL_READ);
+        assert_eq!(allowed.sandbox_decision["outcome"], json!("allow"));
+        assert!(!allowed.sandbox_denied);
+
+        let invalid = dry_run_tool_call(
+            &registry,
+            &runtime,
+            &repo_root,
+            "project-dry-run",
+            AgentToolCall {
+                tool_call_id: "dry-run-invalid".into(),
+                tool_name: AUTONOMOUS_TOOL_READ.into(),
+                input: json!({}),
+            },
+            false,
+        )
+        .expect("dry-run malformed read reports a decision");
+        assert!(!invalid.decoded);
+        assert_eq!(
+            invalid.policy_decision.action,
+            AutonomousSafetyPolicyAction::Deny
+        );
+        assert_eq!(
+            invalid.sandbox_decision["skipped"],
+            json!("policy_failed_to_decode")
+        );
+
+        let unknown = dry_run_tool_call(
+            &registry,
+            &runtime,
+            &repo_root,
+            "project-dry-run",
+            AgentToolCall {
+                tool_call_id: "dry-run-unknown".into(),
+                tool_name: "not_registered".into(),
+                input: json!({}),
+            },
+            false,
+        )
+        .expect_err("unregistered tools cannot be dry-run");
+        assert_eq!(unknown.code, "agent_tool_call_unknown");
+
+        let command_session =
+            AutonomousToolRequest::CommandSessionStart(AutonomousCommandSessionStartRequest {
+                argv: vec!["echo".into(), "fixture".into()],
+                cwd: Some(".".into()),
+                timeout_ms: Some(1_000),
+            });
+        assert_eq!(
+            code_capture_summary_label(AUTONOMOUS_TOOL_COMMAND_SESSION, &command_session),
+            "Command session: echo fixture"
+        );
+        let mcp_named = AutonomousToolRequest::Mcp(AutonomousMcpRequest {
+            action: AutonomousMcpAction::InvokeTool,
+            server_id: Some("fixture".into()),
+            name: Some("echo".into()),
+            uri: None,
+            arguments: Some(json!({})),
+            timeout_ms: None,
+        });
+        assert_eq!(
+            code_capture_summary_label(AUTONOMOUS_TOOL_MCP, &mcp_named),
+            "MCP tool: echo"
+        );
+        let mcp_unnamed = AutonomousToolRequest::Mcp(AutonomousMcpRequest {
+            name: None,
+            ..match mcp_named {
+                AutonomousToolRequest::Mcp(request) => request,
+                _ => unreachable!(),
+            }
+        });
+        assert_eq!(
+            code_capture_summary_label(AUTONOMOUS_TOOL_MCP, &mcp_unnamed),
+            "MCP mutation"
+        );
+        assert!(matches!(
+            code_capture_plan_for_request(AUTONOMOUS_TOOL_MCP, &mcp_unnamed),
+            Some(AgentCodeCapturePlan::BroadAction { .. })
+        ));
     }
 
     #[test]

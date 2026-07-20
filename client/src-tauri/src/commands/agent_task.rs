@@ -928,8 +928,16 @@ fn agent_event_record_is_scheduled_wait(event: &project_store::AgentEventRecord)
 }
 
 fn payload_is_scheduled_wait(payload: &serde_json::Value) -> bool {
-    payload_text(payload, "state").as_deref() == Some("scheduled_wait")
-        || payload_text(payload, "stopReason").as_deref() == Some("scheduled_wait")
+    let state = payload_text(payload, "state");
+    let stop_reason = payload_text(payload, "stopReason");
+    match (state.as_deref(), stop_reason.as_deref()) {
+        (Some(state), Some(stop_reason)) => {
+            state == "scheduled_wait" && stop_reason == "scheduled_wait"
+        }
+        (Some(state), None) => state == "scheduled_wait",
+        (None, Some(stop_reason)) => stop_reason == "scheduled_wait",
+        (None, None) => false,
+    }
 }
 
 fn payload_text(payload: &serde_json::Value, key: &str) -> Option<String> {
@@ -999,10 +1007,39 @@ fn resolve_agent_channel<R: Runtime>(
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc::sync_channel;
+    use std::{
+        fs,
+        sync::mpsc::sync_channel,
+        time::{Duration as StdDuration, Instant as StdInstant},
+    };
+
+    use serde_json::json;
+    use tauri::Manager;
 
     use super::*;
-    use crate::db::project_store::{AgentRunEventKind, NewAgentEventRecord, NewAgentRunRecord};
+    use crate::{
+        db::{self, project_store::{AgentRunEventKind, NewAgentEventRecord, NewAgentRunRecord}},
+        git::repository::CanonicalRepository,
+        runtime::agent_core::publish_agent_event,
+    };
+
+    fn capturing_event_channel(
+        capacity: usize,
+    ) -> (
+        Channel<AgentRunEventDto>,
+        std::sync::mpsc::Receiver<AgentRunEventDto>,
+    ) {
+        let (tx, rx) = sync_channel(capacity);
+        let channel = Channel::<AgentRunEventDto>::new(move |body| {
+            tx.send(
+                body.deserialize::<AgentRunEventDto>()
+                    .expect("deserialize agent event"),
+            )
+            .expect("capture agent event");
+            Ok(())
+        });
+        (channel, rx)
+    }
 
     fn event_record(
         event_kind: AgentRunEventKind,
@@ -1016,6 +1053,237 @@ mod tests {
             payload_json: payload_json.into(),
             created_at: "2026-04-24T00:00:00Z".into(),
         }
+    }
+
+    fn wait_for_fixture_run_status(
+        repo_root: &Path,
+        project_id: &str,
+        run_id: &str,
+        expected: project_store::AgentRunStatus,
+    ) -> project_store::AgentRunSnapshotRecord {
+        let deadline = StdInstant::now() + StdDuration::from_secs(10);
+        loop {
+            let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)
+                .expect("load recovery fixture run");
+            if snapshot.run.status == expected {
+                return snapshot;
+            }
+            assert!(
+                StdInstant::now() < deadline,
+                "run {run_id} did not reach {expected:?}; last status was {:?}",
+                snapshot.run.status
+            );
+            thread::sleep(StdDuration::from_millis(20));
+        }
+    }
+
+    #[test]
+    fn prepared_start_recovery_fixture_registers_and_drives_the_exact_initial_turn_once() {
+        let fixture = tempfile::tempdir().expect("create recovery fixture");
+        let repo_root = fixture.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create recovery repository");
+        let repo_root = fs::canonicalize(repo_root).expect("canonical recovery repository");
+        let project_id = "project-agent-recovery";
+        let repository = CanonicalRepository {
+            project_id: project_id.into(),
+            repository_id: "repository-agent-recovery".into(),
+            root_path: repo_root.clone(),
+            root_path_string: repo_root.to_string_lossy().into_owned(),
+            common_git_dir: repo_root.join(".git"),
+            display_name: "Agent recovery fixture".into(),
+            branch_name: None,
+            head_sha: None,
+            branch: None,
+            last_commit: None,
+            status_entries: Vec::new(),
+            has_staged_changes: false,
+            has_unstaged_changes: false,
+            has_untracked_changes: false,
+            additions: 0,
+            deletions: 0,
+        };
+        let registry_path = fixture.path().join("app-data").join("xero.db");
+        let state = DesktopState::default()
+            .with_global_db_path_override(registry_path.clone())
+            .with_owned_agent_provider_config_override(AgentProviderConfig::Fake);
+        let app = crate::configure_builder_with_state(tauri::test::mock_builder(), state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build recovery fixture app");
+        db::configure_project_database_paths(&registry_path);
+        db::import_project(
+            &repository,
+            app.state::<DesktopState>().import_failpoints(),
+        )
+        .expect("import recovery fixture project");
+        crate::registry::replace_projects(
+            &registry_path,
+            vec![crate::registry::RegistryProjectRecord {
+                project_id: project_id.into(),
+                repository_id: repository.repository_id.clone(),
+                root_path: repo_root.to_string_lossy().into_owned(),
+                is_git_repo: false,
+            }],
+        )
+        .expect("seed recovery fixture registry");
+        let run_id = "run-agent-recovery";
+        let owned = OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: run_id.into(),
+            prompt: "Recover this exact initial turn after the crash boundary.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: None,
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("recovery tool runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        };
+        let runtime = DesktopAgentCoreRuntime::new(
+            app.state::<DesktopState>().agent_run_supervisor().clone(),
+        );
+        let created = runtime
+            .start_run(owned, DesktopRunDriveMode::CreateOnly)
+            .expect("persist run at pre-dispatch crash boundary");
+        assert_eq!(created.run.status, project_store::AgentRunStatus::Running);
+        assert!(project_store::list_agent_continuation_requests_for_run(
+            &repo_root,
+            project_id,
+            run_id,
+        )
+        .expect("list pre-recovery continuations")
+        .is_empty());
+
+        assert_eq!(
+            recover_prepared_agent_runs_for_project(
+                app.handle(),
+                app.state::<DesktopState>().inner(),
+                &repo_root,
+                project_id,
+            )
+            .expect("recover prepared initial continuation"),
+            1
+        );
+        let completed = wait_for_fixture_run_status(
+            &repo_root,
+            project_id,
+            run_id,
+            project_store::AgentRunStatus::Completed,
+        );
+        assert_eq!(
+            completed
+                .messages
+                .iter()
+                .filter(|message| message.role == project_store::AgentMessageRole::User)
+                .count(),
+            1,
+            "startup recovery must bind rather than duplicate the initial user turn"
+        );
+        let deadline = StdInstant::now() + StdDuration::from_secs(5);
+        let continuations = loop {
+            let continuations = project_store::list_agent_continuation_requests_for_run(
+                &repo_root,
+                project_id,
+                run_id,
+            )
+            .expect("list recovered continuations");
+            if continuations.first().is_some_and(|request| {
+                request.state == project_store::AgentContinuationRequestState::Consumed
+            }) {
+                break continuations;
+            }
+            assert!(
+                StdInstant::now() < deadline,
+                "recovered continuation did not finish its durable drive marker: {continuations:?}"
+            );
+            thread::sleep(StdDuration::from_millis(20));
+        };
+        assert_eq!(continuations.len(), 1);
+        assert_eq!(
+            continuations[0].state,
+            project_store::AgentContinuationRequestState::Consumed
+        );
+        assert_eq!(
+            recover_prepared_agent_runs_for_project(
+                app.handle(),
+                app.state::<DesktopState>().inner(),
+                &repo_root,
+                project_id,
+            )
+            .expect("replay recovery scan"),
+            0
+        );
+    }
+
+    #[test]
+    fn live_stream_fixture_skips_replays_delivers_terminal_and_stops_on_closed_channel() {
+        let project_id = "project-live-stream";
+        let run_id = "run-live-stream";
+        let subscription = subscribe_agent_events(project_id, run_id);
+        let (channel, rx) = capturing_event_channel(3);
+        let stream = thread::spawn(move || {
+            stream_live_agent_events(
+                subscription,
+                channel,
+                PathBuf::from("unused-for-sequential-events"),
+                project_id.into(),
+                run_id.into(),
+                1,
+            );
+        });
+
+        let mut replay = event_record(AgentRunEventKind::MessageDelta, r#"{"text":"old"}"#);
+        replay.project_id = project_id.into();
+        replay.run_id = run_id.into();
+        replay.id = 1;
+        publish_agent_event(replay);
+        let mut delta = event_record(AgentRunEventKind::MessageDelta, r#"{"text":"new"}"#);
+        delta.project_id = project_id.into();
+        delta.run_id = run_id.into();
+        delta.id = 2;
+        publish_agent_event(delta);
+        let mut completed = event_record(AgentRunEventKind::RunCompleted, r#"{"ok":true}"#);
+        completed.project_id = project_id.into();
+        completed.run_id = run_id.into();
+        completed.id = 3;
+        publish_agent_event(completed);
+
+        assert_eq!(
+            rx.recv_timeout(StdDuration::from_secs(1))
+                .expect("receive live delta")
+                .id,
+            2
+        );
+        assert_eq!(
+            rx.recv_timeout(StdDuration::from_secs(1))
+                .expect("receive terminal event")
+                .id,
+            3
+        );
+        stream.join().expect("join terminal stream");
+
+        let closed_project = "project-closed-stream";
+        let closed_run = "run-closed-stream";
+        let closed_subscription = subscribe_agent_events(closed_project, closed_run);
+        let closed_channel = Channel::<AgentRunEventDto>::new(move |_body| {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "fixture closed").into())
+        });
+        let closed_stream = thread::spawn(move || {
+            stream_live_agent_events(
+                closed_subscription,
+                closed_channel,
+                PathBuf::from("unused-for-closed-channel"),
+                closed_project.into(),
+                closed_run.into(),
+                0,
+            );
+        });
+        let mut event = event_record(AgentRunEventKind::MessageDelta, r#"{"text":"drop"}"#);
+        event.project_id = closed_project.into();
+        event.run_id = closed_run.into();
+        event.id = 1;
+        publish_agent_event(event);
+        closed_stream.join().expect("closed channel stops stream");
     }
 
     #[test]
@@ -1044,6 +1312,164 @@ mod tests {
             &AgentRunStatusDto::Paused,
             &[agent_event_dto(manual_pause)]
         ));
+    }
+
+    #[test]
+    fn contradictory_pause_markers_fail_closed_and_end_the_stream() {
+        for payload in [
+            r#"{"state":"scheduled_wait","stopReason":"waiting_for_approval"}"#,
+            r#"{"state":"paused","stopReason":"scheduled_wait"}"#,
+        ] {
+            let event = event_record(AgentRunEventKind::RunPaused, payload);
+            assert!(
+                agent_event_record_ends_agent_stream(&event),
+                "conflicting pause markers must not keep a stream alive: {payload}"
+            );
+        }
+    }
+
+    #[test]
+    fn stream_terminal_and_configuration_helpers_cover_every_boundary() {
+        for status in [
+            AgentRunStatusDto::Cancelled,
+            AgentRunStatusDto::HandedOff,
+            AgentRunStatusDto::Completed,
+            AgentRunStatusDto::Failed,
+        ] {
+            assert!(agent_run_status_ends_agent_stream(&status, &[]));
+        }
+        for status in [
+            AgentRunStatusDto::Starting,
+            AgentRunStatusDto::Running,
+            AgentRunStatusDto::Cancelling,
+        ] {
+            assert!(!agent_run_status_ends_agent_stream(&status, &[]));
+        }
+        assert!(agent_run_status_ends_agent_stream(
+            &AgentRunStatusDto::Paused,
+            &[]
+        ));
+
+        let manual = agent_event_dto(event_record(
+            AgentRunEventKind::RunPaused,
+            r#"{"state":"paused"}"#,
+        ));
+        let scheduled = agent_event_dto(event_record(
+            AgentRunEventKind::RunPaused,
+            r#"{"stopReason":" scheduled_wait "}"#,
+        ));
+        assert!(!agent_run_status_ends_agent_stream(
+            &AgentRunStatusDto::Paused,
+            &[manual.clone(), scheduled.clone()]
+        ));
+        assert!(agent_run_status_ends_agent_stream(
+            &AgentRunStatusDto::Paused,
+            &[scheduled, manual]
+        ));
+        assert!(agent_event_record_ends_agent_stream(&event_record(
+            AgentRunEventKind::RunFailed,
+            "{}"
+        )));
+        assert!(agent_event_record_ends_agent_stream(&event_record(
+            AgentRunEventKind::RunPaused,
+            "malformed"
+        )));
+        assert!(!agent_event_record_ends_agent_stream(&event_record(
+            AgentRunEventKind::MessageDelta,
+            "{}"
+        )));
+
+        assert_eq!(
+            payload_text(&json!({"value": " trimmed "}), "value"),
+            Some("trimmed".into())
+        );
+        assert_eq!(payload_text(&json!({"value": " "}), "value"), None);
+        assert_eq!(payload_text(&json!({"value": 7}), "value"), None);
+
+        assert!(auto_compact_preference(None).unwrap().is_none());
+        let preference =
+            auto_compact_preference(Some(crate::commands::AgentAutoCompactPreferenceDto {
+                enabled: true,
+                threshold_percent: Some(100),
+                raw_tail_message_count: Some(24),
+            }))
+            .expect("valid auto-compact boundary")
+            .expect("auto-compact preference");
+        assert!(preference.enabled);
+        assert_eq!(preference.threshold_percent, Some(100));
+        assert_eq!(preference.raw_tail_message_count, Some(24));
+        for threshold_percent in [0, 101] {
+            assert!(auto_compact_preference(Some(
+                crate::commands::AgentAutoCompactPreferenceDto {
+                    enabled: true,
+                    threshold_percent: Some(threshold_percent),
+                    raw_tail_message_count: None,
+                },
+            ))
+            .is_err());
+        }
+        for raw_tail_message_count in [1, 25] {
+            assert!(auto_compact_preference(Some(
+                crate::commands::AgentAutoCompactPreferenceDto {
+                    enabled: false,
+                    threshold_percent: None,
+                    raw_tail_message_count: Some(raw_tail_message_count),
+                },
+            ))
+            .is_err());
+        }
+
+        let mut controls = crate::commands::RuntimeRunControlInputDto {
+            runtime_agent_id: crate::commands::RuntimeAgentIdDto::Engineer,
+            agent_definition_id: Some("engineer".into()),
+            agent_definition_version: None,
+            provider_profile_id: Some(" profile-1 ".into()),
+            model_id: "model-1".into(),
+            thinking_effort: None,
+            approval_mode: crate::commands::RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        assert_eq!(
+            provider_profile_id_for_controls(Some(&controls), "provider-1"),
+            "profile-1"
+        );
+        controls.provider_profile_id = Some(" ".into());
+        assert_eq!(
+            provider_profile_id_for_controls(Some(&controls), "provider-1"),
+            "provider-1"
+        );
+        assert_eq!(
+            provider_profile_id_for_controls(None, "provider-2"),
+            "provider-2"
+        );
+
+        let active = agent_run_already_active_error("run-1");
+        assert_eq!(active.code, "agent_run_already_active");
+        assert!(active.message.contains("run-1"));
+    }
+
+    #[test]
+    fn trace_json_conversion_reports_serialization_failures() {
+        struct SerializationFailure;
+
+        impl serde::Serialize for SerializationFailure {
+            fn serialize<S>(&self, _serializer: S) -> Result<S::Ok, S::Error>
+            where
+                S: serde::Serializer,
+            {
+                Err(serde::ser::Error::custom("fixture serialization failure"))
+            }
+        }
+
+        assert_eq!(
+            trace_to_json_value(json!({"ok": true})).unwrap()["ok"],
+            true
+        );
+        let error = trace_to_json_value(SerializationFailure)
+            .expect_err("serialization failure must be typed");
+        assert_eq!(error.code, "agent_trace_export_encode_failed");
+        assert!(error.message.contains("fixture serialization failure"));
     }
 
     #[test]
@@ -1126,15 +1552,7 @@ mod tests {
             .expect("append agent event");
         }
 
-        let (tx, rx) = sync_channel(800);
-        let channel = Channel::<AgentRunEventDto>::new(move |body| {
-            tx.send(
-                body.deserialize::<AgentRunEventDto>()
-                    .expect("deserialize agent event"),
-            )
-            .expect("send agent event");
-            Ok(())
-        });
+        let (channel, rx) = capturing_event_channel(800);
 
         let outcome =
             stream_persisted_agent_events_after(repo_root, project_id, run_id, &channel, 0, None)
@@ -1148,5 +1566,109 @@ mod tests {
             }
         );
         assert_eq!(rx.try_iter().count(), 750);
+
+        assert_eq!(
+            stream_persisted_agent_events_after(
+                repo_root,
+                project_id,
+                run_id,
+                &channel,
+                750,
+                None,
+            )
+            .expect("empty catchup"),
+            StreamCatchupOutcome::NoEvents
+        );
+
+        for (event_kind, payload_json) in [
+            (AgentRunEventKind::MessageDelta, r#"{"index":750}"#),
+            (AgentRunEventKind::RunFailed, r#"{"code":"fixture"}"#),
+            (AgentRunEventKind::MessageDelta, r#"{"index":752}"#),
+        ] {
+            project_store::append_agent_event(
+                repo_root,
+                &NewAgentEventRecord {
+                    project_id: project_id.into(),
+                    run_id: run_id.into(),
+                    event_kind,
+                    payload_json: payload_json.into(),
+                    created_at: "2026-04-25T00:00:01Z".into(),
+                },
+            )
+            .expect("append catchup boundary event");
+        }
+
+        let (terminal_channel, terminal_rx) = capturing_event_channel(4);
+        assert_eq!(
+            stream_persisted_agent_events_after(
+                repo_root,
+                project_id,
+                run_id,
+                &terminal_channel,
+                750,
+                None,
+            )
+            .expect("terminal catchup"),
+            StreamCatchupOutcome::Delivered {
+                last_id: 752,
+                terminal: true,
+            }
+        );
+        assert_eq!(
+            terminal_rx
+                .try_iter()
+                .map(|event| event.id)
+                .collect::<Vec<_>>(),
+            vec![751, 752]
+        );
+
+        let (bounded_channel, bounded_rx) = capturing_event_channel(4);
+        assert_eq!(
+            stream_persisted_agent_events_after(
+                repo_root,
+                project_id,
+                run_id,
+                &bounded_channel,
+                750,
+                Some(752),
+            )
+            .expect("bounded catchup"),
+            StreamCatchupOutcome::Delivered {
+                last_id: 751,
+                terminal: false,
+            }
+        );
+        assert_eq!(bounded_rx.try_iter().count(), 1);
+
+        let (empty_channel, _empty_rx) = capturing_event_channel(1);
+        assert_eq!(
+            stream_persisted_agent_events_after(
+                repo_root,
+                project_id,
+                run_id,
+                &empty_channel,
+                750,
+                Some(751),
+            )
+            .expect("empty bounded catchup"),
+            StreamCatchupOutcome::NoEvents
+        );
+
+        let failed_channel = Channel::<AgentRunEventDto>::new(move |_body| {
+            Err(std::io::Error::new(std::io::ErrorKind::BrokenPipe, "channel dropped").into())
+        });
+        assert_eq!(
+            stream_persisted_agent_events_after(
+                repo_root,
+                project_id,
+                run_id,
+                &failed_channel,
+                750,
+                None,
+            )
+            .expect_err("closed catchup channel must fail")
+            .code,
+            "agent_stream_channel_closed"
+        );
     }
 }

@@ -417,12 +417,12 @@ fn read_agent_run_wakeup_row(row: &Row<'_>) -> rusqlite::Result<AgentRunWakeupRe
         agent_session_id: row.get(1)?,
         run_id: row.get(2)?,
         wake_id: row.get(3)?,
-        kind: parse_agent_run_wakeup_kind(&row.get::<_, String>(4)?),
+        kind: parse_agent_run_wakeup_kind(&row.get::<_, String>(4)?, 4)?,
         due_at: row.get(5)?,
         deadline_at: row.get(6)?,
         poll_interval_ms,
         payload_json: row.get(8)?,
-        status: parse_agent_run_wakeup_status(&row.get::<_, String>(9)?),
+        status: parse_agent_run_wakeup_status(&row.get::<_, String>(9)?, 9)?,
         attempt_count,
         last_error: match (last_error_code, last_error_message) {
             (Some(code), Some(message)) => Some(AgentRunDiagnosticRecord { code, message }),
@@ -453,23 +453,39 @@ pub fn agent_run_wakeup_status_sql_value(status: AgentRunWakeupStatus) -> &'stat
     }
 }
 
-fn parse_agent_run_wakeup_kind(value: &str) -> AgentRunWakeupKind {
+fn parse_agent_run_wakeup_kind(value: &str, index: usize) -> rusqlite::Result<AgentRunWakeupKind> {
     match value {
-        "process_exit" => AgentRunWakeupKind::ProcessExit,
-        "process_ready" => AgentRunWakeupKind::ProcessReady,
-        "process_output" => AgentRunWakeupKind::ProcessOutput,
-        _ => AgentRunWakeupKind::Sleep,
+        "sleep" => Ok(AgentRunWakeupKind::Sleep),
+        "process_exit" => Ok(AgentRunWakeupKind::ProcessExit),
+        "process_ready" => Ok(AgentRunWakeupKind::ProcessReady),
+        "process_output" => Ok(AgentRunWakeupKind::ProcessOutput),
+        _ => Err(invalid_wakeup_enum_value(index, "kind", value)),
     }
 }
 
-fn parse_agent_run_wakeup_status(value: &str) -> AgentRunWakeupStatus {
+fn parse_agent_run_wakeup_status(
+    value: &str,
+    index: usize,
+) -> rusqlite::Result<AgentRunWakeupStatus> {
     match value {
-        "fired" => AgentRunWakeupStatus::Fired,
-        "cancelled" => AgentRunWakeupStatus::Cancelled,
-        "expired" => AgentRunWakeupStatus::Expired,
-        "failed" => AgentRunWakeupStatus::Failed,
-        _ => AgentRunWakeupStatus::Pending,
+        "pending" => Ok(AgentRunWakeupStatus::Pending),
+        "fired" => Ok(AgentRunWakeupStatus::Fired),
+        "cancelled" => Ok(AgentRunWakeupStatus::Cancelled),
+        "expired" => Ok(AgentRunWakeupStatus::Expired),
+        "failed" => Ok(AgentRunWakeupStatus::Failed),
+        _ => Err(invalid_wakeup_enum_value(index, "status", value)),
     }
+}
+
+fn invalid_wakeup_enum_value(index: usize, field: &str, value: &str) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        index,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("unknown agent wakeup {field} `{value}`"),
+        )),
+    )
 }
 
 fn optional_u64_to_i64(value: Option<u64>) -> Result<Option<i64>, CommandError> {
@@ -514,4 +530,570 @@ fn map_wakeup_store_write_error(
             database_path_for_repo(repo_root).display()
         ),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        commands::RuntimeAgentIdDto, db, git::repository::CanonicalRepository, state::DesktopState,
+    };
+
+    #[test]
+    fn corrupted_wakeup_kind_and_status_fail_closed_instead_of_becoming_pending_sleep() {
+        let fixture = tempfile::tempdir().expect("create wakeup fixture");
+        let repo_root = seed_project(&fixture);
+        seed_run_and_wakeup(&repo_root);
+
+        for record in [
+            new_wakeup(
+                "wake-2",
+                AgentRunWakeupKind::ProcessExit,
+                "2026-07-18T12:00:00Z",
+            ),
+            new_wakeup(
+                "wake-3",
+                AgentRunWakeupKind::ProcessReady,
+                "2026-07-18T12:00:02Z",
+            ),
+            new_wakeup(
+                "wake-4",
+                AgentRunWakeupKind::ProcessOutput,
+                "2026-07-18T12:00:03Z",
+            ),
+        ] {
+            insert_agent_run_wakeup(&repo_root, &record).expect("insert wakeup kind fixture");
+        }
+        let pending = list_pending_agent_run_wakeups(&repo_root).expect("list fixture wakeups");
+        assert_eq!(
+            pending
+                .iter()
+                .map(|record| record.wake_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["wake-2", "wake-1", "wake-3", "wake-4"]
+        );
+        assert_eq!(
+            pending.iter().map(|record| record.kind).collect::<Vec<_>>(),
+            vec![
+                AgentRunWakeupKind::ProcessExit,
+                AgentRunWakeupKind::Sleep,
+                AgentRunWakeupKind::ProcessReady,
+                AgentRunWakeupKind::ProcessOutput,
+            ]
+        );
+        assert_eq!(
+            list_pending_agent_run_wakeups_for_run(&repo_root, "project-1", "run-1")
+                .expect("list run wakeups")
+                .len(),
+            4
+        );
+
+        let expired = mark_agent_run_wakeup_status(
+            &repo_root,
+            "project-1",
+            "run-1",
+            "wake-2",
+            AgentRunWakeupStatus::Expired,
+            Some(AgentRunDiagnosticRecord {
+                code: "deadline".into(),
+                message: "Deadline elapsed.".into(),
+            }),
+            "2026-07-18T12:00:10Z",
+        )
+        .expect("expire wakeup");
+        assert_eq!(expired.status, AgentRunWakeupStatus::Expired);
+        assert_eq!(
+            expired.last_error.expect("expiry diagnostic").code,
+            "deadline"
+        );
+        assert_eq!(
+            mark_agent_run_wakeup_status(
+                &repo_root,
+                "project-1",
+                "run-1",
+                "wake-3",
+                AgentRunWakeupStatus::Failed,
+                None,
+                "2026-07-18T12:00:11Z",
+            )
+            .expect("fail wakeup")
+            .status,
+            AgentRunWakeupStatus::Failed
+        );
+        assert_eq!(
+            mark_agent_run_wakeup_status(
+                &repo_root,
+                "project-1",
+                "run-1",
+                "wake-4",
+                AgentRunWakeupStatus::Cancelled,
+                None,
+                "2026-07-18T12:00:12Z",
+            )
+            .expect("cancel wakeup")
+            .status,
+            AgentRunWakeupStatus::Cancelled
+        );
+        let rescheduled = reschedule_agent_run_wakeup(
+            &repo_root,
+            "project-1",
+            "run-1",
+            "wake-1",
+            "2026-07-18T12:00:20Z",
+            r#"{"reason":"updated"}"#,
+            "2026-07-18T12:00:13Z",
+        )
+        .expect("reschedule pending wakeup");
+        assert_eq!(rescheduled.attempt_count, 1);
+        assert_eq!(
+            rescheduled.payload().expect("rescheduled payload")["reason"],
+            "updated"
+        );
+        assert!(mark_agent_run_wakeup_fired(
+            &repo_root,
+            "project-1",
+            "run-1",
+            "wake-1",
+            "2026-07-18T12:00:20Z",
+        )
+        .expect("fire rescheduled wakeup"));
+        assert!(
+            maybe_load_pending_agent_run_wakeup(&repo_root, "project-1", "run-1", "wake-1",)
+                .expect("load terminal pending wakeup")
+                .is_none()
+        );
+        assert!(list_pending_agent_run_wakeups(&repo_root)
+            .expect("list after terminal updates")
+            .is_empty());
+        assert_eq!(
+            insert_agent_run_wakeup(
+                &repo_root,
+                &new_wakeup("wake-1", AgentRunWakeupKind::Sleep, "2026-07-18T12:00:30Z",)
+            )
+            .expect_err("duplicate wakeup ids must be rejected")
+            .code,
+            "agent_run_wakeup_insert_failed"
+        );
+
+        let database_path = database_path_for_repo(&repo_root);
+        let connection = rusqlite::Connection::open(database_path).expect("open fixture database");
+        connection
+            .execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .expect("enable corruption fixture");
+
+        connection
+            .execute(
+                "UPDATE agent_run_wakeups SET kind = 'future_kind' WHERE wake_id = 'wake-1'",
+                [],
+            )
+            .expect("corrupt fixture kind");
+        assert_eq!(
+            load_agent_run_wakeup(&repo_root, "project-1", "run-1", "wake-1")
+                .expect_err("unknown wakeup kind must fail closed")
+                .code,
+            "agent_run_wakeup_read_failed"
+        );
+
+        connection
+            .execute(
+                "UPDATE agent_run_wakeups SET kind = 'sleep', status = 'future_status' WHERE wake_id = 'wake-1'",
+                [],
+            )
+            .expect("corrupt fixture status");
+        assert_eq!(
+            load_agent_run_wakeup(&repo_root, "project-1", "run-1", "wake-1")
+                .expect_err("unknown wakeup status must fail closed")
+                .code,
+            "agent_run_wakeup_read_failed"
+        );
+    }
+
+    #[test]
+    fn wakeup_validation_payload_decoding_and_sql_mappings_cover_all_boundaries() {
+        let valid = new_wakeup(
+            "wake-validation",
+            AgentRunWakeupKind::Sleep,
+            "2026-07-18T12:00:00Z",
+        );
+        validate_new_wakeup(&valid).expect("valid wakeup fixture");
+        for invalid in [
+            NewAgentRunWakeupRecord {
+                project_id: " ".into(),
+                ..valid.clone()
+            },
+            NewAgentRunWakeupRecord {
+                agent_session_id: "".into(),
+                ..valid.clone()
+            },
+            NewAgentRunWakeupRecord {
+                run_id: "".into(),
+                ..valid.clone()
+            },
+            NewAgentRunWakeupRecord {
+                wake_id: "".into(),
+                ..valid.clone()
+            },
+            NewAgentRunWakeupRecord {
+                due_at: "".into(),
+                ..valid.clone()
+            },
+            NewAgentRunWakeupRecord {
+                deadline_at: Some(" ".into()),
+                ..valid.clone()
+            },
+            NewAgentRunWakeupRecord {
+                payload_json: "malformed".into(),
+                ..valid.clone()
+            },
+            NewAgentRunWakeupRecord {
+                created_at: "".into(),
+                ..valid.clone()
+            },
+        ] {
+            assert_eq!(
+                validate_new_wakeup(&invalid)
+                    .expect_err("reject invalid wakeup fixture")
+                    .code,
+                "invalid_request"
+            );
+        }
+
+        let malformed = AgentRunWakeupRecord {
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            wake_id: "wake-bad".into(),
+            kind: AgentRunWakeupKind::Sleep,
+            due_at: "2026-07-18T12:00:00Z".into(),
+            deadline_at: None,
+            poll_interval_ms: None,
+            payload_json: "malformed".into(),
+            status: AgentRunWakeupStatus::Pending,
+            attempt_count: 0,
+            last_error: None,
+            fired_at: None,
+            created_at: "2026-07-18T12:00:00Z".into(),
+            updated_at: "2026-07-18T12:00:00Z".into(),
+        };
+        assert_eq!(
+            malformed
+                .payload()
+                .expect_err("malformed durable payload must be diagnosed")
+                .code,
+            "agent_run_wakeup_payload_decode_failed"
+        );
+
+        assert_eq!(optional_u64_to_i64(None).expect("none interval"), None);
+        assert_eq!(
+            optional_u64_to_i64(Some(42)).expect("valid interval"),
+            Some(42)
+        );
+        assert_eq!(
+            optional_u64_to_i64(Some(u64::MAX))
+                .expect_err("oversized interval")
+                .code,
+            "invalid_request"
+        );
+        assert_eq!(
+            optional_i64_to_u64(None, 1).expect("none database interval"),
+            None
+        );
+        assert!(optional_i64_to_u64(Some(-1), 1).is_err());
+        assert_eq!(i64_to_u64(42, 1).expect("valid database integer"), 42);
+        assert!(i64_to_u64(-1, 1).is_err());
+        assert!(agent_run_wakeup_select_sql("WHERE wake_id = ?1").contains("WHERE wake_id = ?1"));
+        assert!(parse_agent_run_wakeup_kind("unknown", 4).is_err());
+        assert!(parse_agent_run_wakeup_status("unknown", 9).is_err());
+
+        let unused_root = Path::new("/unused-wakeup-validation-root");
+        assert_invalid(load_agent_run_wakeup(unused_root, "", "run-1", "wake-1"));
+        assert_invalid(load_agent_run_wakeup(
+            unused_root,
+            "project-1",
+            "",
+            "wake-1",
+        ));
+        assert_invalid(load_agent_run_wakeup(unused_root, "project-1", "run-1", ""));
+        assert_invalid(list_pending_agent_run_wakeups_for_run(
+            unused_root,
+            "",
+            "run-1",
+        ));
+        assert_invalid(list_pending_agent_run_wakeups_for_run(
+            unused_root,
+            "project-1",
+            "",
+        ));
+        assert_invalid(maybe_load_pending_agent_run_wakeup(
+            unused_root,
+            "",
+            "run-1",
+            "wake-1",
+        ));
+        assert_invalid(maybe_load_pending_agent_run_wakeup(
+            unused_root,
+            "project-1",
+            "",
+            "wake-1",
+        ));
+        assert_invalid(maybe_load_pending_agent_run_wakeup(
+            unused_root,
+            "project-1",
+            "run-1",
+            "",
+        ));
+        assert_invalid(mark_agent_run_wakeup_fired(
+            unused_root,
+            "",
+            "run-1",
+            "wake-1",
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(mark_agent_run_wakeup_fired(
+            unused_root,
+            "project-1",
+            "",
+            "wake-1",
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(mark_agent_run_wakeup_fired(
+            unused_root,
+            "project-1",
+            "run-1",
+            "",
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(mark_agent_run_wakeup_fired(
+            unused_root,
+            "project-1",
+            "run-1",
+            "wake-1",
+            "",
+        ));
+        assert_invalid(reschedule_agent_run_wakeup(
+            unused_root,
+            "",
+            "run-1",
+            "wake-1",
+            "2026-07-18T12:00:00Z",
+            "{}",
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(reschedule_agent_run_wakeup(
+            unused_root,
+            "project-1",
+            "",
+            "wake-1",
+            "2026-07-18T12:00:00Z",
+            "{}",
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(reschedule_agent_run_wakeup(
+            unused_root,
+            "project-1",
+            "run-1",
+            "",
+            "2026-07-18T12:00:00Z",
+            "{}",
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(reschedule_agent_run_wakeup(
+            unused_root,
+            "project-1",
+            "run-1",
+            "wake-1",
+            "",
+            "{}",
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(reschedule_agent_run_wakeup(
+            unused_root,
+            "project-1",
+            "run-1",
+            "wake-1",
+            "2026-07-18T12:00:00Z",
+            "malformed",
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(reschedule_agent_run_wakeup(
+            unused_root,
+            "project-1",
+            "run-1",
+            "wake-1",
+            "2026-07-18T12:00:00Z",
+            "{}",
+            "",
+        ));
+        assert_invalid(mark_agent_run_wakeup_status(
+            unused_root,
+            "",
+            "run-1",
+            "wake-1",
+            AgentRunWakeupStatus::Failed,
+            None,
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(mark_agent_run_wakeup_status(
+            unused_root,
+            "project-1",
+            "",
+            "wake-1",
+            AgentRunWakeupStatus::Failed,
+            None,
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(mark_agent_run_wakeup_status(
+            unused_root,
+            "project-1",
+            "run-1",
+            "",
+            AgentRunWakeupStatus::Failed,
+            None,
+            "2026-07-18T12:00:00Z",
+        ));
+        assert_invalid(mark_agent_run_wakeup_status(
+            unused_root,
+            "project-1",
+            "run-1",
+            "wake-1",
+            AgentRunWakeupStatus::Failed,
+            None,
+            "",
+        ));
+
+        assert_eq!(
+            map_wakeup_store_query_error(
+                unused_root,
+                "query_fixture",
+                rusqlite::Error::InvalidQuery
+            )
+            .code,
+            "query_fixture"
+        );
+        assert_eq!(
+            map_wakeup_store_write_error(
+                unused_root,
+                "write_fixture",
+                rusqlite::Error::InvalidQuery
+            )
+            .code,
+            "write_fixture"
+        );
+
+        for (kind, sql) in [
+            (AgentRunWakeupKind::Sleep, "sleep"),
+            (AgentRunWakeupKind::ProcessExit, "process_exit"),
+            (AgentRunWakeupKind::ProcessReady, "process_ready"),
+            (AgentRunWakeupKind::ProcessOutput, "process_output"),
+        ] {
+            assert_eq!(agent_run_wakeup_kind_sql_value(kind), sql);
+            assert_eq!(
+                parse_agent_run_wakeup_kind(sql, 0).expect("parse kind"),
+                kind
+            );
+        }
+        for (status, sql) in [
+            (AgentRunWakeupStatus::Pending, "pending"),
+            (AgentRunWakeupStatus::Fired, "fired"),
+            (AgentRunWakeupStatus::Cancelled, "cancelled"),
+            (AgentRunWakeupStatus::Expired, "expired"),
+            (AgentRunWakeupStatus::Failed, "failed"),
+        ] {
+            assert_eq!(agent_run_wakeup_status_sql_value(status), sql);
+            assert_eq!(
+                parse_agent_run_wakeup_status(sql, 0).expect("parse status"),
+                status
+            );
+        }
+    }
+
+    fn assert_invalid<T: std::fmt::Debug>(result: Result<T, CommandError>) {
+        assert_eq!(
+            result.expect_err("fixture must be rejected").code,
+            "invalid_request"
+        );
+    }
+
+    fn seed_project(root: &tempfile::TempDir) -> std::path::PathBuf {
+        let repo_root = root.path().join("repo");
+        std::fs::create_dir_all(&repo_root).expect("create fixture repository");
+        let canonical_root = std::fs::canonicalize(&repo_root).expect("canonical fixture root");
+        let repository = CanonicalRepository {
+            project_id: "project-1".into(),
+            repository_id: "repository-1".into(),
+            root_path: canonical_root.clone(),
+            root_path_string: canonical_root.to_string_lossy().into_owned(),
+            common_git_dir: canonical_root.join(".git"),
+            display_name: "Wakeup fixture".into(),
+            branch_name: Some("main".into()),
+            head_sha: Some("abc123".into()),
+            branch: None,
+            last_commit: None,
+            status_entries: Vec::new(),
+            has_staged_changes: false,
+            has_unstaged_changes: false,
+            has_untracked_changes: false,
+            additions: 0,
+            deletions: 0,
+        };
+        db::configure_project_database_paths(&root.path().join("app-data").join("xero.db"));
+        db::import_project(&repository, DesktopState::default().import_failpoints())
+            .expect("import fixture project");
+        canonical_root
+    }
+
+    fn seed_run_and_wakeup(repo_root: &Path) {
+        super::super::insert_agent_run(
+            repo_root,
+            &super::super::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(1),
+                project_id: "project-1".into(),
+                agent_session_id: super::super::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-1".into(),
+                provider_id: "fixture-provider".into(),
+                model_id: "fixture-model".into(),
+                prompt: "Wait.".into(),
+                system_prompt: "fixture".into(),
+                now: "2026-07-18T12:00:00Z".into(),
+            },
+        )
+        .expect("insert fixture run");
+        insert_agent_run_wakeup(
+            repo_root,
+            &NewAgentRunWakeupRecord {
+                project_id: "project-1".into(),
+                agent_session_id: super::super::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: "run-1".into(),
+                wake_id: "wake-1".into(),
+                kind: AgentRunWakeupKind::Sleep,
+                due_at: "2026-07-18T12:00:01Z".into(),
+                deadline_at: None,
+                poll_interval_ms: None,
+                payload_json: r#"{"reason":"fixture"}"#.into(),
+                created_at: "2026-07-18T12:00:00Z".into(),
+            },
+        )
+        .expect("insert fixture wakeup");
+    }
+
+    fn new_wakeup(
+        wake_id: &str,
+        kind: AgentRunWakeupKind,
+        due_at: &str,
+    ) -> NewAgentRunWakeupRecord {
+        NewAgentRunWakeupRecord {
+            project_id: "project-1".into(),
+            agent_session_id: super::super::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: "run-1".into(),
+            wake_id: wake_id.into(),
+            kind,
+            due_at: due_at.into(),
+            deadline_at: Some("2026-07-18T12:05:00Z".into()),
+            poll_interval_ms: Some(1_000),
+            payload_json: format!(r#"{{"reason":"{wake_id}"}}"#),
+            created_at: format!("2026-07-18T12:00:{:02}Z", wake_id.len()),
+        }
+    }
 }

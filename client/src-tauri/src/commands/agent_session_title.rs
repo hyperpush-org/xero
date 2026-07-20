@@ -509,13 +509,17 @@ fn titles_match(left: &str, right: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        build_session_title_context, build_session_title_prompt, fallback_title_from_prompt,
-        sanitize_provider_session_title, title_generation_controls, title_or_prompt_fallback,
-    };
-    use crate::commands::{
-        CommandError, ProviderModelThinkingEffortDto, RuntimeAgentIdDto, RuntimeRunApprovalModeDto,
-        RuntimeRunControlInputDto,
+    use std::fs;
+
+    use tauri::Manager;
+
+    use super::*;
+    use crate::{
+        commands::RuntimeAgentIdDto,
+        db,
+        git::repository::CanonicalRepository,
+        registry::RegistryProjectRecord,
+        runtime::AgentProviderConfig,
     };
 
     #[test]
@@ -591,5 +595,189 @@ mod tests {
             RuntimeRunApprovalModeDto::Suggest
         );
         assert!(!title_controls.plan_mode_required);
+    }
+
+    #[test]
+    fn session_title_helper_fixture_covers_sanitization_truncation_controls_and_context_roles() {
+        for (raw, expected) in [
+            ("```text\nTitle: Rust Build Storage\n```", Some("Rust Build Storage")),
+            ("'Workflow Recovery'", Some("Workflow Recovery")),
+            ("`Agent Harness Tests`", Some("Agent Harness Tests")),
+            ("Name: Provider Adapter Audit!", Some("Provider Adapter Audit")),
+            ("\nfirst useful line\nignored line", Some("first useful line")),
+            ("Untitled Session", None),
+            ("   ", None),
+        ] {
+            assert_eq!(sanitize_provider_session_title(raw).as_deref(), expected);
+        }
+        assert_eq!(fallback_title_from_prompt("# Ship the Rust tests!!!").as_deref(), Some("Ship the Rust tests"));
+        assert_eq!(fallback_title_from_prompt("new session"), None);
+        assert!(titles_match("  Rust Tests ", "rust tests"));
+        assert!(!titles_match("Rust", "Stages"));
+        assert_eq!(TitleContextRole::User.label(), "User");
+        assert_eq!(TitleContextRole::Assistant.label(), "Assistant");
+        assert!(truncate_text(&"x".repeat(MAX_PROMPT_CHARS + 1), MAX_PROMPT_CHARS, "cut")
+            .ends_with("cut"));
+        assert_eq!(truncate_text("short", 10, "cut"), "short");
+        assert!(truncate_title(&format!("{} tail", "x".repeat(MAX_TITLE_CHARS + 1)), MAX_TITLE_CHARS)
+            .chars()
+            .count()
+            <= MAX_TITLE_CHARS);
+        assert_eq!(strip_markdown_fence("plain"), "plain");
+        assert_eq!(strip_wrapping_quotes("\"multi\nline\""), "\"multi\nline\"");
+        assert_eq!(strip_label_prefix("plain title"), "plain title");
+
+        let controls = title_generation_control_state(None, "fixture-model".into());
+        assert_eq!(controls.active.model_id, "fixture-model");
+        assert_eq!(controls.active.approval_mode, RuntimeRunApprovalModeDto::Suggest);
+        assert!(!controls.active.auto_compact_enabled);
+        assert_eq!(
+            title_or_prompt_fallback(Ok("Direct title".into()), "fallback").unwrap(),
+            "Direct title"
+        );
+        assert_eq!(
+            title_or_prompt_fallback(
+                Err(CommandError::retryable("fixture", "failed")),
+                "new chat",
+            )
+            .expect_err("generic fallback is unusable")
+            .code,
+            "agent_session_title_fallback_empty"
+        );
+    }
+
+    #[test]
+    fn auto_name_session_fixture_uses_recent_transcript_and_fake_provider_idempotently() {
+        let fixture = tempfile::tempdir().expect("title fixture");
+        let repo_root = fixture.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create title repository");
+        let repo_root = fs::canonicalize(repo_root).expect("canonical title repository");
+        let project_id = "project-session-title";
+        let registry_path = fixture.path().join("app-data/global.db");
+        let state = DesktopState::default()
+            .with_global_db_path_override(registry_path.clone())
+            .with_owned_agent_provider_config_override(AgentProviderConfig::Fake);
+        let app = crate::configure_builder_with_state(tauri::test::mock_builder(), state)
+            .build(tauri::test::mock_context(tauri::test::noop_assets()))
+            .expect("build title fixture app");
+        db::configure_project_database_paths(&registry_path);
+        let repository = CanonicalRepository {
+            project_id: project_id.into(),
+            repository_id: "repository-session-title".into(),
+            root_path: repo_root.clone(),
+            root_path_string: repo_root.to_string_lossy().into_owned(),
+            common_git_dir: repo_root.join(".git"),
+            display_name: "Session title fixture".into(),
+            branch_name: Some("main".into()),
+            head_sha: Some("abc123".into()),
+            branch: None,
+            last_commit: None,
+            status_entries: Vec::new(),
+            has_staged_changes: false,
+            has_unstaged_changes: false,
+            has_untracked_changes: false,
+            additions: 0,
+            deletions: 0,
+        };
+        db::import_project(
+            &repository,
+            app.state::<DesktopState>().import_failpoints(),
+        )
+        .expect("import title fixture project");
+        crate::registry::replace_projects(
+            &registry_path,
+            vec![RegistryProjectRecord {
+                project_id: project_id.into(),
+                repository_id: repository.repository_id,
+                root_path: repo_root.to_string_lossy().into_owned(),
+                is_git_repo: true,
+            }],
+        )
+        .expect("seed title fixture registry");
+
+        let run_id = "run-session-title";
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.into(),
+                provider_id: "fake_provider".into(),
+                model_id: "fake-model".into(),
+                prompt: "Audit the workflow runtime.".into(),
+                system_prompt: "fixture".into(),
+                now: "2026-07-18T00:00:00Z".into(),
+            },
+        )
+        .expect("insert title fixture run");
+        for (role, content) in [
+            (project_store::AgentMessageRole::System, "hidden system"),
+            (project_store::AgentMessageRole::User, "Audit the workflow runtime."),
+            (project_store::AgentMessageRole::Assistant, "I found a scheduler issue."),
+            (project_store::AgentMessageRole::Tool, "hidden tool output"),
+        ] {
+            project_store::append_agent_message(
+                &repo_root,
+                &project_store::NewAgentMessageRecord {
+                    project_id: project_id.into(),
+                    run_id: run_id.into(),
+                    role,
+                    content: content.into(),
+                    provider_metadata_json: None,
+                    created_at: "2026-07-18T00:00:01Z".into(),
+                    attachments: Vec::new(),
+                },
+            )
+            .expect("append title context message");
+        }
+        let context = build_session_title_context(
+            &repo_root,
+            project_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            project_store::DEFAULT_AGENT_SESSION_TITLE,
+            "Now expand Stage coverage.",
+        );
+        assert!(context.contains("User: Audit the workflow runtime."));
+        assert!(context.contains("Assistant: I found a scheduler issue."));
+        assert!(context.contains("User: Now expand Stage coverage."));
+        assert!(!context.contains("hidden system"));
+        assert!(!context.contains("hidden tool output"));
+
+        let request = AutoNameAgentSessionRequestDto {
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            prompt: "Now expand Stage coverage.".into(),
+            controls: None,
+        };
+        let named = auto_name_agent_session_blocking(
+            app.handle().clone(),
+            app.state::<DesktopState>().inner().clone(),
+            request.clone(),
+        )
+        .expect("auto-name fixture session");
+        assert!(!is_generic_session_title(&named.title));
+        let replay = auto_name_agent_session_blocking(
+            app.handle().clone(),
+            app.state::<DesktopState>().inner().clone(),
+            request,
+        )
+        .expect("replay auto-name fixture session");
+        assert_eq!(replay.title, named.title);
+
+        let missing = auto_name_agent_session_blocking(
+            app.handle().clone(),
+            app.state::<DesktopState>().inner().clone(),
+            AutoNameAgentSessionRequestDto {
+                project_id: project_id.into(),
+                agent_session_id: "missing".into(),
+                prompt: "Name this".into(),
+                controls: None,
+            },
+        )
+        .expect_err("missing title session is typed");
+        assert_eq!(missing.code, "agent_session_missing");
     }
 }

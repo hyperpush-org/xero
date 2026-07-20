@@ -1233,3 +1233,749 @@ fn command_error_from_core(error: CoreError) -> CommandError {
         CommandError::user_fixable(error.code, error.message)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use rusqlite::{params, Connection};
+    use std::fs;
+
+    use tempfile::TempDir;
+    use xero_agent_core::{
+        DomainToolPackHealthReport, DomainToolPackHealthStatus, EnvironmentActionApproval,
+        EnvironmentConfigTrust,
+    };
+
+    fn lifecycle_config(workspace_root: &Path) -> EnvironmentLifecycleConfig {
+        let mut config = EnvironmentLifecycleConfig::local("project-1", "run-1");
+        config.workspace_root = workspace_root.to_string_lossy().into_owned();
+        config
+    }
+
+    fn setup_script(command: Vec<String>) -> EnvironmentSetupScript {
+        EnvironmentSetupScript {
+            script_id: "fixture".into(),
+            label: "Fixture setup".into(),
+            command,
+            cwd: None,
+            config_trust: EnvironmentConfigTrust::TrustedProject,
+            approval: EnvironmentActionApproval::approved(),
+            required: true,
+        }
+    }
+
+    fn persisted_core_store_fixture() -> (TempDir, PathBuf, String) {
+        let fixture = TempDir::new().expect("create core-store fixture");
+        let repo_root = fixture.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create fixture repository");
+        let database_path = fixture.path().join("state.db");
+        let mut connection = Connection::open(&database_path).expect("open fixture database");
+        crate::db::configure_connection(&connection).expect("configure fixture database");
+        crate::db::migrations::migrations()
+            .to_latest(&mut connection)
+            .expect("migrate fixture database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params!["project-core-store"],
+            )
+            .expect("seed fixture project");
+        crate::db::register_project_database_path_for_tests(&repo_root, database_path);
+        let session = project_store::create_agent_session(
+            &repo_root,
+            &project_store::AgentSessionCreateRecord {
+                project_id: "project-core-store".into(),
+                title: "Core store fixture".into(),
+                summary: String::new(),
+                selected: true,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create fixture session");
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(
+                    project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                ),
+                project_id: "project-core-store".into(),
+                agent_session_id: session.agent_session_id.clone(),
+                run_id: "run-core-store".into(),
+                provider_id: "fake".into(),
+                model_id: "fake".into(),
+                prompt: "Exercise the desktop core store.".into(),
+                system_prompt: "fixture".into(),
+                now: "2026-07-18T12:00:00Z".into(),
+            },
+        )
+        .expect("insert fixture run");
+        (fixture, repo_root, session.agent_session_id)
+    }
+
+    #[test]
+    fn environment_setup_script_fixtures_enforce_trust_approval_and_exit_status() {
+        let temp = TempDir::new().expect("temp workspace");
+        let executor = DesktopEnvironmentLifecycleExecutor::new(temp.path());
+        let config = lifecycle_config(temp.path());
+
+        let mut script = setup_script(Vec::new());
+        assert_eq!(
+            executor
+                .run_setup_script(&script, &config)
+                .expect_err("empty command")
+                .code,
+            "agent_environment_setup_script_empty"
+        );
+
+        script.command = vec!["sh".into(), "-c".into(), "exit 0".into()];
+        script.config_trust = EnvironmentConfigTrust::UntrustedProject;
+        assert_eq!(
+            executor
+                .run_setup_script(&script, &config)
+                .expect_err("untrusted script")
+                .code,
+            "agent_environment_setup_script_untrusted"
+        );
+
+        script.config_trust = EnvironmentConfigTrust::TrustedApp;
+        script.approval = EnvironmentActionApproval::pending();
+        assert_eq!(
+            executor
+                .run_setup_script(&script, &config)
+                .expect_err("approval required")
+                .code,
+            "agent_environment_setup_script_approval_required"
+        );
+
+        script.approval = EnvironmentActionApproval::approved();
+        script.cwd = Some("nested".into());
+        fs::create_dir(temp.path().join("nested")).expect("nested cwd");
+        let result = executor
+            .run_setup_script(&script, &config)
+            .expect("successful setup script");
+        assert!(result.summary.contains("Fixture setup"));
+
+        script.command = vec!["sh".into(), "-c".into(), "exit 7".into()];
+        assert_eq!(
+            executor
+                .run_setup_script(&script, &config)
+                .expect_err("nonzero script")
+                .code,
+            "agent_environment_setup_script_failed"
+        );
+    }
+
+    #[test]
+    fn environment_executor_fixtures_cover_hooks_tool_packs_and_index_requirements() {
+        let temp = TempDir::new().expect("temp workspace");
+        let executor = DesktopEnvironmentLifecycleExecutor::new(temp.path());
+        let mut config = lifecycle_config(temp.path());
+        let hook = EnvironmentGitHookSetup {
+            hook_name: "pre-commit".into(),
+            script_path: ".git/hooks/pre-commit".into(),
+            config_trust: EnvironmentConfigTrust::TrustedProject,
+            approval: EnvironmentActionApproval::approved(),
+            required: true,
+        };
+
+        assert_eq!(
+            executor
+                .setup_git_hook(&hook, &config)
+                .expect_err("missing hook")
+                .code,
+            "agent_environment_git_hook_setup_requires_approval"
+        );
+        fs::create_dir_all(temp.path().join(".git/hooks")).expect("hook directory");
+        fs::write(temp.path().join(&hook.script_path), "#!/bin/sh\n").expect("hook fixture");
+        assert!(executor
+            .setup_git_hook(&hook, &config)
+            .expect("existing hook")
+            .summary
+            .contains("already exists"));
+
+        config.tool_packs.clear();
+        assert_eq!(
+            executor
+                .setup_skills_plugins(&config)
+                .expect_err("empty tool packs")
+                .code,
+            "agent_environment_tool_packs_empty"
+        );
+        config.tool_packs = vec!["owned_agent_core".into(), "project_context".into()];
+        assert!(executor
+            .setup_skills_plugins(&config)
+            .expect("tool packs")
+            .summary
+            .contains("2 tool pack descriptor(s)"));
+
+        config.semantic_index_required = false;
+        assert!(executor.index_workspace(&config).is_ok());
+        config.semantic_index_required = true;
+        assert_eq!(
+            executor
+                .index_workspace(&config)
+                .expect_err("unavailable required index")
+                .code,
+            "agent_environment_workspace_index_unavailable"
+        );
+    }
+
+    #[test]
+    fn provider_credential_fixtures_cover_every_provider_shape() {
+        let fixtures = vec![
+            (AgentProviderConfig::Fake, true),
+            (
+                AgentProviderConfig::OpenAiResponses(OpenAiResponsesProviderConfig {
+                    provider_id: "openai".into(),
+                    model_id: "model".into(),
+                    base_url: "https://example.test".into(),
+                    api_key: " key ".into(),
+                    timeout_ms: 1,
+                }),
+                true,
+            ),
+            (
+                AgentProviderConfig::OpenAiResponses(OpenAiResponsesProviderConfig {
+                    provider_id: "openai".into(),
+                    model_id: "model".into(),
+                    base_url: "https://example.test".into(),
+                    api_key: " ".into(),
+                    timeout_ms: 1,
+                }),
+                false,
+            ),
+            (
+                AgentProviderConfig::OpenAiCodexResponses(OpenAiCodexResponsesProviderConfig {
+                    provider_id: "codex".into(),
+                    model_id: "model".into(),
+                    base_url: "https://example.test".into(),
+                    access_token: "token".into(),
+                    account_id: "account".into(),
+                    session_id: None,
+                    timeout_ms: 1,
+                }),
+                true,
+            ),
+            (
+                AgentProviderConfig::OpenAiCodexResponses(OpenAiCodexResponsesProviderConfig {
+                    provider_id: "codex".into(),
+                    model_id: "model".into(),
+                    base_url: "https://example.test".into(),
+                    access_token: "token".into(),
+                    account_id: " ".into(),
+                    session_id: None,
+                    timeout_ms: 1,
+                }),
+                false,
+            ),
+            (
+                AgentProviderConfig::XaiResponses(XaiResponsesProviderConfig {
+                    provider_id: "xai".into(),
+                    model_id: "model".into(),
+                    base_url: "https://example.test".into(),
+                    bearer_token: "token".into(),
+                    timeout_ms: 1,
+                }),
+                true,
+            ),
+            (
+                AgentProviderConfig::XaiResponses(XaiResponsesProviderConfig {
+                    provider_id: "xai".into(),
+                    model_id: "model".into(),
+                    base_url: "https://example.test".into(),
+                    bearer_token: " ".into(),
+                    timeout_ms: 1,
+                }),
+                false,
+            ),
+            (
+                AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+                    provider_id: crate::runtime::OLLAMA_PROVIDER_ID.into(),
+                    model_id: "model".into(),
+                    base_url: "http://localhost".into(),
+                    api_key: None,
+                    api_version: None,
+                    timeout_ms: 1,
+                }),
+                true,
+            ),
+            (
+                AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+                    provider_id: "compatible".into(),
+                    model_id: "model".into(),
+                    base_url: "https://example.test".into(),
+                    api_key: Some(" ".into()),
+                    api_version: None,
+                    timeout_ms: 1,
+                }),
+                false,
+            ),
+            (
+                AgentProviderConfig::DeepSeek(DeepSeekProviderConfig {
+                    model_id: "model".into(),
+                    base_url: "https://example.test".into(),
+                    api_key: "key".into(),
+                    timeout_ms: 1,
+                }),
+                true,
+            ),
+            (
+                AgentProviderConfig::Anthropic(AnthropicProviderConfig {
+                    provider_id: "anthropic".into(),
+                    model_id: "model".into(),
+                    api_key: "key".into(),
+                    base_url: "https://example.test".into(),
+                    anthropic_version: "v1".into(),
+                    timeout_ms: 1,
+                }),
+                true,
+            ),
+            (
+                AgentProviderConfig::Bedrock(BedrockProviderConfig {
+                    model_id: "model".into(),
+                    region: " ".into(),
+                    timeout_ms: 1,
+                }),
+                false,
+            ),
+            (
+                AgentProviderConfig::Vertex(VertexProviderConfig {
+                    model_id: "model".into(),
+                    region: "us-central1".into(),
+                    project_id: "project".into(),
+                    timeout_ms: 1,
+                }),
+                true,
+            ),
+            (
+                AgentProviderConfig::Vertex(VertexProviderConfig {
+                    model_id: "model".into(),
+                    region: " ".into(),
+                    project_id: "project".into(),
+                    timeout_ms: 1,
+                }),
+                false,
+            ),
+        ];
+
+        for (config, expected) in fixtures {
+            assert_eq!(provider_config_has_credentials(&config), expected, "{config:?}");
+        }
+    }
+
+    #[test]
+    fn tool_pack_and_semantic_requirement_fixtures_are_sorted_and_explicit() {
+        let reports = vec![
+            DomainToolPackHealthReport {
+                contract_version: 1,
+                pack_id: "emulator".into(),
+                label: "Emulator".into(),
+                enabled_by_policy: true,
+                status: DomainToolPackHealthStatus::Warning,
+                checked_at: "now".into(),
+                checks: Vec::new(),
+                scenario_checks: Vec::new(),
+                missing_prerequisites: vec!["xcrun".into(), "adb".into(), "adb".into()],
+            },
+            DomainToolPackHealthReport {
+                contract_version: 1,
+                pack_id: "disabled".into(),
+                label: "Disabled".into(),
+                enabled_by_policy: false,
+                status: DomainToolPackHealthStatus::Skipped,
+                checked_at: "now".into(),
+                checks: Vec::new(),
+                scenario_checks: Vec::new(),
+                missing_prerequisites: vec!["xcrun".into()],
+            },
+            DomainToolPackHealthReport {
+                contract_version: 1,
+                pack_id: "other".into(),
+                label: "Other".into(),
+                enabled_by_policy: true,
+                status: DomainToolPackHealthStatus::Passed,
+                checked_at: "now".into(),
+                checks: Vec::new(),
+                scenario_checks: Vec::new(),
+                missing_prerequisites: vec!["ignored".into()],
+            },
+        ];
+        assert_eq!(
+            required_binaries_for_tool_packs(&reports),
+            vec!["adb".to_string(), "xcrun".to_string()]
+        );
+
+        let reasons = semantic_index_requirement_reasons_from_definition(&json!({
+            "retrievalDefaults": {
+                "required": true,
+                "semanticIndexRequired": true,
+                "workspaceIndexRequired": false,
+            },
+            "projectDataPolicy": { "retrievalRequired": true },
+        }));
+        assert_eq!(reasons.len(), 3);
+        assert!(reasons.iter().any(|reason| reason.contains("retrievalDefaults.required")));
+        assert!(reasons
+            .iter()
+            .any(|reason| reason.contains("semanticIndexRequired")));
+        assert!(reasons
+            .iter()
+            .any(|reason| reason.contains("projectDataPolicy.retrievalRequired")));
+        assert!(semantic_index_requirement_reasons_from_definition(&json!({})).is_empty());
+    }
+
+    #[test]
+    fn workspace_index_state_and_diagnostic_fixtures_cover_every_state() {
+        let fixtures = [
+            (
+                WorkspaceIndexStateDto::Ready,
+                EnvironmentSemanticIndexState::Ready,
+                "agent_environment_workspace_index_ready",
+            ),
+            (
+                WorkspaceIndexStateDto::Indexing,
+                EnvironmentSemanticIndexState::Indexing,
+                "agent_environment_workspace_index_indexing",
+            ),
+            (
+                WorkspaceIndexStateDto::Stale,
+                EnvironmentSemanticIndexState::Stale,
+                "agent_environment_workspace_index_stale",
+            ),
+            (
+                WorkspaceIndexStateDto::Empty,
+                EnvironmentSemanticIndexState::Empty,
+                "agent_environment_workspace_index_empty",
+            ),
+            (
+                WorkspaceIndexStateDto::Failed,
+                EnvironmentSemanticIndexState::Failed,
+                "agent_environment_workspace_index_failed",
+            ),
+        ];
+        for (dto, expected, code) in fixtures {
+            let state = workspace_index_state_from_dto(dto);
+            assert_eq!(state, expected);
+            assert_eq!(workspace_index_lifecycle_diagnostic(state).code, code);
+        }
+        assert_eq!(
+            workspace_index_lifecycle_diagnostic(EnvironmentSemanticIndexState::Unavailable).code,
+            "agent_environment_workspace_index_unavailable"
+        );
+    }
+
+    #[test]
+    fn lifecycle_bookkeeping_payload_fixtures_preserve_snapshot_and_apply_overrides() {
+        let fresh = lifecycle_bookkeeping_payload(
+            "project-1",
+            "run-1",
+            None,
+            None,
+            2,
+            "queued",
+        )
+        .expect("fresh bookkeeping payload");
+        assert_eq!(fresh["environmentId"], json!("env-project-1-run-1"));
+        assert_eq!(fresh["state"], json!("created"));
+        assert_eq!(fresh["pendingMessageCount"], json!(2));
+        assert_eq!(fresh["healthChecks"], json!([]));
+
+        let snapshot = project_store::AgentEnvironmentLifecycleSnapshotRecord {
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            environment_id: "env-existing".into(),
+            state: "starting".into(),
+            previous_state: Some("created".into()),
+            pending_message_count: 1,
+            health_checks_json: "[]".into(),
+            setup_steps_json: "[]".into(),
+            diagnostic_json: None,
+            snapshot_json: json!({
+                "environmentId": "env-existing",
+                "state": "starting",
+                "healthChecks": [{ "kind": "provider" }],
+            })
+            .to_string(),
+            updated_at: "now".into(),
+        };
+        let ready = lifecycle_bookkeeping_payload(
+            "project-1",
+            "run-1",
+            Some(&snapshot),
+            Some("ready"),
+            0,
+            "delivered",
+        )
+        .expect("updated bookkeeping payload");
+        assert_eq!(ready["environmentId"], json!("env-existing"));
+        assert_eq!(ready["state"], json!("ready"));
+        assert_eq!(ready["previousState"], json!("starting"));
+        assert_eq!(ready["healthChecks"][0]["kind"], json!("provider"));
+        assert_eq!(ready["detail"], json!("delivered"));
+
+        let mut invalid_snapshot = snapshot;
+        invalid_snapshot.snapshot_json = "not json".into();
+        let fallback = lifecycle_bookkeeping_payload(
+            "project-1",
+            "run-1",
+            Some(&invalid_snapshot),
+            None,
+            1,
+            "fallback",
+        )
+        .expect("invalid snapshot fallback");
+        assert_eq!(fallback["state"], json!("starting"));
+        assert_eq!(fallback["previousState"], json!("created"));
+    }
+
+    #[test]
+    fn desktop_core_enum_conversions_round_trip_every_variant() {
+        let statuses = [
+            AgentRunStatus::Starting,
+            AgentRunStatus::Running,
+            AgentRunStatus::Paused,
+            AgentRunStatus::Cancelling,
+            AgentRunStatus::Cancelled,
+            AgentRunStatus::HandedOff,
+            AgentRunStatus::Completed,
+            AgentRunStatus::Failed,
+        ];
+        for status in statuses {
+            assert_eq!(desktop_status_from_core(&core_status_from_desktop(&status)), status);
+        }
+
+        let roles = [
+            AgentMessageRole::System,
+            AgentMessageRole::Developer,
+            AgentMessageRole::User,
+            AgentMessageRole::Assistant,
+            AgentMessageRole::Tool,
+        ];
+        for role in roles {
+            assert_eq!(
+                desktop_message_role_from_core(&core_message_role_from_desktop(&role)),
+                role
+            );
+        }
+
+        let event_kinds = [
+            AgentRunEventKind::RunStarted,
+            AgentRunEventKind::AssistantCandidate,
+            AgentRunEventKind::MessageDelta,
+            AgentRunEventKind::ReasoningSummary,
+            AgentRunEventKind::ToolStarted,
+            AgentRunEventKind::ToolDelta,
+            AgentRunEventKind::ToolCompleted,
+            AgentRunEventKind::FileChanged,
+            AgentRunEventKind::CommandOutput,
+            AgentRunEventKind::ValidationStarted,
+            AgentRunEventKind::ValidationCompleted,
+            AgentRunEventKind::ToolRegistrySnapshot,
+            AgentRunEventKind::PolicyDecision,
+            AgentRunEventKind::StateTransition,
+            AgentRunEventKind::PlanUpdated,
+            AgentRunEventKind::VerificationGate,
+            AgentRunEventKind::ContextManifestRecorded,
+            AgentRunEventKind::RetrievalPerformed,
+            AgentRunEventKind::MemoryCandidateCaptured,
+            AgentRunEventKind::EnvironmentLifecycleUpdate,
+            AgentRunEventKind::SandboxLifecycleUpdate,
+            AgentRunEventKind::ActionRequired,
+            AgentRunEventKind::RouteRequested,
+            AgentRunEventKind::ApprovalRequired,
+            AgentRunEventKind::ToolPermissionGrant,
+            AgentRunEventKind::ProviderModelChanged,
+            AgentRunEventKind::RuntimeSettingsChanged,
+            AgentRunEventKind::RunPaused,
+            AgentRunEventKind::RunCompleted,
+            AgentRunEventKind::RunFailed,
+            AgentRunEventKind::SubagentLifecycle,
+        ];
+        for kind in event_kinds {
+            assert_eq!(
+                desktop_event_kind_from_core(&core_event_kind_from_desktop(&kind)),
+                kind
+            );
+        }
+    }
+
+    #[test]
+    fn desktop_core_store_fixture_round_trips_messages_events_lifecycle_manifest_status_and_trace() {
+        let (_fixture, repo_root, agent_session_id) = persisted_core_store_fixture();
+        let store = DesktopAgentCoreStore::new(&repo_root);
+
+        let unsupported_insert = store
+            .insert_run(NewRunRecord {
+                    trace_id: None,
+                    runtime_agent_id: "engineer".into(),
+                    agent_definition_id: "engineer".into(),
+                    agent_definition_version: 2,
+                    system_prompt: "fixture".into(),
+                    project_id: "project-core-store".into(),
+                    agent_session_id: agent_session_id.clone(),
+                    run_id: "unsupported-insert".into(),
+                    provider_id: "fake".into(),
+                    model_id: "fake".into(),
+                    prompt: "fixture".into(),
+                })
+            .expect_err("desktop core store must not own run insertion");
+        assert_eq!(unsupported_insert.code, "agent_core_operation_unsupported");
+        assert!(unsupported_insert.message.contains("desktop_insert_run"));
+
+        let initial = store
+            .load_run("project-core-store", "run-core-store")
+            .expect("load fixture run");
+        assert!(initial.messages.is_empty());
+
+        let with_message = store
+            .append_message(CoreNewMessageRecord {
+                project_id: "project-core-store".into(),
+                run_id: "run-core-store".into(),
+                role: CoreMessageRole::Developer,
+                content: "Environment setup is starting.".into(),
+                provider_metadata: None,
+            })
+            .expect("append core message");
+        assert_eq!(with_message.messages.len(), 1);
+
+        let lifecycle_payload = json!({
+            "schema": xero_agent_core::ENVIRONMENT_LIFECYCLE_SCHEMA,
+            "environmentId": "env-core-store",
+            "state": "preparing_repository",
+            "previousState": "created",
+            "pendingMessageCount": 2,
+            "healthChecks": [{"id": "repo", "ok": true}],
+            "setupSteps": [{"id": "skills", "status": "succeeded"}],
+            "diagnostic": {"code": "fixture_notice", "message": "fixture"}
+        });
+        let lifecycle_event = store
+            .append_event(NewRuntimeEvent {
+                project_id: "project-core-store".into(),
+                run_id: "run-core-store".into(),
+                event_kind: CoreRuntimeEventKind::EnvironmentLifecycleUpdate,
+                trace: None,
+                payload: lifecycle_payload.clone(),
+            })
+            .expect("append lifecycle event");
+        assert_eq!(lifecycle_event.payload, lifecycle_payload);
+        let lifecycle = project_store::load_agent_environment_lifecycle_snapshot(
+            &repo_root,
+            "project-core-store",
+            "run-core-store",
+        )
+        .expect("load lifecycle snapshot")
+        .expect("lifecycle snapshot exists");
+        assert_eq!(lifecycle.environment_id, "env-core-store");
+        assert_eq!(lifecycle.pending_message_count, 2);
+
+        let manifest = store
+            .record_context_manifest(NewContextManifest {
+                manifest_id: "manifest-core-store".into(),
+                project_id: "project-core-store".into(),
+                agent_session_id,
+                run_id: "run-core-store".into(),
+                provider_id: "fake".into(),
+                model_id: "fake".into(),
+                turn_index: 3,
+                context_hash: "a".repeat(64),
+                trace: None,
+                manifest: json!({"schema": "fixture.context.v1"}),
+            })
+            .expect("record context manifest");
+        assert_eq!(manifest.turn_index, 3);
+        assert_eq!(manifest.manifest_id, "manifest-core-store");
+
+        let failure_event = store
+            .append_event(NewRuntimeEvent {
+                project_id: "project-core-store".into(),
+                run_id: "run-core-store".into(),
+                event_kind: CoreRuntimeEventKind::RunFailed,
+                trace: None,
+                payload: json!({
+                    "code": "fixture_environment_failed",
+                    "message": "The fixture environment failed."
+                }),
+            })
+            .expect("append core failure event");
+        assert_eq!(failure_event.event_kind, CoreRuntimeEventKind::RunFailed);
+        let failed = store
+            .load_run("project-core-store", "run-core-store")
+            .expect("load failed core run");
+        assert_eq!(failed.status, CoreRunStatus::Failed);
+
+        let terminal = store
+            .update_run_status(
+                "project-core-store",
+                "run-core-store",
+                CoreRunStatus::Completed,
+            )
+            .expect("apply terminal-safe core run status update");
+        assert_eq!(
+            terminal.status,
+            CoreRunStatus::Failed,
+            "a failed run must not be reopened or rewritten as completed"
+        );
+        let trace = store
+            .export_trace("project-core-store", "run-core-store")
+            .expect("export core trace");
+        assert_eq!(trace.snapshot.context_manifests.len(), 1);
+        assert!(trace
+            .events
+            .iter()
+            .any(|event| {
+                event.event_kind == CoreRuntimeEventKind::EnvironmentLifecycleUpdate
+            }));
+    }
+
+    #[test]
+    fn message_event_payload_and_error_conversion_fixtures_fail_closed() {
+        let message = core_message_from_desktop(AgentMessageRecord {
+            id: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            role: AgentMessageRole::Assistant,
+            content: "done".into(),
+            provider_metadata_json: Some(json!({ "providerMessageId": "message-7" }).to_string()),
+            created_at: "now".into(),
+            attachments: Vec::new(),
+        });
+        assert_eq!(
+            message
+                .provider_metadata
+                .as_ref()
+                .and_then(|metadata| metadata.provider_message_id.as_deref()),
+            Some("message-7")
+        );
+
+        let event = core_event_from_desktop(AgentEventRecord {
+            id: 2,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::MessageDelta,
+            payload_json: "not json".into(),
+            created_at: "now".into(),
+        });
+        assert_eq!(event.payload, JsonValue::Null);
+        assert_eq!(event.event_kind, CoreRuntimeEventKind::MessageDelta);
+
+        assert_eq!(payload_text(&json!({ "value": " trimmed " }), "value").as_deref(), Some("trimmed"));
+        assert_eq!(payload_text(&json!({ "value": " " }), "value"), None);
+        assert_eq!(payload_text(&json!({ "value": 3 }), "value"), None);
+
+        let system = core_error_from_command(CommandError::system_fault("storage", "failed"));
+        assert_eq!(system.code, "storage");
+        let invalid = core_error_from_command(CommandError::user_fixable("input", "invalid"));
+        assert_eq!(invalid.code, "input");
+        assert_eq!(
+            command_error_from_core(CoreError::system_fault("write_failed", "failed")).class,
+            CommandErrorClass::SystemFault
+        );
+        assert_eq!(
+            command_error_from_core(CoreError::invalid_request("bad_input", "bad")).class,
+            CommandErrorClass::UserFixable
+        );
+    }
+}

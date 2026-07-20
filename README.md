@@ -225,6 +225,8 @@ pnpm run rust:target:prune:dry-run
 pnpm run rust:target:prune
 ```
 
+The Rust workspace disables incremental compilation globally and omits debug information from dev/test artifacts to keep `client/src-tauri/target` bounded. The app and test wrappers force `CARGO_INCREMENTAL=0`, even if a shell or `.env` tries to enable it. The test wrapper also prunes superseded test executables older than one hour; override that window with `XERO_RUST_TARGET_MAX_AGE_HOURS` when retaining an older executable is useful.
+
 ### Phoenix server (`server/`) commands
 
 ```bash
@@ -372,7 +374,7 @@ Run one Cargo command at a time so the shared build lock does not stall parallel
 
 ## Agent System Release Gates
 
-Agent-system rollout uses explicit gates for custom-agent fidelity, context, handoff, storage, security, diagnostics, documentation, and deferred UI. See `docs/agent-system-release-checklist.md` for the release checklist and reset/fail-closed policy for unsupported custom-agent definitions.
+Agent, Stage, and Workflow correctness is tracked in `docs/agent-workflow-coverage-audit-2026-07-17.md`, including the deterministic fixture matrix, coverage boundaries, and reset/fail-closed policy for incompatible app-data.
 
 ## Skills And Plugins
 

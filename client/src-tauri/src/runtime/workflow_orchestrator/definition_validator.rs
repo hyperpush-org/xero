@@ -1540,6 +1540,243 @@ mod tests {
     }
 
     #[test]
+    fn validator_fixture_reports_every_structural_boundary_in_one_pass() {
+        let node = |value| serde_json::from_value::<WorkflowNodeDto>(value).expect("node fixture");
+        let edge = |value| serde_json::from_value::<WorkflowEdgeDto>(value).expect("edge fixture");
+        let mut definition = linear_definition();
+        definition.start_node_id = "missing-start".into();
+        definition.nodes = vec![
+            node(json!({"type": "router", "id": "duplicate", "title": "First"})),
+            node(json!({"type": "router", "id": "duplicate", "title": "Second"})),
+            node(json!({
+                "type": "agent",
+                "id": "bound-agent",
+                "title": "Bound agent",
+                "agentRef": {"kind": "built_in", "runtimeAgentId": "ask", "version": 1},
+                "inputBindings": [
+                    {
+                        "source": "artifact",
+                        "name": "bad_path",
+                        "artifactRef": "missing.output",
+                        "path": "not-a-json-path"
+                    },
+                    {
+                        "source": "state",
+                        "name": "missing_state",
+                        "stateRef": "missing.state",
+                        "path": "still-not-a-json-path"
+                    }
+                ],
+                "outputContract": {
+                    "artifactType": "typed_output",
+                    "schemaVersion": 1,
+                    "extraction": "json_object",
+                    "required": true,
+                    "renderTextPath": "$.missing"
+                }
+            })),
+            node(json!({
+                "type": "command",
+                "id": "bad-command",
+                "title": "Bad command",
+                "command": "",
+                "args": [],
+                "allowedCommands": [],
+                "timeoutSeconds": 0,
+                "successExitCodes": [0],
+                "outputContract": {
+                    "artifactType": "",
+                    "schemaVersion": 1,
+                    "extraction": "json_array",
+                    "required": true,
+                    "renderTextPath": "invalid"
+                },
+                "parser": {"extraction": "generic_text"}
+            })),
+            node(json!({
+                "type": "collection_loop",
+                "id": "collection",
+                "title": "Bad collection",
+                "collection": {"entityType": "requirement", "filters": []},
+                "itemArtifactType": "collection_item",
+                "itemVariableName": "item",
+                "sortKey": "not-json-path",
+                "afterItemRequery": true,
+                "maxItemCount": 0,
+                "controls": {
+                    "fromInputPath": "bad-from",
+                    "toInputPath": "bad-to",
+                    "onlyInputPath": "bad-only"
+                }
+            })),
+            node(json!({
+                "type": "subgraph",
+                "id": "missing-subgraph-ref",
+                "title": "Missing subgraph",
+                "subgraphId": "does-not-exist",
+                "outputContract": {
+                    "artifactType": "subgraph_output",
+                    "schemaVersion": 1,
+                    "extraction": "generic_text",
+                    "required": true
+                }
+            })),
+            node(json!({
+                "type": "human_checkpoint",
+                "id": "checkpoint",
+                "title": "Bad checkpoint",
+                "checkpointType": "decision",
+                "prompt": "Choose",
+                "decisionOptions": ["", "approve", "approve"],
+                "resumePayloadSchema": [],
+                "stateUpdates": [{
+                    "entityType": "requirement",
+                    "action": "update",
+                    "targetId": "",
+                    "payload": {},
+                    "outputArtifactType": "checkpoint_state"
+                }]
+            })),
+            node(json!({
+                "type": "merge",
+                "id": "merge",
+                "title": "Bad quorum",
+                "waitPolicy": "quorum",
+                "failFast": false
+            })),
+            node(json!({
+                "type": "gate",
+                "id": "gate",
+                "title": "Bad gate",
+                "onBlocked": "ignore",
+                "requiredChecks": [{
+                    "kind": "artifact_exists",
+                    "artifactRef": "missing.artifact"
+                }]
+            })),
+            node(json!({
+                "type": "terminal",
+                "id": "done",
+                "title": "Done",
+                "terminalStatus": "success"
+            })),
+        ];
+        definition.edges = vec![
+            edge(json!({
+                "id": "duplicate-edge",
+                "fromNodeId": "duplicate",
+                "toNodeId": "done",
+                "type": "success",
+                "condition": {"kind": "always"}
+            })),
+            edge(json!({
+                "id": "duplicate-edge",
+                "fromNodeId": "duplicate",
+                "toNodeId": "merge",
+                "type": "success",
+                "condition": {"kind": "always"}
+            })),
+            edge(json!({
+                "id": "missing-endpoints",
+                "fromNodeId": "missing-source",
+                "toNodeId": "missing-target",
+                "type": "success",
+                "condition": {"kind": "always"}
+            })),
+            edge(json!({
+                "id": "loop-without-policy",
+                "fromNodeId": "collection",
+                "toNodeId": "collection",
+                "type": "loop",
+                "condition": {"kind": "always"}
+            })),
+            edge(json!({
+                "id": "loop-with-bad-policy",
+                "fromNodeId": "collection",
+                "toNodeId": "done",
+                "type": "loop",
+                "condition": {"kind": "always"},
+                "loopPolicy": {
+                    "loopKey": "",
+                    "maxAttempts": 0,
+                    "selectedArtifactRefs": ["missing.artifact"],
+                    "onExhausted": "missing-exhaustion"
+                }
+            })),
+        ];
+        definition.artifact_contracts = vec![WorkflowArtifactContractDto {
+            artifact_type: "typed_output".into(),
+            schema_version: 1,
+            json_schema: Some(json!({
+                "type": "object",
+                "properties": {"present": {"type": "string"}},
+                "additionalProperties": false
+            })),
+            display_name: "Typed output".into(),
+            description: String::new(),
+        }];
+        definition.subgraphs = vec![serde_json::from_value(json!({
+            "id": "broken-subgraph",
+            "title": "Broken subgraph",
+            "startNodeId": "missing-subgraph-start",
+            "nodes": [{
+                "type": "terminal",
+                "id": "sub-done",
+                "title": "Sub done",
+                "terminalStatus": "success"
+            }],
+            "edges": [{
+                "id": "sub-missing-endpoints",
+                "fromNodeId": "sub-missing-source",
+                "toNodeId": "sub-missing-target",
+                "type": "success",
+                "condition": {"kind": "always"}
+            }]
+        }))
+        .expect("subgraph fixture")];
+
+        let report = validate_workflow_definition(&definition);
+        assert_eq!(report.status, WorkflowValidationStatusDto::Invalid);
+        let codes = diagnostic_codes(&report);
+        for expected in [
+            "duplicate_node_id",
+            "output_artifact_type_empty",
+            "artifact_contract_missing",
+            "render_text_path_invalid",
+            "render_text_path_not_in_schema",
+            "start_node_missing",
+            "duplicate_edge_id",
+            "edge_source_missing",
+            "edge_target_missing",
+            "duplicate_default_edge",
+            "loop_policy_missing",
+            "loop_max_attempts_invalid",
+            "loop_key_empty",
+            "input_binding_path_invalid",
+            "state_ref_missing",
+            "collection_loop_max_item_count_invalid",
+            "collection_loop_sort_path_invalid",
+            "subgraph_ref_missing",
+            "command_empty",
+            "command_timeout_invalid",
+            "command_allowlist_empty",
+            "checkpoint_decision_empty",
+            "checkpoint_decision_duplicate",
+            "checkpoint_payload_schema_invalid",
+            "merge_quorum_missing",
+            "gate_on_blocked_invalid",
+            "subgraph_start_node_missing",
+            "subgraph_edge_source_missing",
+            "subgraph_edge_target_missing",
+        ] {
+            assert!(
+                codes.contains(&expected),
+                "missing diagnostic `{expected}`: {codes:?}"
+            );
+        }
+    }
+
+    #[test]
     fn validator_accepts_linear_custom_agent_workflow() {
         let report = validate_workflow_definition(&linear_definition());
 
@@ -2342,5 +2579,161 @@ mod tests {
             diagnostic.code == "collection_loop_control_input_path_invalid"
                 && diagnostic.path == "nodes.3.controls.fromInputPath"
         }));
+    }
+
+    #[test]
+    fn validator_helper_fixture_covers_required_state_schema_and_agent_ref_boundaries() {
+        let mut invalid = linear_definition();
+        invalid.schema = "xero.workflow_definition.future".into();
+        invalid.id = " ".into();
+        invalid.project_id.clear();
+        invalid.name = "\t".into();
+        invalid.start_node_id.clear();
+        invalid.nodes.clear();
+        invalid.run_policy.concurrency_limit = 0;
+        let report = validate_workflow_definition(&invalid);
+        let codes = diagnostic_codes(&report);
+        for expected in [
+            "schema_unsupported",
+            "required_field_empty",
+            "nodes_empty",
+            "concurrency_limit_invalid",
+            "start_node_missing",
+        ] {
+            assert!(codes.contains(&expected), "missing `{expected}`: {codes:?}");
+        }
+
+        let query = crate::commands::contracts::workflows::WorkflowStateQueryDto {
+            entity_type:
+                crate::commands::contracts::workflows::WorkflowDeliveryStateEntityTypeDto::DeliveryPhase,
+            filters: Vec::new(),
+            order_by: Some("sortOrder".into()),
+            limit: None,
+            include_archived: false,
+        };
+        let mut diagnostics = Vec::new();
+        validate_state_query(&query, "query".into(), &mut diagnostics);
+        assert_eq!(diagnostics[0].code, "state_query_order_path_invalid");
+
+        let operation = crate::commands::contracts::workflows::WorkflowStateWriteOperationDto {
+            entity_type:
+                crate::commands::contracts::workflows::WorkflowDeliveryStateEntityTypeDto::DeliveryPhase,
+            action: crate::commands::contracts::workflows::WorkflowStateWriteActionDto::Patch,
+            idempotency_key: Some(" ".into()),
+            target_id: Some(String::new()),
+            payload: serde_json::Map::new(),
+            output_artifact_type: " ".into(),
+        };
+        diagnostics.clear();
+        validate_state_write_operation(&operation, "operation".into(), &mut diagnostics, true);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .map(|diagnostic| diagnostic.code.as_str())
+                .collect::<BTreeSet<_>>(),
+            BTreeSet::from([
+                "state_write_idempotency_key_empty",
+                "state_write_output_artifact_empty",
+                "state_write_target_id_empty",
+            ])
+        );
+
+        let state_condition = WorkflowConditionDto::Not {
+            condition: Box::new(WorkflowConditionDto::StateFieldEquals {
+                state_ref: "missing.state".into(),
+                path: "status".into(),
+                value: json!("ready"),
+            }),
+        };
+        diagnostics.clear();
+        validate_condition_semantics(
+            &state_condition,
+            "condition".into(),
+            &BTreeSet::new(),
+            &BTreeSet::new(),
+            &BTreeMap::new(),
+            &BTreeSet::new(),
+            &mut diagnostics,
+        );
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<BTreeSet<_>>();
+        assert!(codes.contains("condition_json_path_invalid"));
+        assert!(codes.contains("condition_state_ref_missing"));
+
+        let schema = json!({
+            "type": ["null", "object"],
+            "properties": {
+                "rows": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {"name": {"type": "string"}}
+                    }
+                }
+            }
+        });
+        assert!(json_schema_allows_path(&schema, "$"));
+        assert!(json_schema_allows_path(&schema, "$.rows[0].name"));
+        for path in ["rows", "$.", "$.[0]", "$.rows[x]", "$.rows[0].missing"] {
+            assert!(!json_schema_allows_path(&schema, path), "{path}");
+        }
+        assert!(!json_schema_allows_path(
+            &json!({"type": "string", "properties": {"name": {}}}),
+            "$.name"
+        ));
+        assert!(!json_schema_allows_path(
+            &json!({"type": "object"}),
+            "$.name"
+        ));
+        assert_eq!(parse_schema_path_segment("rows[0][12]"), Some(("rows", 2)));
+        for segment in ["", "[0]", "rows[", "rows[]", "rows[x]", "rows[0]tail"] {
+            assert_eq!(parse_schema_path_segment(segment), None, "{segment}");
+        }
+        assert!(schema_type_allows_object(
+            &json!({"type": ["null", "object"]})
+        ));
+        assert!(schema_type_allows_object(&json!({})));
+
+        for (agent_ref, expected) in [
+            (
+                AgentRefDto::BuiltIn {
+                    runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    version: 0,
+                },
+                "agent_ref_builtin_version_required",
+            ),
+            (
+                AgentRefDto::BuiltIn {
+                    runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    version: u32::MAX,
+                },
+                "agent_ref_builtin_version_unsupported",
+            ),
+            (
+                AgentRefDto::Custom {
+                    definition_id: " ".into(),
+                    version: 1,
+                },
+                "agent_ref_custom_definition_required",
+            ),
+            (
+                AgentRefDto::Custom {
+                    definition_id: "custom".into(),
+                    version: 0,
+                },
+                "agent_ref_custom_version_required",
+            ),
+        ] {
+            diagnostics.clear();
+            validate_agent_ref(
+                Path::new("/unused"),
+                "agentRef",
+                &agent_ref,
+                &mut diagnostics,
+            );
+            assert_eq!(diagnostics[0].code, expected);
+        }
     }
 }

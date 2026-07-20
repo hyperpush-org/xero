@@ -1002,7 +1002,8 @@ fn lancedb_freshness_phase1_tool_guidance_requires_read_before_prior_work_and_re
             created
                 .run
                 .system_prompt
-                .contains("read context before prior-work-sensitive tasks"),
+                .to_ascii_lowercase()
+                .contains("read context before prior-work-sensitive"),
             "{runtime_agent_id:?} prompt should require context reads before prior-work-sensitive tasks"
         );
         let registry = ToolRegistry::builtin_with_options(ToolRegistryOptions {

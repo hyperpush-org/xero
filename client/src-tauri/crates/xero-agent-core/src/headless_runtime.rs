@@ -165,6 +165,7 @@ struct HeadlessRunIdentity {
     agent_definition_version: i64,
     system_prompt: String,
     thinking_effort: Option<String>,
+    approval_mode: String,
 }
 
 impl HeadlessRunIdentity {
@@ -193,6 +194,13 @@ impl HeadlessRunIdentity {
         let thinking_effort = request.controls.as_ref().and_then(|controls| {
             normalize_headless_thinking_effort(controls.thinking_effort.as_deref())
         });
+        let approval_mode = request
+            .controls
+            .as_ref()
+            .map(|controls| controls.approval_mode.trim())
+            .filter(|mode| !mode.is_empty())
+            .unwrap_or("suggest")
+            .to_owned();
         let system_prompt = headless_system_prompt_for_agent(&runtime_agent_id, workspace_root);
         Self {
             runtime_agent_id,
@@ -200,21 +208,43 @@ impl HeadlessRunIdentity {
             agent_definition_version,
             system_prompt,
             thinking_effort,
+            approval_mode,
         }
     }
 
     fn from_snapshot(snapshot: &RunSnapshot) -> Self {
+        let run_started = snapshot
+            .events
+            .iter()
+            .find(|event| event.event_kind == RuntimeEventKind::RunStarted);
+        let thinking_effort = run_started
+            .and_then(|event| event.payload.get("thinkingEffort"))
+            .and_then(JsonValue::as_str)
+            .and_then(|effort| normalize_headless_thinking_effort(Some(effort)));
+        let approval_mode = run_started
+            .and_then(|event| event.payload.get("approvalMode"))
+            .and_then(JsonValue::as_str)
+            .filter(|mode| matches!(*mode, "suggest" | "auto_edit" | "yolo" | "strict"))
+            .unwrap_or("suggest")
+            .to_owned();
         Self {
             runtime_agent_id: snapshot.runtime_agent_id.clone(),
             agent_definition_id: snapshot.agent_definition_id.clone(),
             agent_definition_version: snapshot.agent_definition_version,
             system_prompt: snapshot.system_prompt.clone(),
-            thinking_effort: None,
+            thinking_effort,
+            approval_mode,
         }
     }
 
     fn allows_workspace_writes(&self) -> bool {
         headless_agent_allows_workspace_writes(&self.runtime_agent_id)
+            && matches!(self.approval_mode.as_str(), "auto_edit" | "yolo")
+    }
+
+    fn allows_commands(&self) -> bool {
+        headless_agent_allows_workspace_writes(&self.runtime_agent_id)
+            && self.approval_mode == "yolo"
     }
 }
 
@@ -299,6 +329,7 @@ where
                 "agentDefinitionId": identity.agent_definition_id.clone(),
                 "agentDefinitionVersion": identity.agent_definition_version,
                 "thinkingEffort": identity.thinking_effort.clone(),
+                "approvalMode": identity.approval_mode.clone(),
                 "providerPreflight": preflight.clone(),
             }),
         })?;
@@ -393,11 +424,23 @@ where
     }
 
     fn continue_real_run(&self, request: ContinueRunRequest) -> CoreResult<RunSnapshot> {
+        crate::validate_required(&request.prompt, "prompt")?;
         let before = self.store.load_run(&request.project_id, &request.run_id)?;
         self.validate_selected_provider(&ProviderSelection {
             provider_id: before.provider_id.clone(),
             model_id: before.model_id.clone(),
         })?;
+        let preflight = self.provider_preflight_snapshot()?;
+        let blockers = crate::provider_preflight_blockers(&preflight);
+        if let Some(blocker) = blockers.first() {
+            return Err(CoreError::invalid_request(
+                "agent_core_provider_preflight_blocked",
+                format!(
+                    "Headless real-provider continuation is blocked because `{}` failed: {}",
+                    blocker.code, blocker.message
+                ),
+            ));
+        }
         self.store
             .update_run_status(&request.project_id, &request.run_id, RunStatus::Running)?;
         self.store.append_message(NewMessageRecord {
@@ -418,17 +461,6 @@ where
             )),
             payload: json!({ "role": "user", "text": request.prompt }),
         })?;
-        let preflight = self.provider_preflight_snapshot()?;
-        let blockers = crate::provider_preflight_blockers(&preflight);
-        if let Some(blocker) = blockers.first() {
-            return Err(CoreError::invalid_request(
-                "agent_core_provider_preflight_blocked",
-                format!(
-                    "Headless real-provider continuation is blocked because `{}` failed: {}",
-                    blocker.code, blocker.message
-                ),
-            ));
-        }
         self.store.append_event(NewRuntimeEvent {
             project_id: request.project_id.clone(),
             run_id: request.run_id.clone(),
@@ -484,7 +516,9 @@ where
         let started_at = Instant::now();
         let mut tool_call_count = 0_u64;
         let mut command_call_count = 0_u64;
-        for turn_index in 0..self.options.max_provider_turns {
+        let provider_turn_base = next_headless_provider_turn_index(&current);
+        for turn_offset in 0..self.options.max_provider_turns {
+            let turn_index = provider_turn_base.saturating_add(turn_offset);
             if let Some(max_wall_time_ms) = self.options.max_wall_time_ms {
                 if started_at.elapsed().as_millis() as u64 > max_wall_time_ms {
                     return self.fail_real_provider_run(
@@ -500,9 +534,10 @@ where
                 }
             }
             let workspace_root = self.workspace_root();
-            let tool_runtime = HeadlessProductionToolRuntime::new(
+            let tool_runtime = HeadlessProductionToolRuntime::new_with_modes(
                 workspace_root.as_ref(),
                 self.allow_workspace_writes() && identity.allows_workspace_writes(),
+                self.allow_workspace_writes() && identity.allows_commands(),
                 self.app_data_roots_for_project(&current.project_id),
             )?;
             self.record_tool_registry_snapshot(&current, turn_index, &tool_runtime)?;
@@ -516,7 +551,7 @@ where
             let run_id = current.run_id.clone();
             let trace_id = current.trace_id.clone();
             let store = &self.store;
-            let response = match &self.provider {
+            let response = match match &self.provider {
                 HeadlessProviderExecutionConfig::OpenAiCompatible(config) => {
                     send_openai_compatible_chat(
                         &client,
@@ -524,7 +559,7 @@ where
                         &chat_messages,
                         tool_runtime.openai_tool_definitions(),
                         identity.thinking_effort.as_deref(),
-                    )?
+                    )
                 }
                 HeadlessProviderExecutionConfig::OpenAiCodexResponses(config) => {
                     send_openai_codex_responses(
@@ -553,11 +588,14 @@ where
                                 }),
                             });
                         },
-                    )?
+                    )
                 }
                 HeadlessProviderExecutionConfig::Fake => {
                     unreachable!("fake provider rejected above")
                 }
+            } {
+                Ok(response) => response,
+                Err(error) => return self.fail_real_provider_turn(&current, error),
             };
             let content = response.content_text();
             let tool_calls = response.tool_calls;
@@ -771,6 +809,36 @@ where
             }),
         })?;
         Err(CoreError::invalid_request(code, message))
+    }
+
+    fn fail_real_provider_turn<T>(
+        &self,
+        snapshot: &RunSnapshot,
+        error: CoreError,
+    ) -> CoreResult<T> {
+        self.store
+            .update_run_status(&snapshot.project_id, &snapshot.run_id, RunStatus::Failed)?;
+        self.store.append_event(NewRuntimeEvent {
+            project_id: snapshot.project_id.clone(),
+            run_id: snapshot.run_id.clone(),
+            event_kind: RuntimeEventKind::RunFailed,
+            trace: Some(RuntimeTraceContext::for_run(
+                &snapshot.trace_id,
+                &snapshot.run_id,
+                "provider_turn_failed",
+            )),
+            payload: json!({
+                "code": error.code,
+                "message": "The headless provider turn failed.",
+                "retryable": matches!(
+                    error.code.as_str(),
+                    "agent_core_provider_request_failed"
+                        | "agent_core_provider_response_read_failed"
+                        | "agent_core_provider_status_failed"
+                ),
+            }),
+        })?;
+        Err(error)
     }
 
     fn dispatch_headless_tool_batch(
@@ -1546,6 +1614,9 @@ where
     }
 
     fn approve_action(&self, request: ApprovalDecisionRequest) -> CoreResult<RunSnapshot> {
+        crate::validate_required(&request.project_id, "projectId")?;
+        crate::validate_required(&request.run_id, "runId")?;
+        crate::validate_required(&request.action_id, "actionId")?;
         self.continue_run(ContinueRunRequest {
             project_id: request.project_id,
             run_id: request.run_id,
@@ -1559,6 +1630,9 @@ where
     }
 
     fn reject_action(&self, request: ApprovalDecisionRequest) -> CoreResult<RunSnapshot> {
+        crate::validate_required(&request.project_id, "projectId")?;
+        crate::validate_required(&request.run_id, "runId")?;
+        crate::validate_required(&request.action_id, "actionId")?;
         self.store.append_event(NewRuntimeEvent {
             project_id: request.project_id.clone(),
             run_id: request.run_id.clone(),
@@ -2001,7 +2075,7 @@ impl HeadlessProductionToolRuntime {
         call: &ToolCallInput,
     ) -> Result<ToolHandlerOutput, ToolExecutionError> {
         let path = required_tool_string(&call.input, "path")?;
-        let content = required_tool_string(&call.input, "content")?;
+        let content = required_tool_string_allow_empty(&call.input, "content")?;
         let resolved = resolve_workspace_path_for_root(&self.workspace_root, path, true)
             .map_err(core_error_to_tool_execution_error)?;
         let rollback = rollback_checkpoint_metadata(path, &resolved);
@@ -2690,7 +2764,11 @@ fn send_openai_compatible_chat(
         "stream": false,
     });
     if let Some(effort) = thinking_effort {
-        if config.provider_id == "deepseek" {
+        if config.provider_id == "openai_api" {
+            body.as_object_mut()
+                .expect("OpenAI-compatible request body is an object")
+                .insert("reasoning_effort".into(), json!(effort));
+        } else if config.provider_id == "deepseek" {
             body.as_object_mut()
                 .expect("OpenAI-compatible request body is an object")
                 .insert("thinking".into(), json!({ "type": "enabled" }));
@@ -3742,6 +3820,18 @@ fn required_tool_string<'a>(
         })
 }
 
+fn required_tool_string_allow_empty<'a>(
+    input: &'a JsonValue,
+    key: &str,
+) -> Result<&'a str, ToolExecutionError> {
+    input.get(key).and_then(JsonValue::as_str).ok_or_else(|| {
+        ToolExecutionError::invalid_input(
+            "agent_core_headless_tool_argument_missing",
+            format!("Tool argument `{key}` must be a string."),
+        )
+    })
+}
+
 fn required_tool_string_array(
     input: &JsonValue,
     key: &str,
@@ -3930,7 +4020,10 @@ fn headless_system_prompt_for_agent(
 }
 
 fn headless_agent_allows_workspace_writes(runtime_agent_id: &str) -> bool {
-    !matches!(runtime_agent_id, "ask" | "plan" | "agent_create")
+    !matches!(
+        runtime_agent_id,
+        "ask" | "computer_use" | "plan" | "crawl" | "agent_create"
+    )
 }
 
 fn normalize_headless_thinking_effort(effort: Option<&str>) -> Option<String> {
@@ -4006,11 +4099,23 @@ fn openai_compatible_chat_url(base_url: &str) -> CoreResult<String> {
 }
 
 fn is_local_http_endpoint(base_url: &str) -> bool {
-    let lower = base_url.to_ascii_lowercase();
-    lower.starts_with("http://localhost")
-        || lower.starts_with("http://127.")
-        || lower.starts_with("http://[::1]")
-        || lower.starts_with("http://0.0.0.0")
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.parse::<std::net::IpAddr>().is_ok_and(|address| {
+        address.is_loopback()
+            || matches!(address, std::net::IpAddr::V4(ipv4) if ipv4.is_unspecified())
+    })
 }
 
 fn normalize_timeout(timeout_ms: u64) -> u64 {
@@ -4257,6 +4362,17 @@ fn headless_context_hash(snapshot: &RunSnapshot, turn_index: usize) -> String {
     format!("{hash:016x}")
 }
 
+fn next_headless_provider_turn_index(snapshot: &RunSnapshot) -> usize {
+    snapshot
+        .events
+        .iter()
+        .filter(|event| event.event_kind == RuntimeEventKind::ToolRegistrySnapshot)
+        .filter_map(|event| event.payload.get("turnIndex").and_then(JsonValue::as_u64))
+        .filter_map(|turn_index| usize::try_from(turn_index).ok())
+        .max()
+        .map_or(0, |turn_index| turn_index.saturating_add(1))
+}
+
 fn stable_provider_preflight_hash(snapshot: &ProviderPreflightSnapshot) -> String {
     let serialized = serde_json::to_string(snapshot).unwrap_or_else(|_| "unserializable".into());
     crate::runtime_trace_id("provider-preflight", &[&serialized])
@@ -4293,6 +4409,70 @@ fn truncate_text(value: &str, max_bytes: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::RuntimeMessage;
+    use std::io::{Read, Write};
+    use std::net::TcpListener;
+    use std::thread::JoinHandle;
+
+    fn serve_http_once(
+        status: &str,
+        content_type: &str,
+        body: impl Into<String>,
+    ) -> (String, JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind HTTP fixture");
+        let address = listener.local_addr().expect("HTTP fixture address");
+        let status = status.to_string();
+        let content_type = content_type.to_string();
+        let body = body.into();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener.accept().expect("accept HTTP fixture request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set fixture read timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = stream.read(&mut buffer).expect("read HTTP fixture request");
+                assert!(read > 0, "HTTP fixture request ended before its headers");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                    .unwrap_or_default();
+                break (header_end + 4, content_length);
+            };
+            while request.len() < header_end + content_length {
+                let read = stream.read(&mut buffer).expect("read HTTP fixture body");
+                assert!(read > 0, "HTTP fixture request body ended early");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write HTTP fixture response");
+            String::from_utf8(request).expect("HTTP fixture request is UTF-8")
+        });
+        (format!("http://{address}"), handle)
+    }
+
+    fn http_request_json(request: &str) -> JsonValue {
+        let (_, body) = request
+            .split_once("\r\n\r\n")
+            .expect("HTTP fixture request body");
+        serde_json::from_str(body).expect("HTTP fixture JSON body")
+    }
 
     #[test]
     fn openai_codex_gpt_5_6_clamps_minimal_headless_reasoning_to_low() {
@@ -4300,6 +4480,22 @@ mod tests {
             clamp_openai_codex_headless_effort("gpt-5.6-terra", "minimal"),
             "low"
         );
+    }
+
+    #[test]
+    fn insecure_http_provider_rejects_hosts_that_only_prefix_match_localhost() {
+        for endpoint in [
+            "http://localhost.evil.example/v1",
+            "http://127.example.com/v1",
+            "http://0.0.0.0.evil.example/v1",
+        ] {
+            assert_eq!(
+                openai_compatible_chat_url(endpoint)
+                    .expect_err("non-local HTTP endpoint must be rejected")
+                    .code,
+                "agent_core_provider_base_url_insecure"
+            );
+        }
     }
 
     #[test]
@@ -4478,6 +4674,1457 @@ mod tests {
         assert_eq!(input[2]["call_id"], json!("call-1"));
         assert_eq!(input[3]["type"], json!("function_call_output"));
         assert_eq!(input[3]["output"], json!("contents"));
+    }
+
+    #[test]
+    fn openai_compatible_local_fixture_covers_requests_responses_and_failures() {
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("build fixture client");
+        let (base_url, request) = serve_http_once(
+            "200 OK",
+            "application/json",
+            json!({
+                "choices": [{
+                    "message": {
+                        "content": [{"text": "hello"}, {"content": " world"}],
+                        "tool_calls": [{
+                            "id": "call-1",
+                            "function": {"name": "read", "arguments": "{\"path\":\"README.md\"}"}
+                        }]
+                    }
+                }]
+            })
+            .to_string(),
+        );
+        let config = OpenAiCompatibleHeadlessConfig {
+            provider_id: "openai_api".into(),
+            model_id: "model-1".into(),
+            base_url: format!("{base_url}/v1"),
+            api_key: Some("secret-key".into()),
+            timeout_ms: 2_000,
+            workspace_root: None,
+            allow_workspace_writes: false,
+        };
+        let message = send_openai_compatible_chat(
+            &client,
+            &config,
+            &[json!({"role": "user", "content": "hello"})],
+            vec![json!({"type": "function"})],
+            Some("high"),
+        )
+        .expect("decode compatible response");
+        assert_eq!(message.content_text(), "hello world");
+        assert_eq!(message.tool_calls.len(), 1);
+        assert_eq!(message.tool_calls[0].name, "read");
+        assert_eq!(message.tool_calls[0].arguments["path"], "README.md");
+        let request = request.join().expect("join HTTP fixture");
+        assert!(request.contains("authorization: Bearer secret-key\r\n"));
+        let body = http_request_json(&request);
+        assert_eq!(body["reasoning_effort"], "high");
+        assert_eq!(body["tool_choice"], "auto");
+
+        for (provider_id, expected) in [
+            ("deepseek", json!({"thinking": {"type": "enabled"}})),
+            ("openrouter", json!({"reasoning": {"effort": "medium"}})),
+        ] {
+            let (base_url, request) = serve_http_once(
+                "200 OK",
+                "application/json",
+                r#"{"choices":[{"message":{"content":"ok"}}]}"#,
+            );
+            let config = OpenAiCompatibleHeadlessConfig {
+                provider_id: provider_id.into(),
+                base_url,
+                api_key: None,
+                ..config.clone()
+            };
+            send_openai_compatible_chat(&client, &config, &[], Vec::new(), Some("medium"))
+                .expect("provider-specific request");
+            let body = http_request_json(&request.join().expect("join HTTP fixture"));
+            for (key, value) in expected.as_object().expect("expected object") {
+                assert_eq!(&body[key], value);
+            }
+        }
+
+        for (status, response, expected_code) in [
+            (
+                "429 Too Many Requests",
+                "rate limited",
+                "agent_core_provider_status_failed",
+            ),
+            (
+                "200 OK",
+                "not-json",
+                "agent_core_provider_response_decode_failed",
+            ),
+            (
+                "200 OK",
+                r#"{"choices":[]}"#,
+                "agent_core_provider_choice_missing",
+            ),
+        ] {
+            let (base_url, request) = serve_http_once(status, "application/json", response);
+            let config = OpenAiCompatibleHeadlessConfig {
+                base_url,
+                ..config.clone()
+            };
+            assert_eq!(
+                send_openai_compatible_chat(&client, &config, &[], Vec::new(), None)
+                    .expect_err("fixture response must fail")
+                    .code,
+                expected_code
+            );
+            request.join().expect("join HTTP fixture");
+        }
+    }
+
+    #[test]
+    fn openai_codex_sse_fixture_reassembles_progress_reasoning_and_tool_calls() {
+        let stream = [
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.reasoning.delta\",\"delta\":\"first\"}\n\n",
+            "data: {\"type\":\"response.reasoning_summary_part.added\"}\n\n",
+            "data: {\"type\":\"response.reasoning_summary_text.delta\",\"delta\":\"second\"}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            "data: {\"type\":\"response.output_item.added\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"read\"}}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"{\\\"path\\\":\"}\n\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"output_index\":0,\"delta\":\"\\\"README.md\\\"}\"}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":0,\"item\":{\"type\":\"function_call\",\"name\":\"read\"}}\n\n",
+            "data: {\"type\":\"response.output_item.done\",\"output_index\":1,\"item\":{\"type\":\"function_call\",\"name\":\"list\",\"arguments\":\"{}\"}}\n\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\" world\"}\n\n",
+            "data: [DONE]\n\n",
+        ]
+        .concat();
+        let (base_url, request) = serve_http_once("200 OK", "text/event-stream", stream);
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("build fixture client");
+        let response = client.get(base_url).send().expect("request SSE fixture");
+        let mut progress = Vec::new();
+        let message = parse_openai_codex_responses_sse("openai_codex", response, |text, reason| {
+            progress.push((text.to_string(), reason.to_string()));
+        })
+        .expect("parse SSE fixture");
+        request.join().expect("join HTTP fixture");
+        assert_eq!(message.content_text(), "hello world");
+        assert_eq!(message.reasoning, "first\n\nsecond");
+        assert_eq!(message.tool_calls.len(), 2);
+        assert_eq!(message.tool_calls[0].id, "call-1");
+        assert_eq!(message.tool_calls[0].arguments["path"], "README.md");
+        assert_eq!(message.tool_calls[1].id, "openai_codex-tool-call-2");
+        assert!(!progress.is_empty());
+        assert_eq!(progress.last().unwrap().0, "hello world");
+    }
+
+    #[test]
+    fn openai_codex_local_fixture_covers_authenticated_stream_request_and_status_failure() {
+        let (base_url, request) = serve_http_once(
+            "200 OK",
+            "text/event-stream",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"done\"}\n\ndata: [DONE]\n\n",
+        );
+        let client = Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .expect("build fixture client");
+        let config = OpenAiCodexHeadlessConfig {
+            provider_id: "openai_codex".into(),
+            model_id: "gpt-5.6-terra".into(),
+            base_url,
+            access_token: "access-token".into(),
+            account_id: "account-1".into(),
+            session_id: Some("session-1".into()),
+            timeout_ms: 2_000,
+            workspace_root: None,
+            allow_workspace_writes: false,
+        };
+        let mut progress = Vec::new();
+        let message = send_openai_codex_responses(
+            &client,
+            &config,
+            &[
+                json!({"role": "system", "content": "be precise"}),
+                json!({"role": "user", "content": "hello"}),
+            ],
+            vec![json!({"type": "function", "name": "read"})],
+            Some("minimal"),
+            |text, reasoning| progress.push((text.to_string(), reasoning.to_string())),
+        )
+        .expect("send Codex fixture request");
+        assert_eq!(message.content_text(), "done");
+        assert_eq!(progress.last().unwrap().0, "done");
+        let request = request.join().expect("join HTTP fixture");
+        assert!(request.starts_with("POST /codex/responses HTTP/1.1\r\n"));
+        assert!(request.contains("authorization: Bearer access-token\r\n"));
+        assert!(request.contains("chatgpt-account-id: account-1\r\n"));
+        assert!(request.contains("session_id: session-1\r\n"));
+        let body = http_request_json(&request);
+        assert_eq!(body["instructions"], "be precise");
+        assert_eq!(body["reasoning"]["effort"], "low");
+        assert_eq!(body["tools"][0]["name"], "read");
+        assert_eq!(body["input"][0]["role"], "user");
+
+        let (base_url, request) = serve_http_once(
+            "401 Unauthorized",
+            "application/json",
+            "invalid access token",
+        );
+        let config = OpenAiCodexHeadlessConfig {
+            base_url,
+            session_id: Some(" ".into()),
+            ..config
+        };
+        assert_eq!(
+            send_openai_codex_responses(&client, &config, &[], Vec::new(), None, |_, _| {})
+                .expect_err("unauthorized fixture must fail")
+                .code,
+            "agent_core_provider_status_failed"
+        );
+        let request = request.join().expect("join HTTP fixture");
+        assert!(!request.contains("session_id:"));
+    }
+
+    #[test]
+    fn provider_message_parsers_reject_malformed_tool_calls_and_streams() {
+        assert!(parse_openai_tool_calls(&json!({})).unwrap().is_empty());
+        for (message, expected_code) in [
+            (
+                json!({"tool_calls": [{"id": "call-1"}]}),
+                "agent_core_provider_tool_call_invalid",
+            ),
+            (
+                json!({"tool_calls": [{"function": {"arguments": "{}"}}]}),
+                "agent_core_provider_tool_name_missing",
+            ),
+            (
+                json!({"tool_calls": [{"function": {"name": "read", "arguments": "{"}}]}),
+                "agent_core_provider_tool_arguments_invalid",
+            ),
+        ] {
+            assert_eq!(
+                parse_openai_tool_calls(&message)
+                    .expect_err("malformed tool call must fail")
+                    .code,
+                expected_code
+            );
+        }
+        assert_eq!(
+            openai_codex_response_input(&[json!({"role": "developer", "content": "no"})])
+                .expect_err("unsupported role must fail")
+                .code,
+            "agent_core_provider_message_role_invalid"
+        );
+        assert_eq!(
+            OpenAiProviderMessage {
+                content: json!({"value": 7}),
+                tool_calls: Vec::new(),
+                reasoning: String::new(),
+            }
+            .content_text(),
+            r#"{"value":7}"#
+        );
+        assert_eq!(
+            OpenAiProviderMessage {
+                content: JsonValue::Null,
+                tool_calls: Vec::new(),
+                reasoning: String::new(),
+            }
+            .content_text(),
+            ""
+        );
+
+        for (body, expected_code) in [
+            (
+                "data: not-json\n\n",
+                "agent_core_provider_stream_decode_failed",
+            ),
+            (
+                "data: {\"type\":\"response.failed\",\"error\":\"bad\"}\n\n",
+                "agent_core_provider_response_failed",
+            ),
+            (
+                "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"arguments\":\"{}\"}}\n\n",
+                "agent_core_provider_tool_name_missing",
+            ),
+            (
+                "data: {\"type\":\"response.output_item.done\",\"item\":{\"type\":\"function_call\",\"name\":\"read\",\"arguments\":\"{\"}}\n\n",
+                "agent_core_provider_tool_arguments_invalid",
+            ),
+        ] {
+            let (base_url, request) = serve_http_once("200 OK", "text/event-stream", body);
+            let response = Client::new().get(base_url).send().expect("request SSE fixture");
+            assert_eq!(
+                parse_openai_codex_responses_sse("openai_codex", response, |_, _| {})
+                    .expect_err("malformed SSE must fail")
+                    .code,
+                expected_code
+            );
+            request.join().expect("join HTTP fixture");
+        }
+    }
+
+    #[test]
+    fn provider_execution_config_and_runtime_defaults_cover_every_backend() {
+        let fake = HeadlessProviderExecutionConfig::Fake;
+        assert_eq!(fake.provider_id(), "fake_provider");
+        assert_eq!(fake.model_id(), "fake-model");
+        assert!(fake.has_provider_credentials());
+
+        let compatible = |base_url: &str, api_key: Option<&str>| {
+            HeadlessProviderExecutionConfig::OpenAiCompatible(OpenAiCompatibleHeadlessConfig {
+                provider_id: "openrouter".into(),
+                model_id: "model-1".into(),
+                base_url: base_url.into(),
+                api_key: api_key.map(str::to_owned),
+                timeout_ms: 500,
+                workspace_root: None,
+                allow_workspace_writes: false,
+            })
+        };
+        assert!(!compatible("https://example.com/v1", None).has_provider_credentials());
+        assert!(!compatible("https://example.com/v1", Some(" ")).has_provider_credentials());
+        assert!(compatible("https://example.com/v1", Some("key")).has_provider_credentials());
+        assert!(compatible("http://127.0.0.1:11434/v1", None).has_provider_credentials());
+        assert_eq!(
+            compatible("https://example.com/v1", Some("key")).provider_id(),
+            "openrouter"
+        );
+        assert_eq!(
+            compatible("https://example.com/v1", Some("key")).model_id(),
+            "model-1"
+        );
+
+        let codex = |token: &str, account: &str| {
+            HeadlessProviderExecutionConfig::OpenAiCodexResponses(OpenAiCodexHeadlessConfig {
+                provider_id: "openai_codex".into(),
+                model_id: "gpt-5.6".into(),
+                base_url: "https://chatgpt.com/backend-api".into(),
+                access_token: token.into(),
+                account_id: account.into(),
+                session_id: None,
+                timeout_ms: 500,
+                workspace_root: None,
+                allow_workspace_writes: false,
+            })
+        };
+        assert!(!codex("", "account").has_provider_credentials());
+        assert!(!codex("token", "").has_provider_credentials());
+        assert!(codex("token", "account").has_provider_credentials());
+        assert_eq!(codex("token", "account").provider_id(), "openai_codex");
+        assert_eq!(codex("token", "account").model_id(), "gpt-5.6");
+
+        let defaults = HeadlessRuntimeOptions::default();
+        assert!(!defaults.ci_mode);
+        assert_eq!(
+            defaults.max_provider_turns,
+            DEFAULT_HEADLESS_MAX_PROVIDER_TURNS
+        );
+        assert!(defaults.max_wall_time_ms.is_none());
+        assert!(defaults.max_tool_calls.is_none());
+        assert!(defaults.max_command_calls.is_none());
+        assert!(defaults.provider_preflight.is_none());
+    }
+
+    #[test]
+    fn runtime_preflight_and_provider_admission_cover_fake_codex_and_overrides() {
+        let fake_runtime = HeadlessProviderRuntime::new(
+            crate::InMemoryAgentCoreStore::default(),
+            HeadlessProviderExecutionConfig::Fake,
+            HeadlessRuntimeOptions::default(),
+        );
+        let fake_preflight = fake_runtime
+            .provider_preflight_snapshot()
+            .expect("fake provider preflight");
+        assert_eq!(fake_preflight.status, crate::ProviderPreflightStatus::Passed);
+        assert_eq!(fake_preflight.provider_id, "fake_provider");
+        assert!(fake_runtime.workspace_root().is_none());
+        assert!(!fake_runtime.allow_workspace_writes());
+
+        let workspace_root = std::env::temp_dir().join("xero-codex-runtime-preflight");
+        let codex_provider = HeadlessProviderExecutionConfig::OpenAiCodexResponses(
+            OpenAiCodexHeadlessConfig {
+                provider_id: "openai_codex".into(),
+                model_id: "gpt-5.6".into(),
+                base_url: "https://chatgpt.com/backend-api".into(),
+                access_token: "test-token".into(),
+                account_id: "test-account".into(),
+                session_id: Some("test-session".into()),
+                timeout_ms: 1_000,
+                workspace_root: Some(workspace_root.clone()),
+                allow_workspace_writes: true,
+            },
+        );
+        let codex_runtime = HeadlessProviderRuntime::new(
+            crate::InMemoryAgentCoreStore::default(),
+            codex_provider,
+            HeadlessRuntimeOptions::default(),
+        );
+        let codex_preflight = codex_runtime
+            .provider_preflight_snapshot()
+            .expect("Codex provider preflight");
+        assert_eq!(codex_preflight.status, crate::ProviderPreflightStatus::Passed);
+        assert_eq!(codex_preflight.source, ProviderPreflightSource::LiveProbe);
+        assert_eq!(codex_runtime.workspace_root(), Some(workspace_root));
+        assert!(codex_runtime.allow_workspace_writes());
+
+        let provider_mismatch = codex_runtime
+            .validate_selected_provider(&ProviderSelection {
+                provider_id: "openai_api".into(),
+                model_id: "gpt-5.6".into(),
+            })
+            .expect_err("provider mismatch must fail before runtime mutation");
+        assert_eq!(provider_mismatch.code, "agent_core_provider_mismatch");
+        let model_mismatch = codex_runtime
+            .validate_selected_provider(&ProviderSelection {
+                provider_id: "openai_codex".into(),
+                model_id: "gpt-5.5".into(),
+            })
+            .expect_err("model mismatch must fail before runtime mutation");
+        assert_eq!(model_mismatch.code, "agent_core_model_mismatch");
+        codex_runtime
+            .validate_selected_provider(&ProviderSelection {
+                provider_id: "openai_codex".into(),
+                model_id: "gpt-5.6".into(),
+            })
+            .expect("matching provider selection");
+
+        let override_runtime = HeadlessProviderRuntime::new(
+            crate::InMemoryAgentCoreStore::default(),
+            HeadlessProviderExecutionConfig::Fake,
+            HeadlessRuntimeOptions {
+                provider_preflight: Some(codex_preflight.clone()),
+                ..HeadlessRuntimeOptions::default()
+            },
+        );
+        assert_eq!(
+            override_runtime
+                .provider_preflight_snapshot()
+                .expect("preflight override"),
+            codex_preflight
+        );
+    }
+
+    #[test]
+    fn headless_run_identity_defaults_and_snapshot_controls_are_fail_closed() {
+        let default_request = StartRunRequest {
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            prompt: "Fix it.".into(),
+            provider: ProviderSelection {
+                provider_id: "provider-1".into(),
+                model_id: "model-1".into(),
+            },
+            controls: None,
+        };
+        let identity = HeadlessRunIdentity::from_request(&default_request, None);
+        assert_eq!(identity.runtime_agent_id, "engineer");
+        assert_eq!(identity.agent_definition_id, "engineer");
+        assert_eq!(identity.agent_definition_version, 1);
+        assert_eq!(identity.approval_mode, "suggest");
+        assert!(identity.thinking_effort.is_none());
+        assert!(!identity.allows_workspace_writes());
+        assert!(!identity.allows_commands());
+
+        let mut invalid_controls = default_request;
+        invalid_controls.controls = Some(crate::RunControls {
+            runtime_agent_id: " ".into(),
+            agent_definition_id: Some(" ".into()),
+            agent_definition_version: Some(0),
+            thinking_effort: Some("unknown".into()),
+            approval_mode: " ".into(),
+            plan_mode_required: false,
+        });
+        let identity = HeadlessRunIdentity::from_request(&invalid_controls, None);
+        assert_eq!(identity.runtime_agent_id, "engineer");
+        assert_eq!(identity.agent_definition_id, "engineer");
+        assert_eq!(identity.agent_definition_version, 1);
+        assert_eq!(identity.approval_mode, "suggest");
+
+        let mut snapshot = run_snapshot_fixture();
+        snapshot.runtime_agent_id = "debug".into();
+        snapshot.events.push(runtime_event(
+            1,
+            RuntimeEventKind::RunStarted,
+            json!({"thinkingEffort": "HIGH", "approvalMode": "yolo"}),
+        ));
+        let identity = HeadlessRunIdentity::from_snapshot(&snapshot);
+        assert_eq!(identity.thinking_effort.as_deref(), Some("high"));
+        assert_eq!(identity.approval_mode, "yolo");
+        assert!(identity.allows_workspace_writes());
+        assert!(identity.allows_commands());
+
+        snapshot.events[0].payload = json!({"approvalMode": "anything"});
+        let identity = HeadlessRunIdentity::from_snapshot(&snapshot);
+        assert_eq!(identity.approval_mode, "suggest");
+        assert!(!identity.allows_workspace_writes());
+    }
+
+    #[test]
+    fn headless_tool_inputs_and_mutation_metadata_redact_sensitive_content() {
+        assert_eq!(
+            redacted_headless_tool_input("read", &json!("plain")),
+            (json!("plain"), false)
+        );
+
+        let (write, redacted) = redacted_headless_tool_input(
+            HEADLESS_TOOL_WRITE,
+            &json!({"path": "secret.txt", "content": "hunter2"}),
+        );
+        assert!(redacted);
+        assert_eq!(write["content"]["redacted"], true);
+        assert_eq!(write["content"]["bytes"], 7);
+
+        let patch = "diff --git a/src/a.rs b/src/a.rs\n--- a/src/a.rs\n+++ b/src/a.rs\n@@ -1 +1 @@\n-old\n+new\n--- /dev/null\n+++ b/src/new.rs\n";
+        let (patch_input, redacted) =
+            redacted_headless_tool_input(HEADLESS_TOOL_PATCH, &json!({"patch": patch}));
+        assert!(redacted);
+        assert_eq!(
+            patch_input["patch"]["changedFiles"],
+            json!(["src/a.rs", "src/new.rs"])
+        );
+
+        let (replace, redacted) = redacted_headless_tool_input(
+            HEADLESS_TOOL_REPLACE,
+            &json!({"search": "old", "replacement": "new", "path": "src/a.rs"}),
+        );
+        assert!(redacted);
+        assert_eq!(replace["search"]["bytes"], 3);
+        assert_eq!(replace["replacement"]["bytes"], 3);
+        assert_eq!(
+            redacted_headless_tool_input(HEADLESS_TOOL_WRITE, &json!({"content": 7})),
+            (json!({"content": 7}), false)
+        );
+
+        let root = unique_test_dir("headless-rollback");
+        let existing = root.join("existing.txt");
+        fs::write(&existing, "contents").expect("write rollback fixture");
+        let rollback = rollback_checkpoint_metadata("existing.txt", &existing);
+        assert_eq!(rollback["existed"], true);
+        assert_eq!(rollback["bytes"], 8);
+        assert_eq!(rollback["contentRedacted"], true);
+        assert_eq!(rollback["stableHash"], stable_bytes_hash(b"contents"));
+        assert_eq!(
+            rollback_checkpoint_metadata("missing.txt", &root.join("missing.txt"))["existed"],
+            false
+        );
+
+        let reservation = file_reservation_metadata(
+            &ToolExecutionContext {
+                run_id: "run-1".into(),
+                ..ToolExecutionContext::default()
+            },
+            &ToolCallInput {
+                tool_call_id: "call-1".into(),
+                tool_name: HEADLESS_TOOL_WRITE.into(),
+                input: json!({}),
+            },
+            "src/a.rs",
+        );
+        assert_eq!(reservation["reservationId"], "reservation-run-1-call-1");
+        assert_eq!(reservation["conflictPolicy"], "deny_without_override");
+        assert!(headless_tool_is_command(HEADLESS_TOOL_COMMAND));
+        assert!(!headless_tool_is_command(HEADLESS_TOOL_READ));
+    }
+
+    #[test]
+    fn headless_tool_argument_and_output_helpers_cover_invalid_boundaries() {
+        assert_eq!(
+            required_tool_string(&json!({"path": " README.md "}), "path").expect("required string"),
+            " README.md "
+        );
+        for input in [json!({}), json!({"path": " "}), json!({"path": 1})] {
+            assert_eq!(
+                required_tool_string(&input, "path")
+                    .expect_err("reject missing string")
+                    .code,
+                "agent_core_headless_tool_argument_missing"
+            );
+        }
+        assert_eq!(
+            required_tool_string_array(&json!({"argv": ["echo", "hello"]}), "argv")
+                .expect("string array"),
+            vec!["echo", "hello"]
+        );
+        assert!(required_tool_string_array(&json!({}), "argv").is_err());
+        assert!(required_tool_string_array(&json!({"argv": []}), "argv").is_err());
+        assert!(required_tool_string_array(&json!({"argv": [""]}), "argv").is_err());
+        assert!(required_tool_string_array(&json!({"argv": [1]}), "argv").is_err());
+
+        assert!(validate_headless_argv(&["echo".into(), "hello".into()]).is_ok());
+        assert!(validate_headless_argv(&[]).is_err());
+        assert!(validate_headless_argv(&[" ".into()]).is_err());
+        assert!(validate_headless_argv(&["echo".into(), "bad\0value".into()]).is_err());
+
+        let complete = read_limited_output(std::io::Cursor::new(b"hello"), 10);
+        assert_eq!(complete.bytes, b"hello");
+        assert!(!complete.truncated);
+        let truncated = read_limited_output(std::io::Cursor::new(b"hello world"), 5);
+        assert_eq!(truncated.bytes, b"hello");
+        assert!(truncated.truncated);
+
+        let denied = core_error_to_tool_execution_error(CoreError::invalid_request(
+            "workspace_write_denied",
+            "denied",
+        ));
+        assert_eq!(denied.category, crate::ToolErrorCategory::PolicyDenied);
+        let invalid = core_error_to_tool_execution_error(CoreError::invalid_request(
+            "argument_missing",
+            "missing",
+        ));
+        assert_eq!(invalid.category, crate::ToolErrorCategory::InvalidInput);
+        let retryable = core_error_to_tool_execution_error(CoreError::system_fault(
+            "provider_failed",
+            "failed",
+        ));
+        assert_eq!(
+            retryable.category,
+            crate::ToolErrorCategory::RetryableProviderToolFailure
+        );
+        assert_eq!(
+            tool_execution_error_to_core_error(retryable).code,
+            "provider_failed"
+        );
+    }
+
+    #[test]
+    fn headless_write_supports_creating_an_intentionally_empty_file() {
+        let root = unique_test_dir("headless-empty-write");
+        let runtime = HeadlessProductionToolRuntime::new(Some(&root), true, Vec::new())
+            .expect("create writable runtime");
+
+        runtime
+            .write(
+                &ToolExecutionContext::default(),
+                &ToolCallInput {
+                    tool_call_id: "call-empty-write".into(),
+                    tool_name: HEADLESS_TOOL_WRITE.into(),
+                    input: json!({"path": "empty.txt", "content": ""}),
+                },
+            )
+            .expect("write empty file");
+
+        assert_eq!(
+            fs::read(root.join("empty.txt")).expect("read empty file"),
+            b""
+        );
+    }
+
+    #[test]
+    fn headless_production_tools_cover_the_complete_file_lifecycle() {
+        assert_eq!(
+            HeadlessProductionToolRuntime::new(None, false, Vec::new())
+                .expect_err("workspace is required")
+                .code,
+            "agent_core_headless_workspace_missing"
+        );
+        let root = unique_test_dir("headless-file-lifecycle");
+        assert_eq!(
+            HeadlessProductionToolRuntime::new(Some(&root.join("missing")), false, Vec::new(),)
+                .expect_err("workspace must exist")
+                .code,
+            "agent_core_headless_workspace_unavailable"
+        );
+        let runtime = HeadlessProductionToolRuntime::new(Some(&root), true, Vec::new())
+            .expect("create writable runtime");
+        assert_eq!(
+            runtime.tool_names(),
+            vec!["read", "list", "write", "patch", "delete", "move", "replace", "command"]
+        );
+        assert_eq!(runtime.openai_tool_definitions().len(), 8);
+        assert_eq!(runtime.openai_response_tool_definitions().len(), 8);
+        assert_eq!(runtime.openai_tool_definitions()[0]["type"], "function");
+        assert_eq!(
+            runtime.openai_response_tool_definitions()[0]["name"],
+            "read"
+        );
+
+        let context = ToolExecutionContext {
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            turn_index: 1,
+            context_epoch: "turn-1".into(),
+            telemetry_attributes: BTreeMap::new(),
+        };
+        let call = |id: &str, name: &str, input: JsonValue| ToolCallInput {
+            tool_call_id: id.into(),
+            tool_name: name.into(),
+            input,
+        };
+
+        let written = runtime
+            .write(
+                &context,
+                &call(
+                    "write-1",
+                    HEADLESS_TOOL_WRITE,
+                    json!({"path": "nested/file.txt", "content": "old old"}),
+                ),
+            )
+            .expect("write nested file");
+        assert_eq!(written.output["bytes"], 7);
+        assert_eq!(written.output["rollback"]["existed"], false);
+        assert_eq!(
+            runtime
+                .read(&call(
+                    "read-1",
+                    HEADLESS_TOOL_READ,
+                    json!({"path": "nested/file.txt"}),
+                ))
+                .expect("read nested file")
+                .output["content"],
+            "old old"
+        );
+        assert_eq!(
+            runtime
+                .read(&call("read-missing", HEADLESS_TOOL_READ, json!({})))
+                .expect_err("read path is required")
+                .code,
+            "agent_core_headless_tool_argument_missing"
+        );
+
+        let preview = runtime
+            .replace_text(
+                &context,
+                &call(
+                    "replace-preview",
+                    HEADLESS_TOOL_REPLACE,
+                    json!({
+                        "path": "nested/file.txt",
+                        "search": "old",
+                        "replacement": "new",
+                        "dryRun": true,
+                        "maxReplacements": 1,
+                    }),
+                ),
+            )
+            .expect("preview replacement");
+        assert_eq!(preview.output["replacements"], 1);
+        assert_eq!(preview.output["changedFiles"][0]["truncated"], true);
+        assert_eq!(
+            fs::read_to_string(root.join("nested/file.txt")).unwrap(),
+            "old old"
+        );
+
+        let replaced = runtime
+            .replace_text(
+                &context,
+                &call(
+                    "replace-apply",
+                    HEADLESS_TOOL_REPLACE,
+                    json!({
+                        "path": "nested",
+                        "search": "old",
+                        "replacement": "new",
+                    }),
+                ),
+            )
+            .expect("apply replacement");
+        assert_eq!(replaced.output["replacements"], 2);
+        assert_eq!(
+            fs::read_to_string(root.join("nested/file.txt")).unwrap(),
+            "new new"
+        );
+        assert_eq!(
+            runtime
+                .replace_text(
+                    &context,
+                    &call(
+                        "replace-missing",
+                        HEADLESS_TOOL_REPLACE,
+                        json!({"path": ".", "search": "new"}),
+                    ),
+                )
+                .expect_err("replacement is required")
+                .code,
+            "agent_core_headless_replace_missing_replacement"
+        );
+
+        fs::write(root.join("binary.bin"), [0xff, 0xfe]).expect("write binary fixture");
+        let skipped = runtime
+            .replace_text(
+                &context,
+                &call(
+                    "replace-binary",
+                    HEADLESS_TOOL_REPLACE,
+                    json!({"path": ".", "search": "absent", "replacement": "value"}),
+                ),
+            )
+            .expect("skip non-UTF8 file");
+        assert!(skipped.output["skippedFiles"]
+            .as_array()
+            .expect("skipped files")
+            .iter()
+            .any(|item| item["path"] == "binary.bin"));
+
+        assert_eq!(
+            runtime
+                .move_path(
+                    &context,
+                    &call(
+                        "move-noop",
+                        HEADLESS_TOOL_MOVE,
+                        json!({"from": "nested/file.txt", "to": "nested/file.txt"}),
+                    ),
+                )
+                .expect_err("reject no-op move")
+                .code,
+            "agent_core_headless_move_noop"
+        );
+        fs::write(root.join("occupied.txt"), "occupied").expect("write occupied fixture");
+        assert_eq!(
+            runtime
+                .move_path(
+                    &context,
+                    &call(
+                        "move-occupied",
+                        HEADLESS_TOOL_MOVE,
+                        json!({"from": "nested/file.txt", "to": "occupied.txt"}),
+                    ),
+                )
+                .expect_err("reject overwrite move")
+                .code,
+            "agent_core_headless_move_target_exists"
+        );
+        let moved = runtime
+            .move_path(
+                &context,
+                &call(
+                    "move-1",
+                    HEADLESS_TOOL_MOVE,
+                    json!({"from": "nested/file.txt", "to": "moved/file.txt"}),
+                ),
+            )
+            .expect("move file");
+        assert_eq!(moved.output["kind"], "file");
+        assert!(!root.join("nested/file.txt").exists());
+        assert!(root.join("moved/file.txt").exists());
+
+        fs::create_dir_all(root.join("delete-dir/child")).expect("create delete fixture");
+        assert_eq!(
+            runtime
+                .delete(
+                    &context,
+                    &call(
+                        "delete-dir-denied",
+                        HEADLESS_TOOL_DELETE,
+                        json!({"path": "delete-dir"}),
+                    ),
+                )
+                .expect_err("directory deletion needs recursive")
+                .code,
+            "agent_core_headless_delete_directory_requires_recursive"
+        );
+        let deleted_dir = runtime
+            .delete(
+                &context,
+                &call(
+                    "delete-dir",
+                    HEADLESS_TOOL_DELETE,
+                    json!({"path": "delete-dir", "recursive": true}),
+                ),
+            )
+            .expect("delete directory recursively");
+        assert_eq!(deleted_dir.output["kind"], "directory");
+        let deleted_file = runtime
+            .delete(
+                &context,
+                &call(
+                    "delete-file",
+                    HEADLESS_TOOL_DELETE,
+                    json!({"path": "moved/file.txt"}),
+                ),
+            )
+            .expect("delete file");
+        assert_eq!(deleted_file.output["kind"], "file");
+
+        let patch = "diff --git a/new.txt b/new.txt\nnew file mode 100644\n--- /dev/null\n+++ b/new.txt\n@@ -0,0 +1 @@\n+new\n";
+        let patched = runtime
+            .apply_patch(
+                &context,
+                &call("patch-create", HEADLESS_TOOL_PATCH, json!({"patch": patch})),
+            )
+            .expect("git apply supports standalone worktrees");
+        assert_eq!(patched.output["changedFiles"], json!(["new.txt"]));
+        assert_eq!(fs::read_to_string(root.join("new.txt")).unwrap(), "new\n");
+        assert_eq!(
+            runtime
+                .apply_patch(
+                    &context,
+                    &call(
+                        "patch-conflict",
+                        HEADLESS_TOOL_PATCH,
+                        json!({"patch": patch})
+                    ),
+                )
+                .expect_err("reapplying a create patch must fail its check")
+                .code,
+            "agent_core_headless_patch_check_failed"
+        );
+
+        assert_eq!(
+            runtime
+                .list(&call(
+                    "list-file",
+                    HEADLESS_TOOL_LIST,
+                    json!({"path": "occupied.txt"}),
+                ))
+                .expect_err("cannot recursively list a file")
+                .code,
+            "agent_core_headless_list_failed"
+        );
+        let report = runtime
+            .dispatch_batch(
+                "project-1",
+                "run-1",
+                2,
+                &[call(
+                    "registry-read",
+                    HEADLESS_TOOL_READ,
+                    json!({"path": "occupied.txt"}),
+                )],
+            )
+            .expect("dispatch registered read");
+        assert_eq!(report.groups.len(), 1);
+        assert_eq!(report.groups[0].outcomes.len(), 1);
+        assert!(matches!(
+            &report.groups[0].outcomes[0],
+            ToolDispatchOutcome::Succeeded(_)
+        ));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn headless_command_policy_timeout_and_file_rollback_are_enforced() {
+        let root = unique_test_dir("headless-command-rollback");
+        let runtime =
+            HeadlessProductionToolRuntime::new_with_modes(Some(&root), false, true, Vec::new())
+                .expect("create command runtime");
+        assert_eq!(runtime.tool_names(), vec!["read", "list", "command"]);
+        let context = ToolExecutionContext {
+            run_id: "run-command".into(),
+            context_epoch: "turn-3".into(),
+            ..ToolExecutionContext::default()
+        };
+        let command_call = |id: &str, input: JsonValue| ToolCallInput {
+            tool_call_id: id.into(),
+            tool_name: HEADLESS_TOOL_COMMAND.into(),
+            input,
+        };
+
+        let success = runtime
+            .command(
+                &context,
+                &command_call(
+                    "command-ok",
+                    json!({"argv": ["sh", "-c", "printf 'hello'"]}),
+                ),
+            )
+            .expect("run successful command");
+        assert_eq!(success.output["ok"], true);
+        assert_eq!(success.output["stdout"], "hello");
+        assert_eq!(success.output["contextEpoch"], "turn-3");
+
+        let failure = runtime
+            .command(
+                &context,
+                &command_call(
+                    "command-failed",
+                    json!({"argv": ["sh", "-c", "printf 'bad' >&2; exit 7"]}),
+                ),
+            )
+            .expect("capture non-zero command");
+        assert_eq!(failure.output["ok"], false);
+        assert_eq!(failure.output["exitCode"], 7);
+        assert_eq!(failure.output["stderr"], "bad");
+        assert_eq!(
+            runtime
+                .command(
+                    &context,
+                    &command_call(
+                        "command-cwd-file",
+                        json!({"argv": ["pwd"], "cwd": "file.txt"}),
+                    ),
+                )
+                .expect_err("file cwd is invalid")
+                .code,
+            "agent_core_headless_path_unavailable"
+        );
+
+        let timed_out = runtime
+            .run_process(
+                &context,
+                &command_call("command-timeout", json!({})),
+                vec!["sh".into(), "-c".into(), "sleep 1".into()],
+                root.clone(),
+                None,
+                Some(20),
+            )
+            .expect("time out command");
+        assert!(timed_out.timed_out);
+        assert_eq!(
+            runtime
+                .run_process(
+                    &context,
+                    &command_call("command-missing", json!({})),
+                    vec!["xero-command-that-does-not-exist".into()],
+                    root.clone(),
+                    None,
+                    Some(100),
+                )
+                .expect_err("missing command must be typed")
+                .code,
+            "agent_core_headless_command_spawn_failed"
+        );
+
+        let read_only_policy = HeadlessProductionToolPolicy {
+            allow_workspace_writes: false,
+            allow_commands: false,
+        };
+        assert!(matches!(
+            read_only_policy.evaluate(
+                &headless_command_descriptor(),
+                &command_call("policy-command", json!({}))
+            ),
+            ToolPolicyDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            read_only_policy.evaluate(
+                &headless_write_descriptor(),
+                &ToolCallInput {
+                    tool_call_id: "policy-write".into(),
+                    tool_name: HEADLESS_TOOL_WRITE.into(),
+                    input: json!({}),
+                }
+            ),
+            ToolPolicyDecision::Deny { .. }
+        ));
+        assert_eq!(
+            read_only_policy.evaluate(
+                &headless_read_descriptor(),
+                &ToolCallInput {
+                    tool_call_id: "policy-read".into(),
+                    tool_name: HEADLESS_TOOL_READ.into(),
+                    input: json!({}),
+                }
+            ),
+            ToolPolicyDecision::Allow
+        );
+
+        let rollback = HeadlessFileRollback {
+            workspace_root: root.clone(),
+        };
+        let write_descriptor = headless_write_descriptor();
+        let write_call = ToolCallInput {
+            tool_call_id: "rollback-existing".into(),
+            tool_name: HEADLESS_TOOL_WRITE.into(),
+            input: json!({"path": "rollback.txt", "content": "new"}),
+        };
+        fs::write(root.join("rollback.txt"), "old").expect("write rollback original");
+        let checkpoint = rollback
+            .checkpoint_before(&write_call, &write_descriptor)
+            .expect("checkpoint existing file")
+            .expect("write checkpoint");
+        fs::write(root.join("rollback.txt"), "new").expect("mutate rollback fixture");
+        rollback
+            .rollback_after_failure(
+                &write_call,
+                &write_descriptor,
+                &checkpoint,
+                &ToolExecutionError::retryable("fixture_failure", "fixture"),
+            )
+            .expect("restore existing file");
+        assert_eq!(
+            fs::read_to_string(root.join("rollback.txt")).unwrap(),
+            "old"
+        );
+
+        let new_call = ToolCallInput {
+            tool_call_id: "rollback-new".into(),
+            tool_name: HEADLESS_TOOL_WRITE.into(),
+            input: json!({"path": "created.txt", "content": "new"}),
+        };
+        let checkpoint = rollback
+            .checkpoint_before(&new_call, &write_descriptor)
+            .expect("checkpoint new file")
+            .expect("new file checkpoint");
+        fs::write(root.join("created.txt"), "new").expect("create rollback fixture");
+        rollback
+            .rollback_after_failure(
+                &new_call,
+                &write_descriptor,
+                &checkpoint,
+                &ToolExecutionError::retryable("fixture_failure", "fixture"),
+            )
+            .expect("remove newly created file");
+        assert!(!root.join("created.txt").exists());
+
+        assert!(rollback
+            .checkpoint_before(&new_call, &headless_read_descriptor())
+            .expect("non-write checkpoint")
+            .is_none());
+        assert_eq!(
+            rollback
+                .rollback_after_failure(
+                    &new_call,
+                    &headless_read_descriptor(),
+                    &json!({}),
+                    &ToolExecutionError::retryable("fixture_failure", "fixture"),
+                )
+                .expect("non-write rollback")["kind"],
+            "rollback_not_required"
+        );
+    }
+
+    #[test]
+    fn headless_prompts_effort_urls_and_timeouts_cover_all_agent_modes() {
+        assert!(headless_system_prompt_for_agent("plan", None).contains("planning-only"));
+        assert!(
+            headless_system_prompt_for_agent("debug", Some(Path::new("/repo")))
+                .contains("root cause")
+        );
+        assert!(headless_system_prompt_for_agent("engineer", None).contains("configured workspace"));
+
+        for agent in ["ask", "computer_use", "plan", "crawl", "agent_create"] {
+            assert!(!headless_agent_allows_workspace_writes(agent));
+        }
+        for agent in ["engineer", "debug", "custom"] {
+            assert!(headless_agent_allows_workspace_writes(agent));
+        }
+
+        for (input, expected) in [
+            (Some(" minimal "), Some("minimal")),
+            (Some("LOW"), Some("low")),
+            (Some("medium"), Some("medium")),
+            (Some("high"), Some("high")),
+            (Some("x_high"), Some("xhigh")),
+            (Some("xhigh"), Some("xhigh")),
+            (Some("unknown"), None),
+            (None, None),
+        ] {
+            assert_eq!(
+                normalize_headless_thinking_effort(input).as_deref(),
+                expected
+            );
+        }
+        assert_eq!(deepseek_headless_effort("xhigh"), "max");
+        assert_eq!(deepseek_headless_effort("medium"), "high");
+        assert_eq!(
+            clamp_openai_codex_headless_effort("gpt-5.1", "xhigh"),
+            "high"
+        );
+        assert_eq!(
+            clamp_openai_codex_headless_effort("gpt-5.1-codex-mini", "low"),
+            "medium"
+        );
+        assert_eq!(
+            clamp_openai_codex_headless_effort("gpt-5.1-codex-mini", "xhigh"),
+            "high"
+        );
+        assert_eq!(
+            clamp_openai_codex_headless_effort("openai/gpt-5.6", "minimal"),
+            "low"
+        );
+        assert_eq!(
+            clamp_openai_codex_headless_effort("other", "unexpected"),
+            "medium"
+        );
+
+        assert_eq!(
+            openai_compatible_chat_url("https://example.com/v1/chat/completions")
+                .expect("complete chat URL"),
+            "https://example.com/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_compatible_chat_url("http://localhost:11434/v1").expect("localhost URL"),
+            "http://localhost:11434/v1/chat/completions"
+        );
+        assert_eq!(
+            openai_compatible_chat_url("http://[::1]:11434/v1").expect("IPv6 loopback URL"),
+            "http://[::1]:11434/v1/chat/completions"
+        );
+        assert!(openai_compatible_chat_url(" ").is_err());
+        assert!(openai_compatible_chat_url("http://example.com/v1").is_err());
+        assert!(is_local_http_endpoint("http://0.0.0.0:11434"));
+        assert!(!is_local_http_endpoint("https://localhost:11434"));
+        assert!(!is_local_http_endpoint("not a URL"));
+        assert_eq!(normalize_timeout(0), DEFAULT_HEADLESS_PROVIDER_TIMEOUT_MS);
+        assert_eq!(normalize_timeout(42), 42);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn workspace_path_resolution_rejects_traversal_symlinks_and_case_variants() {
+        let root = unique_test_dir("headless-path-boundaries");
+        fs::create_dir_all(root.join("nested/existing")).expect("create nested fixture");
+        fs::create_dir_all(root.join(".GIT")).expect("create protected case fixture");
+        assert_eq!(
+            resolve_workspace_path_for_root(&root, "nested/missing/file.txt", true)
+                .expect("allow missing nested leaf"),
+            root.join("nested/missing/file.txt")
+        );
+        assert_eq!(
+            resolve_workspace_path_for_root(&root, "../outside", true)
+                .expect_err("reject parent traversal")
+                .code,
+            "agent_core_headless_path_denied"
+        );
+        assert_eq!(
+            resolve_workspace_path_for_root(&root, ".GIT/config", true)
+                .expect_err("reject case-insensitive protected path")
+                .code,
+            "agent_core_headless_path_protected"
+        );
+        assert_eq!(
+            resolve_workspace_path_for_root(&root, "missing.txt", false)
+                .expect_err("reject unavailable read leaf")
+                .code,
+            "agent_core_headless_path_unavailable"
+        );
+
+        let outside = root
+            .parent()
+            .expect("fixture parent")
+            .join("headless-outside.txt");
+        fs::write(&outside, "outside").expect("write outside fixture");
+        std::os::unix::fs::symlink(&outside, root.join("linked.txt")).expect("create symlink");
+        assert_eq!(
+            resolve_workspace_path_for_root(&root, "linked.txt", true)
+                .expect_err("reject symlink leaf")
+                .code,
+            "agent_core_headless_path_denied"
+        );
+        assert_eq!(
+            resolve_workspace_path_for_root(&root.join("missing-root"), ".", false)
+                .expect_err("reject missing root")
+                .code,
+            "agent_core_headless_workspace_unavailable"
+        );
+    }
+
+    #[test]
+    fn workspace_listing_and_snapshot_helpers_are_deterministic_and_bounded() {
+        let root = unique_test_dir("headless-helper-boundaries");
+        fs::create_dir_all(root.join("target/cache")).expect("create skipped fixture");
+        fs::create_dir_all(root.join("src")).expect("create src fixture");
+        fs::write(root.join("b.txt"), "b").expect("write b fixture");
+        fs::write(root.join("A.txt"), "a").expect("write a fixture");
+
+        let listing = collect_workspace_listing(&root, &root, 1).expect("bounded listing");
+        assert_eq!(listing.entries.len(), 1);
+        assert!(listing.truncated);
+        assert!(listing.omitted_entry_count > 0);
+        assert!(listing
+            .skipped_directories
+            .iter()
+            .any(|path| path == "target"));
+        assert!(sorted_workspace_entries(&root)
+            .expect("sorted entries")
+            .windows(2)
+            .all(
+                |pair| pair[0].file_name().to_string_lossy().to_ascii_lowercase()
+                    <= pair[1].file_name().to_string_lossy().to_ascii_lowercase()
+            ));
+        assert_eq!(
+            sorted_workspace_entries(&root.join("A.txt"))
+                .expect_err("cannot list a file")
+                .code,
+            "agent_core_headless_list_failed"
+        );
+        assert_eq!(
+            workspace_relative_path(&root, &root.join("src")),
+            Some("src".into())
+        );
+        assert!(workspace_relative_path(&root, root.parent().expect("fixture parent")).is_none());
+        assert!(skipped_workspace_dir("node_modules"));
+        assert!(!skipped_workspace_dir("src"));
+
+        let mut direct = WorkspaceListing::default();
+        push_workspace_listing_entry(&mut direct, 2, "directory", "src");
+        push_workspace_listing_entry(&mut direct, 2, "file", "README.md");
+        push_workspace_listing_entry(&mut direct, 2, "file", "omitted.txt");
+        assert_eq!(direct.directories, vec!["src"]);
+        assert_eq!(direct.files, vec!["README.md"]);
+        assert_eq!(direct.omitted_entry_count, 1);
+
+        let mut snapshot = run_snapshot_fixture();
+        snapshot.messages = (0..13)
+            .map(|index| RuntimeMessage {
+                id: index,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                role: MessageRole::User,
+                content: format!("message-{index}-{}", "🦀".repeat(300)),
+                provider_metadata: None,
+                created_at: "2026-07-18T12:00:00Z".into(),
+            })
+            .collect();
+        let summary = compact_summary_from_snapshot(&snapshot);
+        assert!(!summary.contains("message-0-"));
+        assert!(summary.contains("message-12-"));
+        assert!(summary.contains("..."));
+
+        let first_hash = headless_context_hash(&snapshot, 1);
+        assert_eq!(first_hash, headless_context_hash(&snapshot, 1));
+        assert_ne!(first_hash, headless_context_hash(&snapshot, 2));
+        snapshot.events.extend([
+            runtime_event(
+                1,
+                RuntimeEventKind::ToolRegistrySnapshot,
+                json!({"turnIndex": 2}),
+            ),
+            runtime_event(
+                2,
+                RuntimeEventKind::ToolRegistrySnapshot,
+                json!({"turnIndex": "bad"}),
+            ),
+            runtime_event(3, RuntimeEventKind::RunStarted, json!({"turnIndex": 99})),
+        ]);
+        assert_eq!(next_headless_provider_turn_index(&snapshot), 3);
+
+        assert_eq!(stable_bytes_hash(b"same"), stable_bytes_hash(b"same"));
+        assert_ne!(stable_bytes_hash(b"same"), stable_bytes_hash(b"different"));
+        assert_eq!(stable_bytes_hash(b"same").len(), 16);
+        assert!(generate_headless_id("fixture").starts_with("fixture-"));
+        assert_eq!(truncate_text("short", 5), "short");
+        assert_eq!(truncate_text("🦀ab", 4), "🦀...");
+        assert_eq!(truncate_text("value", 0), "...");
+    }
+
+    #[test]
+    fn replayable_chat_history_covers_every_role_and_provider_metadata_shape() {
+        let mut snapshot = run_snapshot_fixture();
+        let message = |id, role, content: &str, provider_metadata| RuntimeMessage {
+            id,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            role,
+            content: content.into(),
+            provider_metadata,
+            created_at: "2026-07-18T12:00:00Z".into(),
+        };
+        snapshot.messages = vec![
+            message(1, MessageRole::System, "custom system", None),
+            message(2, MessageRole::Developer, "developer guidance", None),
+            message(3, MessageRole::User, "user prompt", None),
+            message(4, MessageRole::Assistant, "plain assistant", None),
+            message(
+                5,
+                MessageRole::Assistant,
+                "reasoned assistant",
+                Some(RuntimeMessageProviderMetadata::assistant_turn(
+                    "provider-5",
+                    Some("reasoning".into()),
+                    None,
+                    Vec::new(),
+                )),
+            ),
+            message(
+                6,
+                MessageRole::Assistant,
+                "",
+                Some(RuntimeMessageProviderMetadata::assistant_tool_calls(
+                    "provider-6",
+                    vec![RuntimeProviderToolCallMetadata {
+                        tool_call_id: "call-6".into(),
+                        provider_tool_name: "read_file".into(),
+                        arguments: json!({ "path": "src/lib.rs" }),
+                    }],
+                )),
+            ),
+            message(
+                7,
+                MessageRole::Tool,
+                "metadata result",
+                Some(RuntimeMessageProviderMetadata::tool_result(
+                    "provider-7",
+                    "call-6",
+                    "read_file",
+                    "provider-6",
+                )),
+            ),
+            message(
+                8,
+                MessageRole::Tool,
+                r#"{"toolCallId":"legacy-camel"}"#,
+                None,
+            ),
+            message(
+                9,
+                MessageRole::Tool,
+                r#"{"tool_call_id":"legacy-snake"}"#,
+                None,
+            ),
+            message(10, MessageRole::Tool, "not-json", None),
+        ];
+
+        let messages = replayable_openai_chat_messages_from_snapshot(&snapshot);
+        assert_eq!(messages[0]["content"], "custom system");
+        assert_eq!(messages[1]["role"], "user");
+        assert_eq!(messages[2]["role"], "user");
+        assert_eq!(messages[3]["content"], "plain assistant");
+        assert_eq!(messages[4]["content"], "reasoned assistant");
+        assert_eq!(messages[5]["content"], JsonValue::Null);
+        assert_eq!(messages[5]["tool_calls"][0]["id"], "call-6");
+        assert_eq!(messages[6]["tool_call_id"], "call-6");
+        assert_eq!(messages[7]["tool_call_id"], "legacy-camel");
+        assert_eq!(messages[8]["tool_call_id"], "legacy-snake");
+        assert!(messages[9].get("tool_call_id").is_none());
+
+        for error in [
+            ToolExecutionError::invalid_input("invalid", "invalid input"),
+            ToolExecutionError::sandbox_denied("denied", "sandbox denied"),
+            ToolExecutionError::timeout("timeout", "timed out"),
+            ToolExecutionError::retryable("retry", "retry later"),
+        ] {
+            let json = tool_execution_error_json(&error);
+            assert_eq!(json["code"], error.code);
+            assert_eq!(json["retryable"], error.retryable);
+            assert!(!json["category"].as_str().unwrap_or_default().is_empty());
+        }
+    }
+
+    fn run_snapshot_fixture() -> RunSnapshot {
+        RunSnapshot {
+            trace_id: "0123456789abcdef0123456789abcdef".into(),
+            runtime_agent_id: "engineer".into(),
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 1,
+            system_prompt: "fixture system prompt".into(),
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            provider_id: "provider-1".into(),
+            model_id: "model-1".into(),
+            status: RunStatus::Running,
+            prompt: "Fixture prompt".into(),
+            messages: Vec::new(),
+            events: Vec::new(),
+            context_manifests: Vec::new(),
+        }
+    }
+
+    fn runtime_event(
+        id: i64,
+        event_kind: RuntimeEventKind,
+        payload: JsonValue,
+    ) -> crate::RuntimeEvent {
+        crate::RuntimeEvent {
+            id,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind,
+            trace: RuntimeTraceContext::for_run(
+                "0123456789abcdef0123456789abcdef",
+                "run-1",
+                "fixture",
+            ),
+            payload,
+            created_at: "2026-07-18T12:00:00Z".into(),
+        }
     }
 
     fn unique_test_dir(label: &str) -> PathBuf {

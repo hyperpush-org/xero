@@ -1023,11 +1023,24 @@ fn is_crawl_path_key(key: &str) -> bool {
 }
 
 fn normalize_crawl_related_path(value: &str) -> Option<String> {
-    let path = value.trim().trim_start_matches("./");
+    let trimmed = value.trim();
+    let is_windows_absolute = trimmed.starts_with('\\')
+        || trimmed
+            .as_bytes()
+            .get(1)
+            .is_some_and(|separator| *separator == b':')
+            && trimmed
+                .as_bytes()
+                .first()
+                .is_some_and(u8::is_ascii_alphabetic);
+    let path = trimmed
+        .trim_start_matches("./")
+        .trim_start_matches(".\\");
     if path.is_empty()
         || path.len() > 240
         || path.starts_with('/')
         || path.starts_with("..")
+        || is_windows_absolute
         || path.contains('\0')
         || path.contains('\n')
         || path.contains("://")
@@ -5291,16 +5304,27 @@ mod tests {
     use crate::{
         commands::{RepositoryStatusEntryDto, RuntimeRunApprovalModeDto},
         runtime::{
+            AutonomousActionRequiredAnswerShape, AutonomousActionRequiredOption,
             AutonomousAgentCoordinationAction, AutonomousAgentCoordinationOutput,
+            AutonomousAgentDefinitionAction, AutonomousCommandSessionOperation,
+            AutonomousCommandSessionOutput, AutonomousCommandSessionStream,
             AutonomousCommandOutput, AutonomousCommandPolicyOutcome,
             AutonomousCommandPolicyProfile, AutonomousCommandPolicyTrace,
+            AutonomousDesktopCapabilities, AutonomousDesktopPolicyCategory,
+            AutonomousDesktopPolicyDecision, AutonomousDesktopPolicyTrace,
+            AutonomousDesktopSidecarStatus, AutonomousMacosAutomationPolicyTrace,
+            AutonomousProcessActionRiskLevel, AutonomousRouteRequestOutput,
+            AutonomousRouteTargetKind, AutonomousSystemDiagnosticsAction,
+            AutonomousSystemDiagnosticsPolicyTrace, AutonomousSystemDiagnosticsTarget,
             AutonomousFsTransactionOperationResult, AutonomousFsTransactionRollbackStatus,
             AutonomousFsTransactionValidationSummary, AutonomousLineEnding,
             AutonomousPatchOperation, AutonomousPatchRequest, AutonomousReadContentKind,
             AutonomousReadOutput, AutonomousSearchMatch, AutonomousSearchOmissions,
-            AutonomousSearchOutput, AutonomousStatKind, FakeProviderAdapter,
+            AutonomousSearchOutput, AutonomousStatKind, AutonomousWorkflowDefinitionAction,
+            FakeProviderAdapter,
         },
     };
+    use crate::runtime::autonomous_tool_runtime::AutonomousSensitiveInputFieldOutput;
     use crate::{db, git::repository::CanonicalRepository, state::DesktopState};
     use tempfile::tempdir;
 
@@ -5331,6 +5355,363 @@ mod tests {
             "run-heartbeat-other",
             start
         ));
+    }
+
+    #[test]
+    fn command_output_persistence_fixture_covers_every_action_bearing_output_family() {
+        let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
+        let project_id = "project-command-output-matrix";
+        let run_id = "run-command-output-matrix";
+        let (_tempdir, repo_root, _) =
+            memory_capture_snapshot(project_id, run_id, "Persist tool output fixtures.");
+        let command_policy = AutonomousCommandPolicyTrace {
+            outcome: AutonomousCommandPolicyOutcome::Escalated,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            profile: AutonomousCommandPolicyProfile::GeneralExecution,
+            code: "fixture_approval".into(),
+            reason: "Operator review required.".into(),
+        };
+        let diagnostic_policy = AutonomousSystemDiagnosticsPolicyTrace {
+            risk_level: AutonomousProcessActionRiskLevel::SystemRead,
+            approval_required: true,
+            code: "diagnostic_approval".into(),
+            reason: "Review diagnostic access.".into(),
+        };
+        let macos_policy = AutonomousMacosAutomationPolicyTrace {
+            risk_level: AutonomousProcessActionRiskLevel::OsAutomation,
+            approval_required: true,
+            code: "macos_approval".into(),
+            reason: "Review macOS automation.".into(),
+        };
+        let desktop_policy = AutonomousDesktopPolicyTrace {
+            category: AutonomousDesktopPolicyCategory::ControlApprovalRequired,
+            decision: AutonomousDesktopPolicyDecision::ApprovalRequired,
+            decision_id: "desktop-decision".into(),
+            code: "desktop_approval".into(),
+            reason: "Review desktop control.".into(),
+            approval_required: true,
+            user_action_required: true,
+        };
+        let desktop_capabilities = AutonomousDesktopCapabilities {
+            platform: "macos".into(),
+            schema_version: 1,
+            display_list: false,
+            screenshot: false,
+            window_list: false,
+            app_list: false,
+            notification_observation: false,
+            foreground_state: false,
+            cursor_state: false,
+            accessibility_snapshot: false,
+            ocr_snapshot: false,
+            mouse_input: false,
+            keyboard_input: false,
+            clipboard: false,
+            window_focus: false,
+            app_control: false,
+            accessibility_actions: false,
+            menu_select: false,
+            webrtc_stream: false,
+            screenshot_fallback_stream: false,
+            native_video_track: false,
+            preferred_codec: None,
+            capture_backends: Vec::new(),
+            encoder_backends: Vec::new(),
+            hardware_encoding: false,
+            manual_cloud_control: false,
+        };
+        let desktop_control_output = AutonomousDesktopToolOutput {
+            tool: "desktop_control".into(),
+            action: "click".into(),
+            request_id: "request-1".into(),
+            phase: "fixture".into(),
+            status: AutonomousDesktopToolStatus::ApprovalRequired,
+            platform: "macos".into(),
+            sidecar: AutonomousDesktopSidecarStatus {
+                schema_version: 1,
+                platform: "macos".into(),
+                transport: "fixture".into(),
+                authenticated: true,
+                health: "ready".into(),
+                message: "ready".into(),
+            },
+            capabilities: desktop_capabilities,
+            permissions: Vec::new(),
+            policy: desktop_policy,
+            displays: Vec::new(),
+            windows: Vec::new(),
+            apps: Vec::new(),
+            foreground: None,
+            cursor: None,
+            screenshot: None,
+            stream: None,
+            stream_signal: None,
+            structured_snapshot: None,
+            controller_lock: None,
+            audit_id: None,
+            error: None,
+            message: "approval required".into(),
+        };
+        let mut desktop_observe_output = desktop_control_output.clone();
+        desktop_observe_output.tool = "desktop_observe".into();
+        desktop_observe_output.action = "snapshot".into();
+        desktop_observe_output.request_id = "request-observe".into();
+        desktop_observe_output.status = AutonomousDesktopToolStatus::Executed;
+        desktop_observe_output.policy.category = AutonomousDesktopPolicyCategory::ObserveSafe;
+        desktop_observe_output.policy.decision = AutonomousDesktopPolicyDecision::Allowed;
+        desktop_observe_output.policy.approval_required = false;
+        desktop_observe_output.policy.user_action_required = false;
+        let mut desktop_stream_output = desktop_observe_output.clone();
+        desktop_stream_output.tool = "desktop_stream".into();
+        desktop_stream_output.action = "start".into();
+        desktop_stream_output.request_id = "request-stream".into();
+        desktop_stream_output.policy.category = AutonomousDesktopPolicyCategory::StreamSafe;
+
+        let mut outputs = vec![
+            AutonomousToolOutput::Command(AutonomousCommandOutput {
+                argv: vec!["deploy".into(), "--token=secret-value".into()],
+                cwd: ".".into(),
+                intent: "fixture".into(),
+                stdout: Some("preview".into()),
+                stderr: None,
+                stdout_truncated: false,
+                stderr_truncated: false,
+                stdout_redacted: false,
+                stderr_redacted: false,
+                exit_code: None,
+                timed_out: false,
+                spawned: false,
+                preview_token: None,
+                policy: command_policy.clone(),
+                changed_files: Vec::new(),
+                changed_files_truncated: false,
+                output_artifact: None,
+                suggested_next_actions: Vec::new(),
+                host_command_impact: None,
+                sandbox: None,
+            }),
+            AutonomousToolOutput::CommandSession(AutonomousCommandSessionOutput {
+                operation: AutonomousCommandSessionOperation::Start,
+                session_id: "session-1".into(),
+                argv: vec!["cargo".into(), "test".into()],
+                cwd: ".".into(),
+                running: false,
+                exit_code: None,
+                spawned: false,
+                chunks: Vec::new(),
+                next_sequence: 0,
+                policy: Some(command_policy),
+                sandbox: None,
+            }),
+            AutonomousToolOutput::SystemDiagnostics(AutonomousSystemDiagnosticsOutput {
+                action: AutonomousSystemDiagnosticsAction::ProcessThreads,
+                platform_supported: true,
+                performed: false,
+                target: AutonomousSystemDiagnosticsTarget {
+                    pid: Some(42),
+                    process_name: None,
+                    bundle_id: None,
+                    app_name: None,
+                    window_id: None,
+                },
+                policy: diagnostic_policy,
+                summary: "approval required".into(),
+                rows: Vec::new(),
+                truncated: false,
+                redacted: false,
+                artifact: None,
+                diagnostics: Vec::new(),
+            }),
+            AutonomousToolOutput::MacosAutomation(AutonomousMacosAutomationOutput {
+                action: AutonomousMacosAutomationAction::MacAppActivate,
+                phase: "fixture".into(),
+                platform_supported: true,
+                performed: false,
+                apps: Vec::new(),
+                windows: Vec::new(),
+                permissions: Vec::new(),
+                screenshot: None,
+                policy: macos_policy,
+                message: "approval required".into(),
+            }),
+            AutonomousToolOutput::DesktopControl(desktop_control_output),
+            AutonomousToolOutput::DesktopObserve(desktop_observe_output),
+            AutonomousToolOutput::DesktopStream(desktop_stream_output),
+            AutonomousToolOutput::SensitiveInput(AutonomousSensitiveInputOutput {
+                action_id: "sensitive-1".into(),
+                status: "pending_user_review".into(),
+                purpose: "Authenticate".into(),
+                intended_use: "Provider request".into(),
+                allow_partial: false,
+                fields: vec![AutonomousSensitiveInputFieldOutput {
+                    key: "token".into(),
+                    label: "Token".into(),
+                    description: Some("Access token".into()),
+                    required: true,
+                    validation_hint: Some("non-empty".into()),
+                    value: "[redacted]".into(),
+                }],
+                redacted: true,
+                summary: "Requested one field.".into(),
+            }),
+            AutonomousToolOutput::SensitiveInput(AutonomousSensitiveInputOutput {
+                action_id: "sensitive-approved".into(),
+                status: "approved".into(),
+                purpose: "Authenticate".into(),
+                intended_use: "Provider request".into(),
+                allow_partial: false,
+                fields: Vec::new(),
+                redacted: true,
+                summary: "Sensitive input approved.".into(),
+            }),
+            AutonomousToolOutput::ActionRequired(AutonomousActionRequiredOutput {
+                action_id: "choice-1".into(),
+                action_type: "user_input_required".into(),
+                status: "pending_user_response".into(),
+                title: "Choose mode".into(),
+                detail: "Select the safe mode.".into(),
+                answer_shape: AutonomousActionRequiredAnswerShape::SingleChoice,
+                prompt_kind: Some("decision".into()),
+                options: vec![AutonomousActionRequiredOption {
+                    id: "safe".into(),
+                    label: "Safe".into(),
+                    description: Some("Use safe mode.".into()),
+                }],
+                allow_multiple: false,
+                intended_use: Some("Continue the run.".into()),
+                summary: "Choice required.".into(),
+            }),
+            AutonomousToolOutput::RouteRequest(AutonomousRouteRequestOutput {
+                schema: "xero.route_request.v1".into(),
+                request_id: "route-1".into(),
+                target_kind: AutonomousRouteTargetKind::BuiltIn,
+                target_agent_id: RuntimeAgentIdDto::Engineer,
+                target_agent_definition_id: None,
+                target_agent_definition_version: None,
+                target_label: "Engineer".into(),
+                reason: "Implementation needed.".into(),
+                summary: "Route to Engineer.".into(),
+                policy_decision: "approved".into(),
+                auto_routable: true,
+                message: "Routing requested.".into(),
+            }),
+            AutonomousToolOutput::AgentDefinition(AutonomousAgentDefinitionOutput {
+                action: AutonomousAgentDefinitionAction::Save,
+                message: "Save Agent fixture.".into(),
+                applied: false,
+                approval_required: true,
+                definition: None,
+                definitions: Vec::new(),
+                validation_report: None,
+                effective_runtime_preview: None,
+                attachable_skill_catalog: None,
+                approval_review: Some(json!({ "change": "create" })),
+            }),
+            AutonomousToolOutput::WorkflowDefinition(AutonomousWorkflowDefinitionOutput {
+                action: AutonomousWorkflowDefinitionAction::Save,
+                message: "Save Stages fixture.".into(),
+                applied: false,
+                approval_required: true,
+                definition: None,
+                definitions: Vec::new(),
+                validation_report: None,
+                approval_review: Some(json!({ "change": "create" })),
+            }),
+        ];
+        outputs.push(
+            AutonomousToolRuntime::new(&repo_root)
+                .expect("process output runtime")
+                .process_manager(crate::runtime::AutonomousProcessManagerRequest {
+                    action: AutonomousProcessManagerAction::List,
+                    process_id: None,
+                    pid: None,
+                    parent_pid: None,
+                    port: None,
+                    group: None,
+                    label: None,
+                    process_type: None,
+                    argv: Vec::new(),
+                    cwd: None,
+                    shell_mode: false,
+                    interactive: false,
+                    target_ownership: None,
+                    persistent: false,
+                    timeout_ms: None,
+                    after_cursor: None,
+                    since_last_read: false,
+                    max_bytes: None,
+                    tail_lines: None,
+                    stream: None,
+                    filter: None,
+                    input: None,
+                    wait_pattern: None,
+                    wait_port: None,
+                    wait_url: None,
+                    signal: None,
+                })
+                .expect("list owned processes")
+                .output,
+        );
+
+        for (index, output) in outputs.iter().enumerate() {
+            record_command_output_event(
+                &repo_root,
+                project_id,
+                run_id,
+                &format!("tool-{index}"),
+                "fixture_tool",
+                output,
+            )
+            .expect("persist output fixture");
+        }
+        record_command_output_chunk_event(
+            &repo_root,
+            project_id,
+            run_id,
+            "tool-0",
+            "command",
+            &AutonomousCommandOutputChunk {
+                stream: AutonomousCommandSessionStream::Stdout,
+                text: Some("chunk".into()),
+                truncated: false,
+                redacted: false,
+            },
+        )
+        .expect("persist streamed command chunk");
+
+        let snapshot =
+            project_store::load_agent_run(&repo_root, project_id, run_id).expect("reload run");
+        assert_eq!(
+            snapshot
+                .events
+                .iter()
+                .filter(|event| event.event_kind == AgentRunEventKind::CommandOutput)
+                .count(),
+            9
+        );
+        assert!(snapshot
+            .events
+            .iter()
+            .any(|event| event.event_kind == AgentRunEventKind::RouteRequested));
+        assert!(snapshot.action_requests.len() >= 9);
+        let command_event = snapshot
+            .events
+            .iter()
+            .find(|event| {
+                event.event_kind == AgentRunEventKind::CommandOutput
+                    && event.payload_json.contains("\"toolCallId\":\"tool-0\"")
+            })
+            .expect("command event");
+        assert!(!command_event.payload_json.contains("secret-value"));
+        assert!(snapshot.events.iter().any(|event| {
+            event.event_kind == AgentRunEventKind::ActionRequired
+                && event.payload_json.contains("\"validationHint\":\"non-empty\"")
+                && !event.payload_json.contains("[redacted]")
+        }));
+        assert!(snapshot.events.iter().any(|event| {
+            event.event_kind == AgentRunEventKind::ActionRequired
+                && event.payload_json.contains("\"description\":\"Use safe mode.\"")
+        }));
     }
 
     fn handoff_contract_snapshot(
@@ -6460,6 +6841,373 @@ Repository map captured.
     }
 
     #[test]
+    fn crawl_report_persistence_fixture_materializes_report_and_every_topic_record() {
+        let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
+        let project_id = "project-crawl-records";
+        let run_id = "run-crawl-records";
+        let (_tempdir, repo_root, mut snapshot) =
+            memory_capture_snapshot(project_id, run_id, "Crawl the repository.");
+        snapshot.run.runtime_agent_id = RuntimeAgentIdDto::Crawl;
+        assert_eq!(
+            capture_crawl_report_records(&repo_root, &snapshot)
+                .expect_err("crawl report requires a final assistant message")
+                .code,
+            "crawl_report_missing"
+        );
+
+        let report = json!({
+            "schema": CRAWL_REPORT_SCHEMA,
+            "projectId": project_id,
+            "generatedAt": "2026-05-09T00:01:00Z",
+            "coverage": { "confidence": 0.92 },
+            "overview": { "summary": "Tauri desktop app.", "sourcePaths": ["README.md"] },
+            "techStack": [{ "name": "Rust", "sourcePaths": ["client/src-tauri/Cargo.toml"] }],
+            "commands": [{ "command": "cargo test", "sourcePaths": ["client/src-tauri/Cargo.toml"] }],
+            "tests": [{ "name": "unit", "sourcePaths": ["client/src-tauri/src/lib.rs"] }],
+            "architecture": [{ "name": "runtime", "sourcePaths": ["client/src-tauri/src/runtime/mod.rs"] }],
+            "hotspots": [{ "name": "provider loop", "sourcePaths": ["client/src-tauri/src/runtime/agent_core/provider_loop.rs"] }],
+            "constraints": [{ "name": "Tauri only", "sourcePaths": ["AGENTS.md"] }],
+            "unknowns": [{ "name": "future providers" }],
+            "freshness": {
+                "sourceFingerprints": [{ "path": "README.md", "sha256": "fixture", "confidence": 0.9 }]
+            }
+        });
+        project_store::append_agent_message(
+            &repo_root,
+            &project_store::NewAgentMessageRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                role: AgentMessageRole::Assistant,
+                content: format!("Repository crawl complete.\n```json\n{report}\n```"),
+                provider_metadata_json: None,
+                created_at: "2026-05-09T00:01:10Z".into(),
+                attachments: Vec::new(),
+            },
+        )
+        .expect("append crawl report message");
+        let mut snapshot =
+            project_store::load_agent_run(&repo_root, project_id, run_id).expect("reload crawl run");
+        snapshot.run.runtime_agent_id = RuntimeAgentIdDto::Crawl;
+
+        capture_crawl_report_records(&repo_root, &snapshot).expect("capture crawl records");
+
+        let records =
+            project_store::list_project_records(&repo_root, project_id).expect("list crawl records");
+        assert_eq!(records.len(), 10, "one report and nine topic records");
+        assert!(records
+            .iter()
+            .any(|record| record.schema_name.as_deref() == Some(CRAWL_REPORT_SCHEMA)));
+        assert!(records.iter().any(|record| record.title == "crawl:unknowns"));
+        assert!(records.iter().all(|record| record
+            .source_item_ids
+            .iter()
+            .any(|source| source.starts_with("agent_messages:"))));
+    }
+
+    #[test]
+    fn debug_finding_persistence_fixture_ignores_noise_then_captures_verified_root_cause() {
+        let _guard = PROJECT_DB_LOCK.lock().expect("project db lock");
+        let project_id = "project-debug-finding";
+        let run_id = "run-debug-finding";
+        let (_tempdir, repo_root, mut snapshot) =
+            memory_capture_snapshot(project_id, run_id, "Diagnose the failing fixture.");
+        snapshot.run.runtime_agent_id = RuntimeAgentIdDto::Debug;
+        capture_debug_finding_record(&repo_root, &snapshot)
+            .expect("missing assistant finding is ignored");
+
+        for (content, created_at) in [
+            ("Investigation is still in progress.", "2026-05-09T00:01:10Z"),
+            (
+                "Root cause: the durable marker raced completion. The fix waits for consumption and verification passed.",
+                "2026-05-09T00:01:20Z",
+            ),
+        ] {
+            project_store::append_agent_message(
+                &repo_root,
+                &project_store::NewAgentMessageRecord {
+                    project_id: project_id.into(),
+                    run_id: run_id.into(),
+                    role: AgentMessageRole::Assistant,
+                    content: content.into(),
+                    provider_metadata_json: None,
+                    created_at: created_at.into(),
+                    attachments: Vec::new(),
+                },
+            )
+            .expect("append debug assistant message");
+            let mut current = project_store::load_agent_run(&repo_root, project_id, run_id)
+                .expect("reload debug run");
+            current.run.runtime_agent_id = RuntimeAgentIdDto::Debug;
+            capture_debug_finding_record(&repo_root, &current)
+                .expect("evaluate debug finding message");
+        }
+
+        let records = project_store::list_project_records(&repo_root, project_id)
+            .expect("list debug records");
+        assert_eq!(
+            records
+                .iter()
+                .filter(|record| record.schema_name.as_deref()
+                    == Some("xero.project_record.debug_finding.v1"))
+                .count(),
+            1
+        );
+        assert!(records.iter().any(|record| record
+            .summary
+            .contains("Root cause: the durable marker")));
+    }
+
+    #[test]
+    fn crawl_report_fixture_matrix_covers_topics_summaries_confidence_and_paths() {
+        let report = json!({
+            "schema": CRAWL_REPORT_SCHEMA,
+            "projectId": "project-1",
+            "generatedAt": "2026-05-06T00:00:00Z",
+            "coverage": { "confidence": 1.4 },
+            "overview": { "description": "  Desktop repository.  ", "source_path": "./README.md" },
+            "techStack": [{ "name": "Rust", "confidence": 0.9, "filePaths": ["src/lib.rs"] }],
+            "commands": [{ "command": "cargo test", "manifest-path": "Cargo.toml" }],
+            "tests": [{ "name": "unit", "testPaths": ["tests/unit.rs"] }],
+            "architecture": [{ "name": "runtime", "related_paths": ["src/runtime/mod.rs"] }],
+            "hotspots": [{ "name": "provider", "file": "src/provider.rs" }],
+            "constraints": [{ "name": "safe", "files": ["AGENTS.md"] }],
+            "unknowns": [{ "name": "future" }],
+            "freshness": {
+                "sourceFingerprints": [
+                    { "path": "README.md", "confidence": 0.5 },
+                    { "path": "README.md", "confidence": 1.5 }
+                ]
+            }
+        });
+
+        validate_crawl_report_payload(&report, "project-1").expect("rich report is valid");
+        validate_required_final_response(RuntimeAgentIdDto::Engineer, "project-1", "not json")
+            .expect("non-crawl final response");
+        validate_required_final_response(
+            RuntimeAgentIdDto::Crawl,
+            "project-1",
+            &report.to_string(),
+        )
+        .expect("crawl final response");
+        assert_eq!(
+            validate_required_final_response(RuntimeAgentIdDto::Crawl, "project-1", "not json")
+                .expect_err("invalid crawl final response")
+                .code,
+            "crawl_report_invalid"
+        );
+
+        assert_eq!(crawl_report_summary(&report), "Desktop repository.");
+        assert_eq!(crawl_confidence(report.get("coverage")), Some(1.0));
+        let topics = crawl_report_topics(
+            &report,
+            &report["freshness"]["sourceFingerprints"],
+            Some(0.75),
+        );
+        assert_eq!(topics.len(), 9);
+        assert_eq!(topics[0].title, "crawl:project-overview");
+        assert_eq!(topics[0].summary, "Desktop repository.");
+        assert_eq!(topics[0].confidence, Some(0.75));
+        assert_eq!(topics[1].confidence, Some(0.9));
+        assert_eq!(topics[2].confidence, Some(0.75));
+        assert_eq!(topics[8].confidence, Some(0.75));
+        assert_eq!(
+            topics[8].visibility,
+            project_store::ProjectRecordVisibility::Diagnostic
+        );
+        assert!(topics
+            .iter()
+            .all(|topic| topic.content_json["reportSchema"] == json!(CRAWL_REPORT_SCHEMA)));
+        assert_eq!(
+            crawl_report_summary(&json!({})),
+            "Structured repository crawl report captured."
+        );
+
+        let summary_fixtures = [
+            (json!([1]), "1 crawl item captured."),
+            (json!([1, 2]), "2 crawl items captured."),
+            (json!({ "summary": " summary " }), "summary"),
+            (json!({ "description": "description" }), "description"),
+            (json!({ "name": "name" }), "name"),
+            (json!({}), "fixture crawl facts captured."),
+            (json!(" text "), "text"),
+            (JsonValue::Null, "fixture crawl facts were not reported."),
+            (json!(true), "fixture crawl facts captured."),
+        ];
+        for (value, expected) in summary_fixtures {
+            assert_eq!(crawl_topic_summary("fixture", &value), expected);
+        }
+        assert_eq!(crawl_confidence(Some(&json!({ "confidence": 4.0 }))), Some(1.0));
+        assert_eq!(
+            crawl_confidence(Some(&json!([
+                { "confidence": -1.0 },
+                { "confidence": 0.5 },
+                { "confidence": 2.0 },
+                { "missing": true },
+            ]))),
+            Some(0.5)
+        );
+        assert_eq!(crawl_confidence(Some(&json!([]))), None);
+        assert_eq!(crawl_confidence(None), None);
+        assert_eq!(
+            crawl_tags(&["z", "crawl", "a", "z"]),
+            vec!["a".to_string(), "crawl".to_string(), "z".to_string()]
+        );
+        assert_eq!(
+            collect_crawl_related_paths(&report, 20),
+            vec![
+                "AGENTS.md".to_string(),
+                "Cargo.toml".to_string(),
+                "README.md".to_string(),
+                "src/lib.rs".to_string(),
+                "src/provider.rs".to_string(),
+                "src/runtime/mod.rs".to_string(),
+                "tests/unit.rs".to_string(),
+            ]
+        );
+        assert_eq!(
+            collect_crawl_related_paths(&report, 2),
+            vec!["AGENTS.md".to_string(), "Cargo.toml".to_string()]
+        );
+        assert!(is_crawl_path_key("source-paths"));
+        assert!(is_crawl_path_key("MANIFEST_PATH"));
+        assert!(!is_crawl_path_key("command"));
+
+        for invalid in [
+            "",
+            "/absolute",
+            "../escape",
+            "line\nbreak",
+            "https://example.test/path",
+            r"C:\absolute",
+            r"\\server\share",
+        ] {
+            assert_eq!(normalize_crawl_related_path(invalid), None, "invalid {invalid:?}");
+        }
+        assert_eq!(
+            normalize_crawl_related_path(r#".\src\lib.rs"#).as_deref(),
+            Some("src/lib.rs")
+        );
+        assert_eq!(normalize_crawl_related_path(&"x".repeat(241)), None);
+    }
+
+    #[test]
+    fn crawl_report_parser_and_validator_fixtures_fail_closed_at_every_boundary() {
+        let valid = json!({
+            "schema": CRAWL_REPORT_SCHEMA,
+            "projectId": "project-1",
+            "generatedAt": "2026-05-06T00:00:00Z",
+            "coverage": { "confidence": 0.9 },
+            "overview": { "description": "Repository with {braces} and an escaped \"quote\"." },
+            "techStack": [],
+            "commands": [],
+            "tests": [],
+            "architecture": [],
+            "hotspots": [],
+            "constraints": [],
+            "unknowns": [],
+            "freshness": { "sourceFingerprints": [] }
+        });
+        let prose = format!("prefix before report {} suffix after report", valid);
+        assert_eq!(
+            parse_crawl_report_payload(&prose).expect("balanced JSON in prose"),
+            valid
+        );
+        assert!(balanced_json_object_candidate("prefix {\"text\":\"} escaped \\\" {\"} tail")
+            .is_some());
+        assert_eq!(balanced_json_object_candidate("prefix { incomplete"), None);
+
+        let candidates = crawl_report_json_candidates(
+            "```text\nnot json\n```\n```json\n{\"schema\":\"xero.other\"}\n```",
+        );
+        assert_eq!(candidates.len(), 3);
+        assert_eq!(
+            parse_crawl_report_payload(&valid.to_string()).expect("direct report"),
+            valid
+        );
+        assert_eq!(
+            parse_crawl_report_payload("no structured report")
+                .expect_err("missing report")
+                .code,
+            "crawl_report_invalid"
+        );
+        assert!(crawl_report_json_candidates("```json without newline").is_empty());
+        assert_eq!(balanced_json_object_candidate("prefix { unterminated"), None);
+        assert_eq!(balanced_json_object_candidate("no object"), None);
+
+        let error_fixtures = vec![
+            (json!([]), "crawl_report_invalid"),
+            (
+                {
+                    let mut value = valid.clone();
+                    value["schema"] = json!("other");
+                    value
+                },
+                "crawl_report_schema_invalid",
+            ),
+            (
+                {
+                    let mut value = valid.clone();
+                    value["projectId"] = json!(" ");
+                    value
+                },
+                "crawl_report_field_invalid",
+            ),
+            (
+                {
+                    let mut value = valid.clone();
+                    value["generatedAt"] = json!("yesterday");
+                    value
+                },
+                "crawl_report_field_invalid",
+            ),
+            (
+                {
+                    let mut value = valid.clone();
+                    value["overview"] = json!({ "name": "missing summary" });
+                    value
+                },
+                "crawl_report_field_invalid",
+            ),
+            (
+                {
+                    let mut value = valid.clone();
+                    value["coverage"] = json!({});
+                    value
+                },
+                "crawl_report_field_invalid",
+            ),
+        ];
+        for (report, expected_code) in error_fixtures {
+            assert_eq!(
+                validate_crawl_report_payload(&report, "project-1")
+                    .expect_err("malformed report")
+                    .code,
+                expected_code
+            );
+        }
+
+        for field in [
+            "techStack",
+            "commands",
+            "tests",
+            "architecture",
+            "hotspots",
+            "constraints",
+            "unknowns",
+        ] {
+            let mut report = valid.clone();
+            report[field] = json!([{}]);
+            assert_eq!(
+                validate_crawl_report_payload(&report, "project-1")
+                    .expect_err("empty topic object")
+                    .code,
+                "crawl_report_field_invalid",
+                "topic field {field}"
+            );
+        }
+    }
+
+    #[test]
     fn workspace_guard_treats_search_results_as_file_observations() {
         let tempdir = tempdir().expect("tempdir");
         let root = tempdir.path();
@@ -6712,6 +7460,80 @@ Repository map captured.
 
         assert!(!root.join("notes/new.txt").exists());
         assert_eq!(outcome["restoredCount"], json!(1));
+    }
+
+    #[test]
+    fn rollback_restore_fixture_covers_directories_absent_paths_unsafe_paths_and_corrupt_content() {
+        let tempdir = tempdir().expect("tempdir");
+        let root = tempdir.path();
+        fs::create_dir_all(root.join("created-dir/nested")).expect("created directory");
+        fs::write(root.join("created-dir/nested/file.txt"), "new").expect("created file");
+        let checkpoints = vec![
+            AgentRollbackCheckpoint {
+                path: "../outside".into(),
+                operation: "create".into(),
+                old_hash: None,
+                old_content_base64: None,
+                old_content_omitted_reason: None,
+                old_content_bytes: None,
+            },
+            AgentRollbackCheckpoint {
+                path: "missing.txt".into(),
+                operation: "create".into(),
+                old_hash: None,
+                old_content_base64: None,
+                old_content_omitted_reason: None,
+                old_content_bytes: None,
+            },
+            AgentRollbackCheckpoint {
+                path: "unavailable.txt".into(),
+                operation: "write".into(),
+                old_hash: Some("a".repeat(64)),
+                old_content_base64: None,
+                old_content_omitted_reason: Some("too_large".into()),
+                old_content_bytes: Some(999),
+            },
+            AgentRollbackCheckpoint {
+                path: "created-dir".into(),
+                operation: "mkdir".into(),
+                old_hash: None,
+                old_content_base64: None,
+                old_content_omitted_reason: None,
+                old_content_bytes: None,
+            },
+        ];
+
+        let outcome = restore_rollback_checkpoints(root, &checkpoints)
+            .expect("restore rollback boundary matrix");
+
+        assert!(!root.join("created-dir").exists());
+        assert_eq!(outcome["restoredCount"], json!(1));
+        assert_eq!(outcome["skippedCount"], json!(3));
+        assert!(outcome["skipped"]
+            .as_array()
+            .expect("skipped array")
+            .iter()
+            .any(|entry| entry["reason"] == json!("unsafe_path")));
+        assert!(outcome["skipped"]
+            .as_array()
+            .expect("skipped array")
+            .iter()
+            .any(|entry| entry["reason"] == json!("created_path_absent")));
+
+        let corrupt = AgentRollbackCheckpoint {
+            path: "corrupt.txt".into(),
+            operation: "write".into(),
+            old_hash: Some("b".repeat(64)),
+            old_content_base64: Some("%%%not-base64%%%".into()),
+            old_content_omitted_reason: None,
+            old_content_bytes: Some(3),
+        };
+        assert_eq!(
+            restore_rollback_checkpoints(root, &[corrupt])
+                .expect_err("corrupt rollback content must fail closed")
+                .code,
+            "agent_rollback_content_decode_failed"
+        );
     }
 
     #[test]
@@ -7246,5 +8068,165 @@ Repository map captured.
             source_digest: None,
             error: None,
         }
+    }
+
+    #[test]
+    fn planned_file_change_fixture_covers_every_mutation_shape_and_reservation_boundary() {
+        use crate::runtime::{
+            AutonomousCopyRequest, AutonomousDeleteRequest, AutonomousEditRequest,
+            AutonomousFsTransactionOperation, AutonomousMkdirRequest,
+            AutonomousNotebookEditRequest, AutonomousPatchOperation, AutonomousPatchRequest,
+            AutonomousRenameRequest, AutonomousWriteRequest,
+        };
+
+        let edit = AutonomousToolRequest::Edit(AutonomousEditRequest {
+            path: "src/edit.rs".into(),
+            start_line: 1,
+            end_line: 1,
+            expected: "old".into(),
+            replacement: "new".into(),
+            expected_hash: None,
+            start_line_hash: None,
+            end_line_hash: None,
+            preview: false,
+        });
+        let write = AutonomousToolRequest::Write(AutonomousWriteRequest {
+            path: "src/write.rs".into(),
+            content: "fixture".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
+        });
+        let patch = AutonomousToolRequest::Patch(AutonomousPatchRequest {
+            path: Some("src/single.rs".into()),
+            search: Some("old".into()),
+            replace: Some("new".into()),
+            replace_all: false,
+            expected_hash: None,
+            preview: false,
+            operations: vec![AutonomousPatchOperation {
+                path: "src/multi.rs".into(),
+                search: "before".into(),
+                replace: "after".into(),
+                replace_all: false,
+                expected_hash: None,
+            }],
+        });
+        let copy = AutonomousToolRequest::Copy(AutonomousCopyRequest {
+            from: "src/source.rs".into(),
+            to: "src/copied.rs".into(),
+            recursive: false,
+            expected_source_hash: None,
+            expected_source_digest: None,
+            overwrite: None,
+            expected_target_hash: None,
+            preview: false,
+        });
+        let transaction = AutonomousToolRequest::FsTransaction(AutonomousFsTransactionRequest {
+            operations: vec![
+                AutonomousFsTransactionOperation {
+                    path: Some("src/transaction.rs".into()),
+                    from: Some("src/from.rs".into()),
+                    to: Some("src/to.rs".into()),
+                    from_path: Some("src/from_path.rs".into()),
+                    to_path: Some("src/to_path.rs".into()),
+                    ..Default::default()
+                },
+                AutonomousFsTransactionOperation {
+                    action: AutonomousFsTransactionAction::Mkdir,
+                    path: Some("src/folder".into()),
+                    ..Default::default()
+                },
+            ],
+            preview: false,
+            stop_on_first_error: true,
+        });
+        let delete = AutonomousToolRequest::Delete(AutonomousDeleteRequest {
+            path: "src/delete.rs".into(),
+            recursive: false,
+            expected_hash: None,
+            expected_digest: None,
+            preview: false,
+        });
+        let rename = AutonomousToolRequest::Rename(AutonomousRenameRequest {
+            from_path: "src/old.rs".into(),
+            to_path: "src/new.rs".into(),
+            expected_hash: None,
+            expected_target_hash: None,
+            overwrite: None,
+            preview: false,
+        });
+        let mkdir = AutonomousToolRequest::Mkdir(AutonomousMkdirRequest {
+            path: "src/generated".into(),
+            parents: Some(true),
+            exist_ok: Some(true),
+            preview: false,
+        });
+        let notebook = AutonomousToolRequest::NotebookEdit(AutonomousNotebookEditRequest {
+            path: "analysis.ipynb".into(),
+            cell_index: 0,
+            expected_hash: None,
+            expected_source: None,
+            replacement_source: "print('fixture')".into(),
+        });
+
+        assert_eq!(planned_file_change_paths(&edit), vec!["src/edit.rs"]);
+        assert_eq!(planned_file_change_paths(&write), vec!["src/write.rs"]);
+        assert_eq!(
+            planned_file_change_paths(&patch),
+            vec!["src/multi.rs", "src/single.rs"]
+        );
+        assert_eq!(
+            planned_file_change_paths(&copy),
+            vec!["src/source.rs", "src/copied.rs"]
+        );
+        assert_eq!(planned_file_change_paths(&delete), vec!["src/delete.rs"]);
+        assert_eq!(planned_file_change_paths(&rename), vec!["src/old.rs"]);
+        assert_eq!(planned_file_change_paths(&notebook), vec!["analysis.ipynb"]);
+        assert!(planned_file_change_paths(&mkdir).is_empty());
+        assert_eq!(planned_code_workspace_epoch_paths(&rename), vec!["src/old.rs", "src/new.rs"]);
+        assert_eq!(planned_code_workspace_epoch_paths(&mkdir), vec!["src/generated"]);
+        assert_eq!(planned_file_change_paths(&transaction).len(), 6);
+
+        let expected_operations = [
+            (&edit, "edit"),
+            (&write, "write"),
+            (&patch, "patch"),
+            (&copy, "copy"),
+            (&transaction, "fs_transaction"),
+            (&delete, "delete"),
+            (&rename, "rename"),
+            (&notebook, "notebook_edit"),
+        ];
+        for (request, expected_operation) in expected_operations {
+            let operations = planned_file_change_operations(request);
+            assert!(!operations.is_empty());
+            assert!(operations
+                .iter()
+                .all(|(_, operation)| *operation == expected_operation));
+            assert!(!planned_file_reservation_operations(request)
+                .expect("safe paths produce reservations")
+                .is_empty());
+        }
+
+        let invalid = AutonomousToolRequest::Write(AutonomousWriteRequest {
+            path: "../outside.txt".into(),
+            content: "blocked".into(),
+            expected_hash: None,
+            create_only: false,
+            overwrite: None,
+            preview: false,
+        });
+        assert_eq!(
+            planned_file_reservation_operations(&invalid)
+                .unwrap_err()
+                .code,
+            "agent_file_path_invalid"
+        );
+        assert!(path_is_inside_subagent_write_set("src/nested/file.rs", "src"));
+        assert!(!path_is_inside_subagent_write_set("src2/file.rs", "src"));
+        assert!(paths_overlap("src", "src/nested/file.rs"));
+        assert!(!paths_overlap("src/a.rs", "tests/a.rs"));
     }
 }

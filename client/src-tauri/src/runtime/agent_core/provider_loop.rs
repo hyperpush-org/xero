@@ -115,8 +115,6 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
     let mut custom_output_contract_prompt_count = 0_u8;
     let mut subagent_resolution_prompt_count = 0_u8;
     let mut stage_gate_reprompted_since_tool_turn = false;
-    let mut harness_order_gate = HarnessTestOrderGate::for_controls(&controls);
-
     for turn_index in 0..MAX_PROVIDER_TURNS {
         cancellation.check_cancelled()?;
         touch_agent_run_heartbeat(repo_root, project_id, run_id)?;
@@ -268,9 +266,6 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
             );
         };
         record_tool_registry_snapshot(repo_root, project_id, run_id, turn_index, &tool_registry)?;
-        if let Some(gate) = harness_order_gate.as_mut() {
-            gate.refresh_manifest(repo_root, project_id, run_id, &tool_registry)?;
-        }
         let provider_turn_started_at = now_timestamp();
         project_store::upsert_agent_coordination_presence(
             repo_root,
@@ -330,42 +325,6 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
                     tool_runtime,
                     &usage_total,
                 )?;
-                if let Some(gate) = harness_order_gate.as_mut() {
-                    if let Some(reprompt) =
-                        gate.evaluate_completion(repo_root, project_id, run_id, &message)?
-                    {
-                        stream_recorder.supersede(
-                            &message,
-                            reasoning_content.as_deref(),
-                            reasoning_details.as_ref(),
-                            AssistantCandidateDisposition::HarnessOrderGate,
-                        )?;
-                        if provider_usage_has_tokens(&usage_total) {
-                            persist_provider_usage(
-                                repo_root,
-                                project_id,
-                                run_id,
-                                provider.provider_id(),
-                                provider.model_id(),
-                                &usage_total,
-                            )?;
-                        }
-                        append_message(
-                            repo_root,
-                            project_id,
-                            run_id,
-                            AgentMessageRole::Developer,
-                            reprompt.clone(),
-                        )?;
-                        messages.push(provider_candidate_revision_message(
-                            &message,
-                            reasoning_content.as_deref(),
-                            reasoning_details.as_ref(),
-                        ));
-                        messages.push(ProviderMessage::Developer { content: reprompt });
-                        continue;
-                    }
-                }
                 if let Some(reprompt) = tool_runtime.agent_stage_completion_gate_prompt()? {
                     stream_recorder.supersede(
                         &message,
@@ -754,25 +713,6 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
                     reasoning_details.as_ref(),
                 )?;
 
-                let harness_assignments = if let Some(gate) = harness_order_gate.as_ref() {
-                    match gate.evaluate_tool_calls(repo_root, project_id, run_id, &tool_calls)? {
-                        HarnessToolBatchDecision::Allow { assignments } => assignments,
-                        HarnessToolBatchDecision::Reprompt { message } => {
-                            append_message(
-                                repo_root,
-                                project_id,
-                                run_id,
-                                AgentMessageRole::Developer,
-                                message.clone(),
-                            )?;
-                            messages.push(ProviderMessage::Developer { content: message });
-                            continue;
-                        }
-                    }
-                } else {
-                    Vec::new()
-                };
-
                 let snapshot = project_store::load_agent_run(repo_root, project_id, run_id)?;
                 match evaluate_tool_batch_gate(
                     &snapshot,
@@ -887,15 +827,6 @@ pub(crate) fn drive_provider_loop_with_dispatch_observer(
                 tool_runtime.reconcile_agent_workflow_replay(workflow_replay_from_snapshot(
                     &persisted_tool_snapshot,
                 ))?;
-                if let Some(gate) = harness_order_gate.as_mut() {
-                    gate.record_tool_outcomes(
-                        repo_root,
-                        project_id,
-                        run_id,
-                        &harness_assignments,
-                        &persisted_tool_snapshot,
-                    )?;
-                }
                 let parent_assistant_message_id = provider_assistant_message_id(run_id, turn_index);
                 let mut scheduled_wait: Option<AutonomousRuntimeWaitOutput> = None;
                 let mut user_input_request: Option<AutonomousActionRequiredOutput> = None;
@@ -12446,6 +12377,191 @@ mod tests {
     }
 
     #[test]
+    fn provider_loop_replays_isolated_edit_evidence_before_exposing_verify_stage_tools() {
+        let _guard = project_state_test_lock()
+            .lock()
+            .expect("project state test lock");
+        let run_id = "stage-isolated-edit-replay";
+        let (_tempdir, repo_root, project_id, _controls, tool_runtime, messages) =
+            setup_test_agent_provider_loop(run_id);
+        git2::Repository::init(&repo_root).expect("initialize fixture repository");
+        let workflow_policy = AutonomousAgentWorkflowPolicy::from_definition_snapshot(&json!({
+            "workflowStructure": {
+                "startPhaseId": "survey",
+                "phases": [
+                    {
+                        "id": "survey",
+                        "title": "Survey",
+                        "allowedTools": [AUTONOMOUS_TOOL_READ],
+                        "requiredChecks": [{
+                            "kind": "tool_succeeded",
+                            "toolName": AUTONOMOUS_TOOL_READ,
+                            "minCount": 2
+                        }]
+                    },
+                    {
+                        "id": "plan",
+                        "title": "Plan",
+                        "allowedTools": [AUTONOMOUS_TOOL_TODO],
+                        "requiredChecks": [{
+                            "kind": "todo_completed",
+                            "todoId": "implementation_plan"
+                        }]
+                    },
+                    {
+                        "id": "implement",
+                        "title": "Implement",
+                        "allowedTools": [AUTONOMOUS_TOOL_EDIT],
+                        "requiredChecks": [{
+                            "kind": "tool_succeeded",
+                            "toolName": AUTONOMOUS_TOOL_EDIT,
+                            "minCount": 1
+                        }]
+                    },
+                    {
+                        "id": "verify",
+                        "title": "Verify",
+                        "allowedTools": [AUTONOMOUS_TOOL_COMMAND_VERIFY]
+                    }
+                ]
+            }
+        }))
+        .expect("workflow policy");
+        let mut controls_input = test_controls_input();
+        controls_input.approval_mode = RuntimeRunApprovalModeDto::AutoEdit;
+        let controls = runtime_controls_from_request(Some(&controls_input));
+        let tool_runtime = tool_runtime
+            .with_runtime_run_controls(controls.clone())
+            .with_agent_workflow_policy(Some(workflow_policy));
+        let survey_allowed_tools = [AUTONOMOUS_TOOL_READ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        let registry = ToolRegistry::for_tool_names_with_options(
+            [
+                AUTONOMOUS_TOOL_READ,
+                AUTONOMOUS_TOOL_TODO,
+                AUTONOMOUS_TOOL_EDIT,
+                AUTONOMOUS_TOOL_COMMAND_VERIFY,
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
+            ToolRegistryOptions {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                stage_allowed_tools: Some(survey_allowed_tools),
+                ..ToolRegistryOptions::default()
+            },
+        );
+        let provider = ScriptedProvider::new(vec![
+            ProviderTurnOutcome::ToolCalls {
+                message: "survey edit target".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![
+                    tool_call(
+                        "call-isolated-edit-read-instructions",
+                        AUTONOMOUS_TOOL_READ,
+                        json!({"path": "src/tracked.txt"}),
+                    ),
+                    tool_call(
+                        "call-isolated-edit-read-neighbor",
+                        AUTONOMOUS_TOOL_READ,
+                        json!({"path": "src/tracked.txt"}),
+                    ),
+                ],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::ToolCalls {
+                message: "record implementation plan".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-isolated-edit-plan",
+                    AUTONOMOUS_TOOL_TODO,
+                    json!({
+                        "action": "upsert",
+                        "id": "implementation_plan",
+                        "title": "Apply isolated edit",
+                        "status": "completed",
+                        "evidence": "The fixture target was read.",
+                        "phaseId": "plan",
+                        "phaseTitle": "Plan"
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::ToolCalls {
+                message: "apply isolated edit".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-isolated-edit",
+                    AUTONOMOUS_TOOL_EDIT,
+                    json!({
+                        "path": "src/tracked.txt",
+                        "startLine": 1,
+                        "endLine": 1,
+                        "expected": "alpha\n",
+                        "replacement": "changed\n",
+                        "expectedHash": "e49c81e2d2f84e259d40e2fb8192f3bcd198b355184845d76d8f58807d0d78ee",
+                        "preview": false
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::ToolCalls {
+                message: "verify isolated edit".into(),
+                reasoning_content: None,
+                reasoning_details: None,
+                tool_calls: vec![tool_call(
+                    "call-isolated-edit-verify",
+                    AUTONOMOUS_TOOL_COMMAND_VERIFY,
+                    json!({
+                        "argv": ["git", "diff", "--check"],
+                        "timeoutMs": 5_000
+                    }),
+                )],
+                usage: Some(ProviderUsage::default()),
+            },
+            ProviderTurnOutcome::Complete {
+                message: harness_report(),
+                reasoning_content: None,
+                reasoning_details: None,
+                usage: Some(ProviderUsage::default()),
+            },
+        ]);
+
+        drive_provider_loop(
+            &provider,
+            messages,
+            controls,
+            registry,
+            &tool_runtime,
+            &repo_root,
+            &project_id,
+            run_id,
+            project_store::DEFAULT_AGENT_SESSION_ID,
+            None,
+            None,
+            &AgentRunCancellationToken::default(),
+        )
+        .expect("persisted edit evidence must unlock the Verify Stage");
+
+        assert_eq!(
+            fs::read_to_string(repo_root.join("src/tracked.txt")).expect("read edited fixture"),
+            "changed\nbeta\n"
+        );
+        let captured_tools = provider.captured_tools();
+        assert_eq!(captured_tools.len(), 5);
+        assert!(descriptor_name_set(&captured_tools[0]).contains(AUTONOMOUS_TOOL_READ));
+        assert!(
+            descriptor_name_set(&captured_tools[3]).contains(AUTONOMOUS_TOOL_COMMAND_VERIFY),
+            "the Verify Stage tool must be exposed immediately after replaying persisted edit success"
+        );
+    }
+
+    #[test]
     fn provider_loop_advances_from_tool_gate_to_todo_gate_before_final_response() {
         let _guard = project_state_test_lock()
             .lock()
@@ -12881,6 +12997,489 @@ mod tests {
                 (AssistantCandidateState::Accepted, None),
             ]
         );
+    }
+
+    #[test]
+    fn model_visible_compaction_fixtures_cover_every_structured_result_family() {
+        let tasks = vec![
+            json!({ "subagentId": "registered", "status": "registered", "prompt": "work" }),
+            json!({ "subagentId": "paused", "status": "paused" }),
+            json!({ "subagentId": "completed", "status": "completed" }),
+            json!({
+                "subagentId": "integrated",
+                "status": "failed",
+                "integratedAt": "now",
+                "parentDecision": "accepted",
+            }),
+            json!({
+                "subagentId": "budget",
+                "status": "budget_exhausted",
+                "budgetStatus": "exhausted",
+            }),
+            json!({ "subagentId": "closed", "status": "closed" }),
+            json!({
+                "subagentId": "resolved",
+                "status": "closed",
+                "parentDecision": "discarded",
+            }),
+            json!({ "subagentId": "cancelled", "status": "cancelled" }),
+            json!({ "subagentId": "unknown", "status": "future" }),
+        ];
+        let manifest = json!({
+            "manifestId": "manifest-1",
+            "citation": "manifest:1",
+            "runtimeAgentId": "engineer",
+            "providerId": "provider",
+            "modelId": "model",
+            "estimatedTokens": 120,
+            "budgetTokens": 200,
+            "contextWindowTokens": 1000,
+            "policy": {
+                "pressure": "normal",
+                "pressurePercent": 12,
+                "action": "continue_now",
+            },
+            "retrieval": {
+                "rawContextInjected": false,
+                "resultCount": 2,
+                "deliveryModel": "tools_first",
+            },
+            "contributors": {
+                "included": [
+                    { "contributorId": "small", "estimatedTokens": 10 },
+                    { "contributorId": "large", "estimatedTokens": 80 },
+                ],
+                "excluded": [{ "contributorId": "omitted" }],
+            },
+            "tools": { "names": ["read", "search"] },
+            "promptFragments": { "items": [{ "id": "system" }, { "id": "repo" }] },
+            "providerPreflight": { "status": "ready", "source": "live_probe" },
+        });
+        let mut base = json!({
+            "action": "list",
+            "schema": "fixture.v1",
+            "passed": true,
+            "summary": "fixture summary",
+            "message": "fixture message",
+            "manifestVersion": "v1",
+            "manifestSignature": "signature",
+            "itemCount": 1,
+            "comparison": { "passed": true },
+            "items": [
+                {
+                    "stableStepId": "step-1",
+                    "stepId": "step",
+                    "target": "target",
+                    "status": "pending",
+                    "evidence": "evidence",
+                    "id": "todo-1",
+                    "title": "Todo",
+                    "notes": "notes",
+                },
+                { "id": "todo-2", "status": "in_progress", "title": "Doing" },
+                { "id": "todo-3", "status": "completed", "title": "Done" },
+            ],
+            "changedItem": { "id": "todo-1", "status": "pending", "notes": "notes" },
+        });
+        for extra in [
+            json!({
+            "rows": [{ "name": "row", "secret": "must be omitted only when key policy requires" }],
+            "apps": [{ "name": "App" }],
+            "windows": [{ "title": "Window" }],
+            "permissions": [{ "name": "screen", "granted": true }],
+            "displays": [{ "id": 1 }],
+            "policy": { "allowed": true },
+            "servers": [{ "id": "server" }],
+            "serverId": "server",
+            "capabilityName": "echo",
+            "result": { "value": "ok" },
+            "task": { "subagentId": "completed", "status": "completed", "resultSummary": "done" },
+            "activeTasks": tasks,
+            "symbols": [{ "name": "symbol" }],
+            "diagnostics": [{ "code": "diagnostic", "message": "message" }],
+            "matches": [{ "toolName": "read", "whyMatched": "fixture" }],
+            "searchedCatalogSize": 5,
+            "platform": "macos",
+            "toolGroups": ["filesystem"],
+            "capabilities": ["read"],
+            "permissionRequests": [],
+            }),
+            json!({
+            "queryId": "query-1",
+            "resultCount": 1,
+            "results": [{
+                "sourceKind": "project_record",
+                "sourceId": "record-1",
+                "rank": 1,
+                "snippet": "bounded snippet",
+            }],
+            "record": { "id": "record-1", "text": "record" },
+            "memory": { "id": "memory-1", "text": "memory" },
+            "candidateRecord": { "id": "candidate-1" },
+            "manifest": manifest,
+            "activeAgents": [{ "runId": "run-1" }],
+            "reservations": [{ "path": "src/lib.rs" }],
+            "conflicts": [],
+            "events": [{ "kind": "mailbox" }],
+            "mailbox": [{ "id": "mail-1" }],
+            }),
+            json!({
+            "definition": {
+                "definitionId": "agent-1",
+                "id": "workflow-1",
+                "projectId": "project-1",
+                "displayName": "Agent",
+                "name": "Workflow",
+                "version": 1,
+                "startNodeId": "start",
+                "nodeCount": 2,
+                "edgeCount": 1,
+                "snapshot": { "schemaVersion": 1 },
+            },
+            "definitions": [
+                {
+                    "definitionId": "agent-1",
+                    "displayName": "Agent",
+                    "version": 1,
+                    "snapshot": { "schemaVersion": 1 },
+                },
+                {
+                    "id": "workflow-1",
+                    "projectId": "project-1",
+                    "name": "Workflow",
+                    "activeVersionId": "version-1",
+                    "activeVersionNumber": 1,
+                },
+            ],
+            "operation": "list",
+            "selected": "skill-1",
+            "candidates": [{
+                "sourceId": "source-1",
+                "skillId": "skill-1",
+                "name": "Skill",
+                "trust": "trusted",
+            }],
+            "lifecycleEvents": [{ "kind": "loaded" }],
+            "valueJson": "{\"visible\":true,\"inputSchema\":{\"secret\":true}}",
+            }),
+        ] {
+            base.as_object_mut()
+                .expect("base compaction fixture")
+                .extend(extra.as_object().expect("extra compaction fixture").clone());
+        }
+
+        let kinds = [
+            "harness_runner",
+            "command_session",
+            "process_manager",
+            "system_diagnostics",
+            "macos_automation",
+            "desktop_observe",
+            "desktop_control",
+            "desktop_stream",
+            "mcp",
+            "subagent",
+            "todo",
+            "code_intel",
+            "lsp",
+            "tool_search",
+            "environment_context",
+            "project_context",
+            "workspace_index",
+            "agent_coordination",
+            "agent_definition",
+            "workflow_definition",
+            "skill",
+            "browser",
+            "emulator",
+            "future_result",
+        ];
+        for kind in kinds {
+            let mut output = base.clone();
+            output["kind"] = json!(kind);
+            let compact = compact_tool_result_output("fixture", &output);
+            assert!(compact.is_object(), "compact object for {kind}: {compact}");
+            assert_eq!(compact.get("inputSchema"), None, "omit schemas for {kind}");
+        }
+
+        let mut explanation = base.clone();
+        explanation["kind"] = json!("project_context");
+        explanation["action"] = json!("explain_current_context_package");
+        let compact = compact_tool_result_output("fixture", &explanation);
+        assert_eq!(compact["manifestId"], json!("manifest-1"));
+        assert!(compact["summary"]
+            .as_str()
+            .is_some_and(|summary| summary.contains("Context manifest")));
+
+        let wait = compact_tool_result_output(
+            AUTONOMOUS_TOOL_RUNTIME_WAIT,
+            &json!({ "kind": "runtime_wait", "status": "scheduled", "wakeId": "wake-1" }),
+        );
+        assert_eq!(wait["waitState"], json!("scheduled_not_elapsed"));
+
+        let nested = compact_tool_result_output(
+            "fixture",
+            &json!({ "output": { "kind": "todo", "action": "list", "items": [] } }),
+        );
+        assert_eq!(nested["counts"]["total"], json!(0));
+        let truncated = compact_tool_result_output(
+            "fixture",
+            &json!({
+                "xeroTruncated": true,
+                "originalBytes": 100,
+                "returnedBytes": 20,
+                "omittedBytes": 80,
+                "preview": "{\"visible\":true}",
+            }),
+        );
+        assert_eq!(truncated["preview"]["visible"], json!(true));
+    }
+
+    #[test]
+    fn compaction_boundary_fixtures_cover_task_states_nesting_and_text_limits() {
+        let status_fixtures = [
+            ("registered", "wait_or_cancel", true),
+            ("starting", "wait_or_cancel", true),
+            ("running", "wait_or_cancel", true),
+            ("cancelling", "wait_or_cancel", true),
+            ("paused", "send_input_close_or_cancel", true),
+            ("completed", "integrate_or_close_with_decision", true),
+            ("failed", "integrate_or_close_with_decision", true),
+            ("budget_exhausted", "integrate_or_close_with_decision", true),
+            ("handed_off", "integrate_or_close_with_decision", true),
+            ("interrupted", "integrate_or_close_with_decision", true),
+            ("closed", "record_close_decision", true),
+            ("cancelled", "resolved", false),
+            ("future", "inspect_status", true),
+        ];
+        for (status, action, unresolved) in status_fixtures {
+            let task = json!({ "status": status });
+            assert_eq!(compact_subagent_next_expected_action(&task), action);
+            assert_eq!(compact_subagent_task_unresolved(&task), unresolved);
+        }
+        let resolved_closed = json!({ "status": "closed", "parentDecision": "accepted" });
+        assert_eq!(
+            compact_subagent_next_expected_action(&resolved_closed),
+            "resolved"
+        );
+        assert!(!compact_subagent_task_unresolved(&resolved_closed));
+        let integrated = json!({ "status": "completed", "integratedAt": "now" });
+        assert!(!compact_subagent_task_unresolved(&integrated));
+
+        let tasks = vec![
+            json!({ "status": "running" }),
+            json!({ "status": "closed", "parentDecision": "accepted" }),
+            json!({ "status": "budget_exhausted", "budgetStatus": "exhausted" }),
+        ];
+        let counts = compact_subagent_task_counts(&tasks);
+        assert_eq!(counts["total"], json!(3));
+        assert_eq!(counts["active"], json!(1));
+        assert_eq!(counts["closed"], json!(1));
+        assert_eq!(counts["budgetExhausted"], json!(1));
+
+        let oversized = JsonValue::Array(
+            (0..=MODEL_VISIBLE_MAX_ITEMS)
+                .map(|index| json!({ "index": index }))
+                .collect(),
+        );
+        let compact = compact_json_for_model(&oversized, 0);
+        assert_eq!(
+            compact
+                .as_array()
+                .expect("compact array")
+                .last()
+                .expect("omission marker")["reason"],
+            json!("model_visible_array_item_cap")
+        );
+        let depth_omission =
+            compact_json_for_model(&json!({ "value": true }), MODEL_VISIBLE_MAX_NESTING_DEPTH);
+        assert_eq!(
+            depth_omission["reason"],
+            json!("max_model_visible_nesting_depth")
+        );
+        assert_eq!(compact_json_for_model(&JsonValue::Null, 0), JsonValue::Null);
+        assert_eq!(compact_json_for_model(&json!(true), 0), json!(true));
+        assert_eq!(compact_json_for_model(&json!(3), 0), json!(3));
+
+        assert_eq!(compact_fields(&json!(3), &["value"]), json!({}));
+        assert_eq!(compact_array_field(&json!({}), "items"), None);
+        assert_eq!(
+            compact_string_array(Some(&json!(["a", 2, "b"])), 2),
+            Some(json!(["a", "b"]))
+        );
+        assert_eq!(
+            compact_text_line_array(Some(&json!([{ "line": 1, "text": "hello" }]))),
+            Some(json!([{ "line": 1, "text": "hello" }]))
+        );
+        assert_eq!(compact_text_value(Some(&json!("")), 10), None);
+        assert!(compact_text_value(Some(&json!("abcdefghijk")), 10)
+            .and_then(|value| value.as_str().map(str::to_owned))
+            .is_some_and(|value| value.contains("omitted")));
+        assert!(model_omitted_key("inputSchema"));
+        assert!(!model_omitted_key("visible"));
+
+        let external = compact_external_action_payload(
+            &json!({ "kind": "browser", "action": "navigate" }),
+            &json!({ "url": "https://example.test" }),
+        );
+        assert_eq!(external["action"], json!("navigate"));
+        assert_eq!(external["toolFamily"], json!("browser"));
+        assert_eq!(
+            compact_external_action_payload(&json!({}), &json!("scalar")),
+            json!("scalar")
+        );
+    }
+
+    #[test]
+    fn model_visible_process_and_dynamic_tool_fixtures_preserve_bounded_diagnostics() {
+        let workspace_lines = workspace_index_result_lines(&json!({
+            "rank": 2,
+            "path": "src/runtime.rs",
+            "score": 0.8754,
+            "language": "rust",
+            "summary": "Runtime entry point",
+            "snippet": "fn run() {}",
+            "symbols": ["run", "Runtime"],
+            "tests": ["runtime_fixture"],
+            "reasons": ["symbol match"],
+            "failures": ["none"],
+            "diffs": ["src/runtime.rs:+1"],
+        }));
+        assert_eq!(
+            workspace_lines[0],
+            "#2 src/runtime.rs score=0.875 language=rust"
+        );
+        for expected in [
+            "summary:",
+            "snippet:",
+            "symbols:",
+            "tests:",
+            "reasons:",
+            "failures:",
+            "diffs:",
+        ] {
+            assert!(
+                workspace_lines.iter().any(|line| line.contains(expected)),
+                "workspace result omitted `{expected}`: {workspace_lines:?}"
+            );
+        }
+
+        let command = compact_command_output(&json!({
+            "kind": "command",
+            "argv": ["cargo", "test"],
+            "cwd": ".",
+            "intent": "verify",
+            "exitCode": 0,
+            "stdout": "tests passed",
+            "stderr": "warning",
+            "changedFiles": [{
+                "path": "src/lib.rs",
+                "staged": false,
+                "unstaged": true,
+                "untracked": false,
+                "secret": "omit-me",
+            }],
+            "secret": "omit-me",
+        }));
+        assert_eq!(command["exitCode"], json!(0));
+        assert_eq!(command["stdout"], json!("tests passed"));
+        assert_eq!(command["changedFiles"][0]["path"], json!("src/lib.rs"));
+        assert_eq!(command["changedFiles"][0].get("secret"), None);
+        assert_eq!(command.get("secret"), None);
+
+        let session = compact_command_session_output(&json!({
+            "kind": "command_session",
+            "operation": "read",
+            "sessionId": "session-1",
+            "running": true,
+            "chunks": [{
+                "sequence": 3,
+                "stream": "stdout",
+                "text": "server ready",
+                "truncated": false,
+                "secret": "omit-me",
+            }],
+        }));
+        assert_eq!(session["sessionId"], json!("session-1"));
+        assert_eq!(session["chunks"][0]["text"], json!("server ready"));
+        assert_eq!(session["chunks"][0].get("secret"), None);
+
+        let process = compact_process_manager_output(&json!({
+            "kind": "process_manager",
+            "action": "inspect",
+            "processId": "process-1",
+            "processes": [{
+                "processId": "process-1",
+                "pid": 42,
+                "processName": "fixture",
+                "status": "running",
+                "detectedPorts": [3000],
+                "recentErrors": ["none"],
+                "secret": "omit-me",
+            }],
+            "systemPorts": [3000],
+            "highlights": ["ready"],
+            "chunks": [{
+                "cursor": 4,
+                "stream": "stderr",
+                "text": "diagnostic",
+                "capturedAt": "2026-07-19T00:00:00Z",
+                "secret": "omit-me",
+            }],
+        }));
+        assert_eq!(process["processes"][0]["pid"], json!(42));
+        assert_eq!(process["processes"][0].get("secret"), None);
+        assert_eq!(process["systemPorts"], json!([3000]));
+        assert_eq!(process["highlights"], json!(["ready"]));
+        assert_eq!(process["chunks"][0]["text"], json!("diagnostic"));
+
+        let edit = compact_edit_like_output(&json!({
+            "kind": "edit",
+            "path": "src/lib.rs",
+            "startLine": 1,
+            "endLine": 1,
+            "replacementLen": 7,
+            "applied": true,
+            "diff": "-before\n+after",
+            "secret": "omit-me",
+        }));
+        assert_eq!(edit["path"], json!("src/lib.rs"));
+        assert_eq!(edit["diff"], json!("-before\n+after"));
+        assert_eq!(edit.get("secret"), None);
+
+        let descriptor = AgentToolDescriptor {
+            name: "mcp_fixture_echo".into(),
+            description: "Fixture MCP tool".into(),
+            input_schema: json!({
+                "type": "object",
+                "properties": {"message": {"type": "string"}},
+            }),
+        };
+        let mcp = dynamic_tool_catalog_metadata(
+            &descriptor,
+            &AutonomousDynamicToolRoute::McpTool {
+                server_id: "fixture-server".into(),
+                tool_name: "echo".into(),
+            },
+        );
+        assert_eq!(mcp["catalogKind"], json!("mcp_tool"));
+        assert_eq!(mcp["schemaFields"], json!(["message"]));
+        assert_eq!(mcp["source"], json!("fixture-server"));
+
+        let extension = dynamic_tool_catalog_metadata(
+            &AgentToolDescriptor {
+                name: "extension_fixture".into(),
+                description: "Fixture extension".into(),
+                input_schema: json!({"type": "string"}),
+            },
+            &AutonomousDynamicToolRoute::ToolExtension {
+                extension_id: "extension-1".into(),
+                installation_hash: "sha256-fixture".into(),
+            },
+        );
+        assert_eq!(extension["catalogKind"], json!("tool_extension"));
+        assert_eq!(extension["schemaFields"], json!([]));
+        assert_eq!(extension["installationHash"], json!("sha256-fixture"));
     }
 
     fn harness_report() -> String {

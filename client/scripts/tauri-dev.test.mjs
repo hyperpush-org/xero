@@ -18,12 +18,14 @@ test('Tauri dev env defaults to local-source launch mode', () => {
   assert.equal(env.XERO_DESKTOP_SIDECAR_PATH, '/tmp/xero-desktop-sidecar')
   assert.equal(env.CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER, '/tmp/tauri-dev-runner.sh')
   assert.equal(env.CARGO_TARGET_X86_64_APPLE_DARWIN_RUNNER, '/tmp/tauri-dev-runner.sh')
+  assert.equal(env.CARGO_INCREMENTAL, '0')
 })
 
 test('Tauri dev env preserves explicit developer overrides', () => {
   const env = buildTauriDevEnv(
     {
       CARGO_BUILD_JOBS: '2',
+      CARGO_INCREMENTAL: '1',
       XERO_APP_DATA_DIR: '/custom/app-data',
       XERO_LAUNCH_MODE: 'custom-mode',
     },
@@ -35,6 +37,7 @@ test('Tauri dev env preserves explicit developer overrides', () => {
   )
 
   assert.equal(env.CARGO_BUILD_JOBS, '2')
+  assert.equal(env.CARGO_INCREMENTAL, '0')
   assert.equal(env.XERO_APP_DATA_DIR, '/custom/app-data')
   assert.equal(env.XERO_LAUNCH_MODE, 'custom-mode')
 })

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   AGENT_RUN_EVENT_KINDS,
+  agentRunEventKindSchema,
   agentTraceExportSchema,
   agentRunSummarySchema,
   agentRunSchema,
@@ -137,6 +138,10 @@ function makeAgentRunSummaryDto(overrides: Record<string, unknown> = {}) {
 }
 
 describe('owned agent run schemas', () => {
+  it('accepts route requests emitted by the durable runtime', () => {
+    expect(agentRunEventKindSchema.parse('route_requested')).toBe('route_requested')
+  })
+
   it('parses durable run snapshots and maps task status flags', () => {
     const parsed = agentRunSchema.parse(makeAgentRunDto())
     const view = mapAgentRun(parsed)

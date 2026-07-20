@@ -11304,6 +11304,257 @@ mod tests {
     }
 
     #[test]
+    fn sensitive_input_fixture_covers_validation_hashing_and_approval_storage_boundaries() {
+        let valid_field = AutonomousSensitiveInputFieldRequest {
+            key: "access_token".into(),
+            label: "Access token".into(),
+            description: Some("A temporary token for the requested service.".into()),
+            required: true,
+            validation_hint: Some("Paste the complete token value.".into()),
+        };
+        let valid = AutonomousSensitiveInputRequest {
+            purpose: "Authenticate the requested deployment operation.".into(),
+            intended_use: "Use the value only for this deployment attempt.".into(),
+            fields: vec![valid_field.clone()],
+            allow_partial: false,
+        };
+        validate_sensitive_input_request(&valid).expect("valid sensitive-input metadata");
+        let action_id = sensitive_input_action_id(&valid).expect("hash sensitive-input request");
+        assert!(action_id.starts_with("sensitive-input-"));
+        assert_eq!(action_id, sensitive_input_action_id(&valid).unwrap());
+        store_sensitive_input_approval(&action_id, json!({ "access_token": "fixture" }));
+        assert_eq!(
+            take_sensitive_input_approval(&action_id),
+            Some(json!({ "access_token": "fixture" }))
+        );
+        assert_eq!(take_sensitive_input_approval(&action_id), None);
+        assert!(default_sensitive_input_field_required());
+        assert_eq!(sensitive_input_value_to_string(&json!("text")), "text");
+        assert_eq!(sensitive_input_value_to_string(&json!(42)), "42");
+
+        let mut optional = valid.clone();
+        optional.fields[0].required = false;
+        assert_eq!(
+            validate_sensitive_input_request(&optional).unwrap_err().code,
+            "sensitive_input_partial_policy_invalid"
+        );
+        optional.allow_partial = true;
+        validate_sensitive_input_request(&optional).expect("partial request explicitly allowed");
+
+        let mut empty = valid.clone();
+        empty.fields.clear();
+        assert_eq!(
+            validate_sensitive_input_request(&empty).unwrap_err().code,
+            "sensitive_input_fields_invalid"
+        );
+        let mut too_many = valid.clone();
+        too_many.fields = (0..13)
+            .map(|index| AutonomousSensitiveInputFieldRequest {
+                key: format!("field_{index}"),
+                ..valid_field.clone()
+            })
+            .collect();
+        assert_eq!(
+            validate_sensitive_input_request(&too_many).unwrap_err().code,
+            "sensitive_input_fields_invalid"
+        );
+
+        let mut duplicate = valid.clone();
+        duplicate.fields.push(valid_field.clone());
+        assert_eq!(
+            validate_sensitive_input_request(&duplicate).unwrap_err().code,
+            "sensitive_input_field_duplicate"
+        );
+        let mut bad_key = valid.clone();
+        bad_key.fields[0].key = "Access-Token".into();
+        assert_eq!(
+            validate_sensitive_input_request(&bad_key).unwrap_err().code,
+            "sensitive_input_field_key_invalid"
+        );
+        let mut bad_label = valid.clone();
+        bad_label.fields[0].label = " ".into();
+        assert_eq!(
+            validate_sensitive_input_request(&bad_label).unwrap_err().code,
+            "sensitive_input_request_invalid"
+        );
+        let mut bad_description = valid.clone();
+        bad_description.fields[0].description = Some(String::new());
+        assert_eq!(
+            validate_sensitive_input_request(&bad_description)
+                .unwrap_err()
+                .code,
+            "sensitive_input_request_invalid"
+        );
+        let mut bad_hint = valid.clone();
+        bad_hint.fields[0].validation_hint = Some(String::new());
+        assert_eq!(
+            validate_sensitive_input_request(&bad_hint).unwrap_err().code,
+            "sensitive_input_request_invalid"
+        );
+        let mut short_purpose = valid.clone();
+        short_purpose.purpose = "Too short".into();
+        assert_eq!(
+            validate_sensitive_input_request(&short_purpose)
+                .unwrap_err()
+                .code,
+            "sensitive_input_request_invalid"
+        );
+        let mut secret_purpose = valid;
+        secret_purpose.purpose = "Authenticate with api_key=sk-test-secret now.".into();
+        assert_eq!(
+            validate_sensitive_input_request(&secret_purpose)
+                .unwrap_err()
+                .code,
+            "sensitive_input_metadata_secret_like"
+        );
+    }
+
+    #[test]
+    fn wait_and_action_validation_fixture_covers_remaining_malformed_boundaries() {
+        let sleep = |delay_ms, reason: &str, resume_context| AutonomousRuntimeWaitRequest {
+            kind: AutonomousRuntimeWaitKind::Sleep,
+            delay_ms,
+            process_id: None,
+            poll_interval_ms: None,
+            deadline_ms: None,
+            output_pattern: None,
+            reason: reason.into(),
+            resume_context,
+        };
+        assert_eq!(
+            validate_runtime_wait_request(&sleep(
+                None,
+                "Wait before checking the result.",
+                json!({})
+            ))
+            .unwrap_err()
+            .code,
+            "runtime_wait_delay_required"
+        );
+        assert_eq!(
+            validate_runtime_wait_request(&sleep(
+                Some(0),
+                "Wait before checking the result.",
+                json!({})
+            ))
+            .unwrap_err()
+            .code,
+            "runtime_wait_duration_out_of_range"
+        );
+        assert_eq!(
+            validate_runtime_wait_request(&sleep(
+                Some(MIN_RUNTIME_WAIT_DELAY_MS),
+                "short",
+                json!({})
+            ))
+            .unwrap_err()
+            .code,
+            "runtime_wait_reason_invalid"
+        );
+        assert_eq!(
+            validate_runtime_wait_request(&sleep(
+                Some(MIN_RUNTIME_WAIT_DELAY_MS),
+                "Wait before checking the result.",
+                json!([])
+            ))
+            .unwrap_err()
+            .code,
+            "runtime_wait_resume_context_invalid"
+        );
+        assert_eq!(
+            validate_runtime_wait_request(&sleep(
+                Some(MIN_RUNTIME_WAIT_DELAY_MS),
+                "Wait before checking the result.",
+                json!({ "api_key": "sk-test-secret" })
+            ))
+            .unwrap_err()
+            .code,
+            "runtime_wait_resume_context_secret_like"
+        );
+        assert_eq!(
+            validate_runtime_wait_request(&sleep(
+                Some(MIN_RUNTIME_WAIT_DELAY_MS),
+                "Wait before checking the result.",
+                json!({ "payload": "x".repeat(MAX_RUNTIME_WAIT_RESUME_CONTEXT_BYTES) })
+            ))
+            .unwrap_err()
+            .code,
+            "runtime_wait_resume_context_too_large"
+        );
+        let missing_process = AutonomousRuntimeWaitRequest {
+            kind: AutonomousRuntimeWaitKind::ProcessReady,
+            delay_ms: None,
+            process_id: Some(" ".into()),
+            poll_interval_ms: Some(DEFAULT_RUNTIME_WAIT_POLL_INTERVAL_MS),
+            deadline_ms: Some(DEFAULT_RUNTIME_WAIT_POLL_INTERVAL_MS * 2),
+            output_pattern: None,
+            reason: "Wait for the process to become ready.".into(),
+            resume_context: json!({}),
+        };
+        assert_eq!(
+            validate_runtime_wait_request(&missing_process)
+                .unwrap_err()
+                .code,
+            "runtime_wait_process_id_required"
+        );
+        assert!(add_runtime_wait_ms(OffsetDateTime::UNIX_EPOCH, MIN_RUNTIME_WAIT_DELAY_MS).is_ok());
+        assert_eq!(
+            add_runtime_wait_ms(OffsetDateTime::UNIX_EPOCH, u64::MAX)
+                .unwrap_err()
+                .code,
+            "invalid_request"
+        );
+
+        let base = AutonomousActionRequiredRequest {
+            title: "Choose now".into(),
+            detail: "Choose one of the available fixture options.".into(),
+            answer_shape: AutonomousActionRequiredAnswerShape::SingleChoice,
+            prompt_kind: Some("fixture_choice".into()),
+            options: vec![
+                AutonomousActionRequiredOption {
+                    id: "first".into(),
+                    label: "First".into(),
+                    description: Some("Select the first fixture option.".into()),
+                },
+                AutonomousActionRequiredOption {
+                    id: "second".into(),
+                    label: "Second".into(),
+                    description: None,
+                },
+            ],
+            intended_use: Some("Continue using the selected fixture option.".into()),
+        };
+        let mut duplicate = base.clone();
+        duplicate.options[1].id = "first".into();
+        assert_eq!(
+            validate_action_required_request(&duplicate).unwrap_err().code,
+            "action_required_option_duplicate"
+        );
+        let mut bad_key = base.clone();
+        bad_key.prompt_kind = Some("Not Valid".into());
+        assert_eq!(
+            validate_action_required_request(&bad_key).unwrap_err().code,
+            "action_required_key_invalid"
+        );
+        let mut bad_option = base.clone();
+        bad_option.options[0].id = "bad option".into();
+        assert_eq!(
+            validate_action_required_request(&bad_option)
+                .unwrap_err()
+                .code,
+            "action_required_option_id_invalid"
+        );
+        let mut bad_description = base;
+        bad_description.options[0].description = Some(String::new());
+        assert_eq!(
+            validate_action_required_request(&bad_description)
+                .unwrap_err()
+                .code,
+            "action_required_request_invalid"
+        );
+    }
+
+    #[test]
     fn route_request_validation_rejects_malformed_and_secret_like_routes() {
         validate_route_request(&AutonomousRouteRequest {
             target_kind: AutonomousRouteTargetKind::BuiltIn,

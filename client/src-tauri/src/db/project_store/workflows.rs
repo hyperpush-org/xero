@@ -6981,7 +6981,8 @@ mod tests {
             },
         },
         db::{
-            configure_connection, migrations::migrations, register_project_database_path_for_tests,
+            configure_connection, migrations::migrations, project_store,
+            register_project_database_path_for_tests,
         },
     };
     use tempfile::TempDir;
@@ -8770,6 +8771,317 @@ mod tests {
     }
 
     #[test]
+    fn workflow_cancellation_command_recovery_and_node_transition_fixture_covers_replay_boundaries() {
+        let (temp, definition) = repo_with_database();
+        let created =
+            create_workflow_definition(temp.path(), &definition).expect("create workflow");
+
+        let cancellable =
+            create_workflow_run(temp.path(), "project-1", &created.id, None).expect("create run");
+        assert_eq!(
+            cancel_workflow_run_execution(
+                temp.path(),
+                "project-1",
+                &cancellable.id,
+                Some("fixture"),
+            )
+            .expect_err("cancellation must first persist intent")
+            .code,
+            "workflow_cancellation_intent_missing"
+        );
+        assert!(request_workflow_run_cancellation(
+            temp.path(),
+            "project-1",
+            &cancellable.id,
+            Some("fixture"),
+        )
+        .expect("request cancellation"));
+        assert!(!request_workflow_run_cancellation(
+            temp.path(),
+            "project-1",
+            &cancellable.id,
+            Some("fixture"),
+        )
+        .expect("replay cancellation request"));
+        assert!(workflow_run_cancellation_pending(
+            temp.path(),
+            "project-1",
+            &cancellable.id,
+        )
+        .expect("cancellation pending"));
+        assert!(cancel_workflow_run_execution(
+            temp.path(),
+            "project-1",
+            &cancellable.id,
+            Some("fixture"),
+        )
+        .expect("finish cancellation"));
+        assert!(!workflow_run_cancellation_pending(
+            temp.path(),
+            "project-1",
+            &cancellable.id,
+        )
+        .expect("cancellation finished"));
+        assert!(!cancel_workflow_run_execution(
+            temp.path(),
+            "project-1",
+            &cancellable.id,
+            Some("fixture"),
+        )
+        .expect("replay finished cancellation"));
+        assert!(!request_workflow_run_cancellation(
+            temp.path(),
+            "project-1",
+            &cancellable.id,
+            Some("fixture"),
+        )
+        .expect("cancelled run request is idempotent"));
+        assert_eq!(
+            request_workflow_run_cancellation(
+                temp.path(),
+                "project-1",
+                "missing-run",
+                Some("fixture"),
+            )
+            .expect_err("missing run cannot be cancelled")
+            .code,
+            "workflow_run_not_cancellable"
+        );
+
+        let guarded =
+            create_workflow_run(temp.path(), "project-1", &created.id, None).expect("guarded run");
+        update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &guarded.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start guarded run");
+        let command = insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &guarded.id,
+            "guarded-command",
+            "command",
+            0,
+            WorkflowNodeRunStatusDto::Running,
+            "guarded-command-attempt",
+        )
+        .expect("insert guarded command");
+        persist_test_command_lease(
+            temp.path(),
+            &guarded.id,
+            &command.id,
+            "guard-owner",
+            "guard-lease",
+        );
+        request_workflow_run_cancellation(
+            temp.path(),
+            "project-1",
+            &guarded.id,
+            Some("guarded"),
+        )
+        .expect("request guarded cancellation");
+        assert_eq!(
+            cancel_workflow_run_execution(
+                temp.path(),
+                "project-1",
+                &guarded.id,
+                Some("guarded"),
+            )
+            .expect_err("live execution blocks cancellation completion")
+            .code,
+            "workflow_cancellation_execution_still_active"
+        );
+
+        let lease = load_workflow_command_lease(temp.path(), "project-1", &command.id)
+            .expect("load guarded lease")
+            .expect("guarded lease exists");
+        assert!(claim_interrupted_workflow_command(
+            temp.path(),
+            "project-1",
+            &guarded.id,
+            &lease,
+            "workflow_command_interrupted",
+        )
+        .expect("recover interrupted command"));
+        assert!(!claim_interrupted_workflow_command(
+            temp.path(),
+            "project-1",
+            &guarded.id,
+            &lease,
+            "workflow_command_interrupted",
+        )
+        .expect("replay interrupted recovery"));
+        assert!(cancel_workflow_run_execution(
+            temp.path(),
+            "project-1",
+            &guarded.id,
+            Some("guarded"),
+        )
+        .expect("finish guarded cancellation"));
+
+        let transitions =
+            create_workflow_run(temp.path(), "project-1", &created.id, None).expect("transition run");
+        update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &transitions.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start transition run");
+        let node = insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &transitions.id,
+            "transition-node",
+            "agent",
+            0,
+            WorkflowNodeRunStatusDto::Eligible,
+            "transition-node-attempt",
+        )
+        .expect("insert transition node");
+        assert_eq!(
+            compare_and_set_workflow_run_node(
+                temp.path(),
+                "project-1",
+                &node.id,
+                &[],
+                WorkflowNodeRunStatusDto::Running,
+                None,
+                None,
+                None,
+            )
+            .expect_err("CAS requires an expected state")
+            .code,
+            "workflow_node_transition_invalid"
+        );
+        assert!(claim_workflow_run_node_starting(
+            temp.path(),
+            "project-1",
+            &node.id,
+        )
+        .expect("claim eligible node"));
+        assert!(!claim_workflow_run_node_starting(
+            temp.path(),
+            "project-1",
+            &node.id,
+        )
+        .expect("replay node claim"));
+        let agent_session = project_store::create_agent_session(
+            temp.path(),
+            &project_store::AgentSessionCreateRecord {
+                project_id: "project-1".into(),
+                title: "Workflow transition fixture".into(),
+                summary: String::new(),
+                selected: false,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create linked agent session");
+        project_store::insert_agent_run(
+            temp.path(),
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(
+                    project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                ),
+                project_id: "project-1".into(),
+                agent_session_id: agent_session.agent_session_id.clone(),
+                run_id: "agent-run-1".into(),
+                provider_id: "fake".into(),
+                model_id: "fake".into(),
+                prompt: "Execute the Workflow node.".into(),
+                system_prompt: "fixture".into(),
+                now: "2026-07-18T12:00:00Z".into(),
+            },
+        )
+        .expect("insert linked agent run");
+        update_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &node.id,
+            WorkflowNodeRunStatusDto::Running,
+            Some("agent-run-1"),
+            Some(&agent_session.agent_session_id),
+            None,
+        )
+        .expect("transition node to running");
+        assert!(compare_and_set_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &node.id,
+            &[WorkflowNodeRunStatusDto::Running],
+            WorkflowNodeRunStatusDto::Succeeded,
+            None,
+            None,
+            None,
+        )
+        .expect("complete node with CAS"));
+        assert!(!compare_and_set_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &node.id,
+            &[WorkflowNodeRunStatusDto::Running],
+            WorkflowNodeRunStatusDto::Failed,
+            None,
+            None,
+            Some("late_failure"),
+        )
+        .expect("terminal CAS replay loses"));
+        assert_eq!(
+            attach_workflow_command_process(
+                temp.path(),
+                "project-1",
+                &node.id,
+                "owner",
+                "lease",
+                0,
+                None,
+                "2026-07-18T12:00:00Z",
+            )
+            .expect_err("zero process id is invalid")
+            .code,
+            "workflow_command_process_id_invalid"
+        );
+        assert_eq!(
+            attach_workflow_command_process(
+                temp.path(),
+                "project-1",
+                &node.id,
+                "owner",
+                "lease",
+                1,
+                Some(" "),
+                "2026-07-18T12:00:00Z",
+            )
+            .expect_err("blank process identity is invalid")
+            .code,
+            "workflow_command_process_birth_identity_invalid"
+        );
+
+        let loaded = get_workflow_run(temp.path(), "project-1", &transitions.id)
+            .expect("load transition run")
+            .expect("transition run exists");
+        let persisted = loaded
+            .nodes
+            .iter()
+            .find(|candidate| candidate.id == node.id)
+            .expect("transition node persists");
+        assert_eq!(persisted.status, WorkflowNodeRunStatusDto::Succeeded);
+        assert_eq!(persisted.runtime_run_id.as_deref(), Some("agent-run-1"));
+        assert_eq!(
+            persisted.agent_session_id.as_deref(),
+            Some(agent_session.agent_session_id.as_str())
+        );
+    }
+
+    #[test]
     fn command_completion_is_idempotent_after_success() {
         let (temp, definition) = repo_with_database();
         let created =
@@ -10422,6 +10734,257 @@ mod tests {
                 .events
                 .iter()
                 .filter(|event| event.event_type == "workflow_driver_failed")
+                .count(),
+            1,
+        );
+    }
+
+    #[test]
+    fn workflow_lifecycle_fixture_covers_resume_timeout_failure_and_edge_evidence() {
+        let (temp, definition) = repo_with_database();
+        let created =
+            create_workflow_definition(temp.path(), &definition).expect("create workflow");
+        let source = create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create source run");
+        let resume = WorkflowResumePhaseStartRecord {
+            workflow_id: created.id.clone(),
+            expected_workflow_version: created.version,
+            source_run_id: source.id.clone(),
+            initial_input: json!({
+                "delivery": {
+                    "phases": [{"id": "phase-2", "title": "Phase 2"}],
+                    "resume": {"phaseId": "phase-2"}
+                }
+            }),
+            loop_node_id: "delivery-loop".into(),
+            phase_id: "phase-2".into(),
+            phase_key: "phase-2".into(),
+            input_path: "$.delivery.phases".into(),
+        };
+
+        assert!(get_workflow_resume_phase_replay(
+            temp.path(),
+            "project-1",
+            &source.id,
+            "resume-phase-2",
+        )
+        .expect("query absent resume replay")
+        .is_none());
+        let resumed = create_workflow_resume_phase_run_idempotently(
+            temp.path(),
+            "project-1",
+            "resume-phase-2",
+            &resume,
+        )
+        .expect("create resumed run");
+        assert_ne!(resumed.id, source.id);
+        assert_eq!(resumed.initial_input, Some(resume.initial_input.clone()));
+        let replayed = create_workflow_resume_phase_run_idempotently(
+            temp.path(),
+            "project-1",
+            "resume-phase-2",
+            &resume,
+        )
+        .expect("replay resumed run");
+        assert_eq!(replayed.id, resumed.id);
+        assert_eq!(
+            get_workflow_resume_phase_replay(
+                temp.path(),
+                "project-1",
+                &source.id,
+                "resume-phase-2",
+            )
+            .expect("load resume replay")
+            .expect("resume replay exists")
+            .id,
+            resumed.id,
+        );
+
+        let mut conflicting = resume.clone();
+        conflicting.phase_id = "phase-3".into();
+        conflicting.phase_key = "phase-3".into();
+        let selection_replay = create_workflow_resume_phase_run_idempotently(
+            temp.path(),
+            "project-1",
+            "resume-phase-2",
+            &conflicting,
+        )
+        .expect("server-derived phase selection must replay the original winner");
+        assert_eq!(selection_replay.id, resumed.id);
+        assert_eq!(selection_replay.initial_input, Some(resume.initial_input.clone()));
+        let source_conflict = get_workflow_resume_phase_replay(
+            temp.path(),
+            "project-1",
+            "different-source-run",
+            "resume-phase-2",
+        )
+        .expect_err("resume replay must bind one source run");
+        assert_eq!(source_conflict.code, "workflow_run_idempotency_conflict");
+
+        let mut stale_version = resume.clone();
+        stale_version.expected_workflow_version = created.version.saturating_add(1);
+        let stale = create_workflow_resume_phase_run_idempotently(
+            temp.path(),
+            "project-1",
+            "resume-stale-definition",
+            &stale_version,
+        )
+        .expect_err("resume must compare the active definition version");
+        assert_eq!(stale.code, "workflow_definition_changed_during_start");
+
+        let timeout_run = create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create timeout run");
+        update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start timeout run");
+        let timed_out_node = insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            "agent-a",
+            "agent",
+            0,
+            WorkflowNodeRunStatusDto::Running,
+            "timeout-agent-attempt",
+        )
+        .expect("insert timed-out agent node");
+        let timeout_event = json!({
+            "nodeId": "agent-a",
+            "failureClass": "runtime_activity_timeout",
+            "message": "No durable runtime activity was observed."
+        });
+        assert!(stall_workflow_agent_for_activity_timeout(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            &timed_out_node.id,
+            &timeout_event,
+        )
+        .expect("stall inactive agent node"));
+        assert!(!stall_workflow_agent_for_activity_timeout(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            &timed_out_node.id,
+            &timeout_event,
+        )
+        .expect("replay timeout marker"));
+        assert!(!stall_workflow_agent_for_activity_timeout(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            "missing-node-run",
+            &timeout_event,
+        )
+        .expect("missing timeout target is a no-op"));
+
+        let failed_node = insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            "failure-node",
+            "agent",
+            0,
+            WorkflowNodeRunStatusDto::Eligible,
+            "failure-node-attempt",
+        )
+        .expect("insert failure node");
+        assert!(fail_workflow_node_with_event_atomically(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            &failed_node.id,
+            "failure-node",
+            "workflow_fixture_failed",
+            "fixture_failure",
+            "The fixture deliberately failed this node.",
+        )
+        .expect("fail workflow node"));
+        assert!(!fail_workflow_node_with_event_atomically(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            &failed_node.id,
+            "failure-node",
+            "workflow_fixture_failed",
+            "fixture_failure",
+            "The fixture deliberately failed this node.",
+        )
+        .expect("replay workflow failure marker"));
+        assert_eq!(
+            fail_workflow_node_with_event_atomically(
+                temp.path(),
+                "project-1",
+                &timeout_run.id,
+                &failed_node.id,
+                "failure-node",
+                "",
+                "fixture_failure",
+                "invalid event type",
+            )
+            .expect_err("empty event type must fail closed")
+            .code,
+            "workflow_event_type_invalid",
+        );
+        assert_eq!(
+            fail_workflow_node_with_event_atomically(
+                temp.path(),
+                "project-1",
+                &timeout_run.id,
+                &failed_node.id,
+                "failure-node",
+                "workflow_fixture_failed_again",
+                "",
+                "invalid failure class",
+            )
+            .expect_err("empty failure class must fail closed")
+            .code,
+            "workflow_failure_class_invalid",
+        );
+
+        insert_workflow_edge_decision(
+            temp.path(),
+            "project-1",
+            &timeout_run.id,
+            "failure-node",
+            "done",
+            "edge-fixture",
+            &json!({"kind": "always"}),
+            &json!({"matched": true, "reason": "fixture"}),
+        )
+        .expect("persist edge decision evidence");
+        let loaded = get_workflow_run(temp.path(), "project-1", &timeout_run.id)
+            .expect("load lifecycle fixture run")
+            .expect("lifecycle fixture run exists");
+        assert!(loaded.nodes.iter().any(|node| {
+            node.id == timed_out_node.id && node.status == WorkflowNodeRunStatusDto::Stalled
+        }));
+        assert!(loaded.nodes.iter().any(|node| {
+            node.id == failed_node.id && node.status == WorkflowNodeRunStatusDto::Failed
+        }));
+        assert!(loaded
+            .edge_decisions
+            .iter()
+            .any(|decision| decision.edge_id == "edge-fixture" && decision.matched));
+        assert_eq!(
+            loaded
+                .events
+                .iter()
+                .filter(|event| event.event_type == "workflow_node_stalled")
+                .count(),
+            1,
+        );
+        assert_eq!(
+            loaded
+                .events
+                .iter()
+                .filter(|event| event.event_type == "workflow_fixture_failed")
                 .count(),
             1,
         );

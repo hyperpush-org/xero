@@ -35,7 +35,7 @@ const run = (command, args, options = {}) =>
 const env = {
   ...process.env,
   CARGO_BUILD_JOBS: process.env.CARGO_BUILD_JOBS ?? '4',
-  CARGO_INCREMENTAL: process.env.CARGO_INCREMENTAL ?? '0',
+  CARGO_INCREMENTAL: '0',
   XERO_SKIP_COOKIE_IMPORTER: process.env.XERO_SKIP_COOKIE_IMPORTER ?? '1',
   XERO_SKIP_CURSOR_SIDECAR: process.env.XERO_SKIP_CURSOR_SIDECAR ?? '1',
   XERO_SKIP_DESKTOP_SIDECAR: process.env.XERO_SKIP_DESKTOP_SIDECAR ?? '1',

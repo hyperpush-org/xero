@@ -8726,6 +8726,89 @@ pub(crate) fn parse_fake_tool_directives(prompt: &str) -> Vec<AgentToolCall> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn fake_tool_directive_fixture_covers_the_complete_headless_tool_surface() {
+        let calls = parse_fake_tool_directives(
+            r#"
+                ignored prose
+                tool:read src/lib.rs
+                tool:read_many src/lib.rs, src/main.rs, ,Cargo.toml
+                tool:stat Cargo.toml
+                tool:list_tree src
+                tool:directory_digest src
+                tool:git_status
+                tool:access code_write
+                tool:tool_search semantic edit
+                tool:harness_runner_manifest
+                tool:harness_runner
+                tool:project_context_search architecture
+                tool:project_context_memory convention
+                tool:project_context_get_record record-1
+                tool:project_context_propose Title|Summary|Body
+                tool:agent_definition_save {"id":"fixture"}
+                tool:agent_definition_save malformed-json
+                tool:agent_definition_validate {"id":"fixture"}
+                tool:agent_definition_list
+                tool:agent_definition_list_attachable_skills
+                tool:workflow_definition_save {"id":"workflow"}
+                tool:workflow_definition_validate malformed-json
+                tool:workflow_definition_list project-1
+                tool:skill_list rust
+                tool:skill_invoke builtin:rust
+                tool:todo_upsert Verify the build
+                tool:todo_complete todo-1
+                tool:subagent Inspect the runtime
+                tool:mcp_list
+                tool:mcp_list_tools server-1
+                tool:code_intel_symbols src/lib.rs Runtime
+                tool:code_intel_symbols src/main.rs
+                tool:lsp_symbols src/lib.rs Provider
+                tool:lsp_symbols src/main.rs
+                tool:lsp_servers
+                tool:search reconcile_workflow
+                tool:write notes.txt fixture body
+                tool:write empty.txt
+                tool:hash Cargo.lock
+                tool:list src
+                tool:mkdir generated
+                tool:delete stale.txt
+                tool:rename old.txt new.txt
+                tool:rename lonely.txt
+                tool:patch src/lib.rs old new value
+                tool:command_echo hello fixture
+                tool:command_verify cargo test --lib
+                tool:command_sh printf fixture
+            "#,
+        );
+
+        assert_eq!(calls.len(), 47);
+        assert_eq!(calls[0].tool_name, "read");
+        assert_eq!(calls[0].input["path"], "src/lib.rs");
+        assert_eq!(
+            calls[1].input["paths"],
+            json!(["src/lib.rs", "src/main.rs", "Cargo.toml"])
+        );
+        assert_eq!(calls[8].tool_name, AUTONOMOUS_TOOL_HARNESS_RUNNER);
+        assert_eq!(calls[9].tool_name, AUTONOMOUS_TOOL_HARNESS_RUNNER);
+        assert_eq!(calls[13].input["summary"], "Summary");
+        assert_eq!(calls[13].input["text"], "Body");
+        assert_eq!(calls[14].input["definition"]["id"], "fixture");
+        assert_eq!(calls[15].input["definition"], json!({}));
+        assert_eq!(calls[19].input["definition"]["id"], "workflow");
+        assert_eq!(calls[20].input["definition"], json!({}));
+        assert_eq!(calls[29].input["query"], "Runtime");
+        assert_eq!(calls[30].input["query"], "");
+        assert_eq!(calls[35].input["content"], "fixture body");
+        assert_eq!(calls[36].input["content"], "");
+        assert_eq!(calls[41].input["toPath"], "new.txt");
+        assert_eq!(calls[42].input["toPath"], "");
+        assert_eq!(calls[43].input["replace"], "new value");
+        assert_eq!(calls[46].input["argv"], json!(["sh", "-c", "printf fixture"]));
+        for (index, call) in calls.iter().enumerate() {
+            assert!(call.tool_call_id.ends_with(&(index + 1).to_string()));
+        }
+    }
+
     fn resolved_tool_application_policy(
         style: AgentToolApplicationStyleDto,
     ) -> ResolvedAgentToolApplicationStyleDto {

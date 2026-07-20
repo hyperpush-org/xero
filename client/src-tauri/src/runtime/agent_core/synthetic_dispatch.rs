@@ -443,4 +443,59 @@ mod tests {
         assert!(resolve_call_templates(&mut value, &prior).is_none());
         assert_eq!(value, original);
     }
+
+    #[test]
+    fn template_resolution_fixture_covers_nested_values_and_every_malformed_boundary() {
+        let prior = vec![entry(json!({
+            "items": [{"name": "first"}, null, 3],
+            "nested": {"enabled": true},
+            "scalar": "leaf"
+        }))];
+        let mut nested = json!({
+            "array": [
+                "{{ call[0].result.items.0.name }}",
+                "null={{call[0].result.items.1}}",
+                "number={{call[0].result.items.2}}",
+                {"enabled": "{{call[0].result.nested.enabled}}"}
+            ],
+            "untouched": 42
+        });
+        assert_eq!(resolve_call_templates(&mut nested, &prior), None);
+        assert_eq!(
+            nested,
+            json!({
+                "array": ["first", "null=", "number=3", {"enabled": true}],
+                "untouched": 42
+            })
+        );
+
+        for (token, expected) in [
+            ("{{result.name}}", "Unsupported template token"),
+            ("{{call[0.result.name}}", "missing a closing"),
+            ("{{call[nope].result.name}}", "non-numeric call index"),
+            ("{{call[0]result.name}}", "missing the leading"),
+            ("{{call[0].input.name}}", "Only `.result.*`"),
+            ("{{call[0].result.missing}}", "not found"),
+            ("{{call[0].result.items.name}}", "numeric array index"),
+            ("{{call[0].result.items.9}}", "out of bounds"),
+            ("{{call[0].result.scalar.child}}", "non-object/non-array"),
+        ] {
+            let mut value = json!({"nested": [token]});
+            let error = resolve_call_templates(&mut value, &prior)
+                .unwrap_or_else(|| panic!("expected `{token}` to fail"));
+            assert!(error.contains(expected), "unexpected error for `{token}`: {error}");
+        }
+
+        let mut unterminated = json!("prefix {{call[0].result.scalar");
+        assert!(resolve_call_templates(&mut unterminated, &prior)
+            .expect("unterminated token should fail")
+            .contains("Unterminated"));
+
+        let mut already_failed = json!(["{{call[0].result.scalar}}"]);
+        let original = already_failed.clone();
+        let mut error = Some("prior failure".to_string());
+        walk_resolve(&mut already_failed, &prior, &mut error);
+        assert_eq!(already_failed, original);
+        assert_eq!(error.as_deref(), Some("prior failure"));
+    }
 }

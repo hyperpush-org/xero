@@ -161,8 +161,16 @@ tauri = { version = "2", features = ["test"] }
 xero-agent-core = { path = "crates/xero-agent-core", features = ["test-support"] }
 
 [profile.dev]
-debug = "line-tables-only"
+debug = 0
+incremental = false
+split-debuginfo = "off"
 
 [profile.test]
-debug = "line-tables-only"
+debug = 0
 incremental = false
+split-debuginfo = "off"
+
+[profile.release]
+debug = 0
+incremental = false
+strip = "symbols"

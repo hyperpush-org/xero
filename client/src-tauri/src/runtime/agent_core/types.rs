@@ -2901,6 +2901,138 @@ mod tests {
     }
 
     #[test]
+    fn action_level_wrapper_fixtures_decode_each_supported_surface() {
+        let fixtures = [
+            (
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH,
+                json!({ "action": "search_project_records", "query": "routing" }),
+            ),
+            (
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET,
+                json!({ "action": "get_project_record", "recordId": "record-1" }),
+            ),
+            (
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD,
+                json!({
+                    "recordKind": "project_fact",
+                    "title": "Fixture fact",
+                    "summary": "Fixture summary",
+                    "text": "Fixture text"
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE,
+                json!({
+                    "recordId": "record-1",
+                    "title": "Updated fixture fact",
+                    "summary": "Updated summary",
+                    "text": "Updated text"
+                }),
+            ),
+            (
+                AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+                json!({ "recordIds": ["record-1"] }),
+            ),
+            (AUTONOMOUS_TOOL_BROWSER_OBSERVE, json!({ "action": "health" })),
+            (
+                AUTONOMOUS_TOOL_BROWSER_CONTROL,
+                json!({ "action": "click", "selector": "#submit" }),
+            ),
+            (
+                AUTONOMOUS_TOOL_MCP_READ_RESOURCE,
+                json!({ "serverId": "fixture", "uri": "fixture://resource" }),
+            ),
+            (
+                AUTONOMOUS_TOOL_MCP_GET_PROMPT,
+                json!({ "serverId": "fixture", "name": "prompt" }),
+            ),
+            (
+                AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+                json!({ "serverId": "fixture", "name": "echo", "arguments": {} }),
+            ),
+            (
+                AUTONOMOUS_TOOL_COMMAND_SESSION,
+                json!({ "action": "start", "argv": ["echo", "fixture"], "cwd": "." }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE,
+                json!({ "action": "process_threads", "pid": 1 }),
+            ),
+            (
+                AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
+                json!({ "action": "process_sample", "pid": 1 }),
+            ),
+        ];
+
+        for (index, (tool_name, input)) in fixtures.into_iter().enumerate() {
+            let decoded = decode_action_level_tool_call(&AgentToolCall {
+                tool_call_id: format!("action-wrapper-{index}"),
+                tool_name: tool_name.into(),
+                input,
+            })
+            .unwrap_or_else(|| panic!("{tool_name} must remain an action-level wrapper"))
+            .unwrap_or_else(|error| panic!("{tool_name} fixture must decode: {error:?}"));
+
+            match (tool_name, decoded) {
+                (
+                    AUTONOMOUS_TOOL_PROJECT_CONTEXT_SEARCH
+                    | AUTONOMOUS_TOOL_PROJECT_CONTEXT_GET
+                    | AUTONOMOUS_TOOL_PROJECT_CONTEXT_RECORD
+                    | AUTONOMOUS_TOOL_PROJECT_CONTEXT_UPDATE
+                    | AUTONOMOUS_TOOL_PROJECT_CONTEXT_REFRESH,
+                    AutonomousToolRequest::ProjectContext(_),
+                )
+                | (
+                    AUTONOMOUS_TOOL_BROWSER_OBSERVE | AUTONOMOUS_TOOL_BROWSER_CONTROL,
+                    AutonomousToolRequest::Browser(_),
+                )
+                | (
+                    AUTONOMOUS_TOOL_MCP_READ_RESOURCE
+                    | AUTONOMOUS_TOOL_MCP_GET_PROMPT
+                    | AUTONOMOUS_TOOL_MCP_CALL_TOOL,
+                    AutonomousToolRequest::Mcp(_),
+                )
+                | (
+                    AUTONOMOUS_TOOL_COMMAND_SESSION,
+                    AutonomousToolRequest::CommandSessionStart(_),
+                )
+                | (
+                    AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_OBSERVE
+                    | AUTONOMOUS_TOOL_SYSTEM_DIAGNOSTICS_PRIVILEGED,
+                    AutonomousToolRequest::SystemDiagnostics(_),
+                ) => {}
+                (_, other) => panic!("{tool_name} routed to an unexpected request: {other:?}"),
+            }
+        }
+
+        for (action, expected) in [
+            ("read", AUTONOMOUS_TOOL_COMMAND_SESSION_READ),
+            ("stop", AUTONOMOUS_TOOL_COMMAND_SESSION_STOP),
+        ] {
+            let input = json!({ "action": action, "sessionId": "session-1" });
+            let decoded = decode_command_session_wrapper(&AgentToolCall {
+                tool_call_id: format!("command-session-{action}"),
+                tool_name: AUTONOMOUS_TOOL_COMMAND_SESSION.into(),
+                input,
+            })
+            .unwrap_or_else(|error| panic!("{expected} fixture must decode: {error:?}"));
+            assert!(match (action, decoded) {
+                ("read", AutonomousToolRequest::CommandSessionRead(_))
+                | ("stop", AutonomousToolRequest::CommandSessionStop(_)) => true,
+                _ => false,
+            });
+        }
+
+        let invalid = decode_command_session_wrapper(&AgentToolCall {
+            tool_call_id: "command-session-invalid".into(),
+            tool_name: AUTONOMOUS_TOOL_COMMAND_SESSION.into(),
+            input: json!({ "action": "restart", "sessionId": "session-1" }),
+        })
+        .expect_err("unknown command-session actions must fail closed");
+        assert_eq!(invalid.code, "agent_action_tool_input_invalid");
+    }
+
+    #[test]
     fn debug_evidence_todo_mode_is_reserved_for_debug_agent() {
         let debug_registry = ToolRegistry::for_tool_names_with_options(
             BTreeSet::from([AUTONOMOUS_TOOL_TODO.to_string()]),

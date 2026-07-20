@@ -57,6 +57,7 @@ pub enum AgentRunEventKindDto {
     PolicyDecision,
     StateTransition,
     PlanUpdated,
+    RouteRequested,
     VerificationGate,
     ContextManifestRecorded,
     RetrievalPerformed,
@@ -899,5 +900,412 @@ fn parse_agent_definition_base_capability_profile(
         "debugging" => AgentDefinitionBaseCapabilityProfileDto::Debugging,
         "agent_builder" => AgentDefinitionBaseCapabilityProfileDto::AgentBuilder,
         _ => AgentDefinitionBaseCapabilityProfileDto::ObserveOnly,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::project_store::{
+        AgentMessageAttachmentKind, AgentMessageAttachmentRecord, AgentMessageRole,
+        AgentRunDiagnosticRecord, AgentRunEventKind, AgentRunSnapshotRecord, AgentRunStatus,
+        AgentToolCallState,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn route_requested_events_are_exposed_through_the_agent_contract() {
+        let dto = agent_event_dto(AgentEventRecord {
+            id: 7,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            event_kind: AgentRunEventKind::RouteRequested,
+            payload_json: r#"{"target":"debug"}"#.into(),
+            created_at: "2026-07-18T12:00:00Z".into(),
+        });
+
+        assert_eq!(dto.event_kind, AgentRunEventKindDto::RouteRequested);
+        assert_eq!(dto.payload["target"], "debug");
+    }
+
+    #[test]
+    fn full_run_snapshot_conversion_preserves_lineage_diagnostics_and_artifacts() {
+        let snapshot = AgentRunSnapshotRecord {
+            run: run_record(AgentRunStatus::Failed),
+            messages: vec![AgentMessageRecord {
+                id: 1,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                role: AgentMessageRole::Assistant,
+                content: "Attached evidence.".into(),
+                provider_metadata_json: Some(r#"{"provider":"fixture"}"#.into()),
+                created_at: "2026-07-18T12:00:01Z".into(),
+                attachments: vec![
+                    attachment(1, AgentMessageAttachmentKind::Image, Some(640), Some(480)),
+                    attachment(2, AgentMessageAttachmentKind::Document, None, None),
+                    attachment(3, AgentMessageAttachmentKind::Text, None, None),
+                ],
+            }],
+            events: vec![AgentEventRecord {
+                id: 2,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                event_kind: AgentRunEventKind::RunFailed,
+                payload_json: "malformed".into(),
+                created_at: "2026-07-18T12:00:02Z".into(),
+            }],
+            tool_calls: vec![
+                AgentToolCallRecord {
+                    project_id: "project-1".into(),
+                    run_id: "run-1".into(),
+                    tool_call_id: "tool-1".into(),
+                    tool_name: "read".into(),
+                    input_json: r#"{"path":"src/lib.rs"}"#.into(),
+                    state: AgentToolCallState::Succeeded,
+                    result_json: Some(r#"{"ok":true}"#.into()),
+                    error: None,
+                    started_at: "2026-07-18T12:00:03Z".into(),
+                    completed_at: Some("2026-07-18T12:00:04Z".into()),
+                },
+                AgentToolCallRecord {
+                    project_id: "project-1".into(),
+                    run_id: "run-1".into(),
+                    tool_call_id: "tool-2".into(),
+                    tool_name: "write".into(),
+                    input_json: "malformed".into(),
+                    state: AgentToolCallState::Failed,
+                    result_json: Some("malformed".into()),
+                    error: Some(AgentRunDiagnosticRecord {
+                        code: "write_failed".into(),
+                        message: "Fixture write failed.".into(),
+                    }),
+                    started_at: "2026-07-18T12:00:05Z".into(),
+                    completed_at: Some("2026-07-18T12:00:06Z".into()),
+                },
+            ],
+            file_changes: vec![AgentFileChangeRecord {
+                id: 3,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                trace_id: "trace-1".into(),
+                top_level_run_id: "run-parent".into(),
+                subagent_id: Some("subagent-1".into()),
+                subagent_role: Some("worker".into()),
+                change_group_id: Some("change-1".into()),
+                path: "src/lib.rs".into(),
+                operation: "edit".into(),
+                old_hash: Some("old".into()),
+                new_hash: Some("new".into()),
+                created_at: "2026-07-18T12:00:07Z".into(),
+            }],
+            checkpoints: vec![AgentCheckpointRecord {
+                id: 4,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                checkpoint_kind: "verification".into(),
+                summary: "Checks complete.".into(),
+                payload_json: Some(r#"{"passed":3}"#.into()),
+                created_at: "2026-07-18T12:00:08Z".into(),
+            }],
+            action_requests: vec![AgentActionRequestRecord {
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                action_id: "action-1".into(),
+                action_type: "approval".into(),
+                title: "Approve write".into(),
+                detail: "Write src/lib.rs".into(),
+                status: "rejected".into(),
+                created_at: "2026-07-18T12:00:09Z".into(),
+                resolved_at: Some("2026-07-18T12:00:10Z".into()),
+                response: Some("Do not change it.".into()),
+            }],
+        };
+
+        let dto = agent_run_dto(snapshot);
+
+        assert_eq!(dto.status, AgentRunStatusDto::Failed);
+        assert_eq!(dto.last_error_code.as_deref(), Some("fixture_error"));
+        assert_eq!(
+            dto.last_error.expect("run diagnostic").message,
+            "Fixture failed."
+        );
+        assert_eq!(dto.parent_run_id.as_deref(), Some("run-parent"));
+        assert_eq!(dto.messages[0].attachments.len(), 3);
+        assert_eq!(
+            dto.messages[0].attachments[0].kind,
+            AgentMessageAttachmentKindDto::Image
+        );
+        assert_eq!(
+            dto.messages[0].attachments[1].kind,
+            AgentMessageAttachmentKindDto::Document
+        );
+        assert_eq!(
+            dto.messages[0].attachments[2].kind,
+            AgentMessageAttachmentKindDto::Text
+        );
+        assert_eq!(dto.events[0].payload, JsonValue::Null);
+        assert_eq!(dto.tool_calls[0].input["path"], "src/lib.rs");
+        assert_eq!(
+            dto.tool_calls[0].result.as_ref().expect("tool result")["ok"],
+            true
+        );
+        assert_eq!(dto.tool_calls[1].input, JsonValue::Null);
+        assert!(dto.tool_calls[1].result.is_none());
+        assert_eq!(
+            dto.tool_calls[1].error.as_ref().expect("tool error").code,
+            "write_failed"
+        );
+        assert_eq!(
+            dto.file_changes[0].change_group_id.as_deref(),
+            Some("change-1")
+        );
+        assert_eq!(
+            dto.checkpoints[0]
+                .payload
+                .as_ref()
+                .expect("checkpoint payload")["passed"],
+            3
+        );
+        assert_eq!(
+            dto.action_requests[0].response.as_deref(),
+            Some("Do not change it.")
+        );
+    }
+
+    #[test]
+    fn run_summary_and_nested_enum_conversions_cover_every_durable_state() {
+        let statuses = [
+            (AgentRunStatus::Starting, AgentRunStatusDto::Starting),
+            (AgentRunStatus::Running, AgentRunStatusDto::Running),
+            (AgentRunStatus::Paused, AgentRunStatusDto::Paused),
+            (AgentRunStatus::Cancelling, AgentRunStatusDto::Cancelling),
+            (AgentRunStatus::Cancelled, AgentRunStatusDto::Cancelled),
+            (AgentRunStatus::HandedOff, AgentRunStatusDto::HandedOff),
+            (AgentRunStatus::Completed, AgentRunStatusDto::Completed),
+            (AgentRunStatus::Failed, AgentRunStatusDto::Failed),
+        ];
+        for (status, expected) in statuses {
+            let dto = agent_run_summary_dto(run_record(status));
+            assert_eq!(dto.status, expected);
+            assert_eq!(dto.last_error_code.as_deref(), Some("fixture_error"));
+            assert_eq!(
+                dto.last_error.expect("summary diagnostic").code,
+                "fixture_error"
+            );
+        }
+
+        for (role, expected) in [
+            (AgentMessageRole::System, AgentMessageRoleDto::System),
+            (AgentMessageRole::Developer, AgentMessageRoleDto::Developer),
+            (AgentMessageRole::User, AgentMessageRoleDto::User),
+            (AgentMessageRole::Assistant, AgentMessageRoleDto::Assistant),
+            (AgentMessageRole::Tool, AgentMessageRoleDto::Tool),
+        ] {
+            let dto = agent_message_dto(AgentMessageRecord {
+                id: 1,
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                role,
+                content: "fixture".into(),
+                provider_metadata_json: None,
+                created_at: "2026-07-18T12:00:00Z".into(),
+                attachments: Vec::new(),
+            });
+            assert_eq!(dto.role, expected);
+        }
+
+        for (state, expected) in [
+            (AgentToolCallState::Pending, AgentToolCallStateDto::Pending),
+            (AgentToolCallState::Running, AgentToolCallStateDto::Running),
+            (
+                AgentToolCallState::Succeeded,
+                AgentToolCallStateDto::Succeeded,
+            ),
+            (AgentToolCallState::Failed, AgentToolCallStateDto::Failed),
+        ] {
+            let dto = agent_tool_call_dto(AgentToolCallRecord {
+                project_id: "project-1".into(),
+                run_id: "run-1".into(),
+                tool_call_id: "tool-1".into(),
+                tool_name: "read".into(),
+                input_json: "{}".into(),
+                state,
+                result_json: None,
+                error: None,
+                started_at: "2026-07-18T12:00:00Z".into(),
+                completed_at: None,
+            });
+            assert_eq!(dto.state, expected);
+        }
+    }
+
+    #[test]
+    fn agent_definition_contracts_cover_all_persisted_variants_and_reports() {
+        for (scope, expected) in [
+            ("built_in", AgentDefinitionScopeDto::BuiltIn),
+            ("global_custom", AgentDefinitionScopeDto::GlobalCustom),
+            ("project_custom", AgentDefinitionScopeDto::ProjectCustom),
+        ] {
+            let dto =
+                agent_definition_summary_dto(definition_record(scope, "active", "observe_only"));
+            assert_eq!(dto.scope, expected);
+            assert_eq!(dto.is_built_in, scope == "built_in");
+            assert!(dto.default_model.is_none());
+        }
+
+        for (lifecycle, expected) in [
+            ("draft", AgentDefinitionLifecycleStateDto::Draft),
+            ("valid", AgentDefinitionLifecycleStateDto::Valid),
+            ("active", AgentDefinitionLifecycleStateDto::Active),
+            ("archived", AgentDefinitionLifecycleStateDto::Archived),
+            ("blocked", AgentDefinitionLifecycleStateDto::Blocked),
+        ] {
+            assert_eq!(
+                agent_definition_summary_dto(definition_record(
+                    "project_custom",
+                    lifecycle,
+                    "observe_only",
+                ))
+                .lifecycle_state,
+                expected
+            );
+        }
+
+        for (profile, expected) in [
+            (
+                "observe_only",
+                AgentDefinitionBaseCapabilityProfileDto::ObserveOnly,
+            ),
+            (
+                "computer_use",
+                AgentDefinitionBaseCapabilityProfileDto::ComputerUse,
+            ),
+            (
+                "planning",
+                AgentDefinitionBaseCapabilityProfileDto::Planning,
+            ),
+            (
+                "repository_recon",
+                AgentDefinitionBaseCapabilityProfileDto::RepositoryRecon,
+            ),
+            (
+                "engineering",
+                AgentDefinitionBaseCapabilityProfileDto::Engineering,
+            ),
+            (
+                "debugging",
+                AgentDefinitionBaseCapabilityProfileDto::Debugging,
+            ),
+            (
+                "agent_builder",
+                AgentDefinitionBaseCapabilityProfileDto::AgentBuilder,
+            ),
+        ] {
+            assert_eq!(
+                agent_definition_summary_dto(definition_record(
+                    "project_custom",
+                    "active",
+                    profile,
+                ))
+                .base_capability_profile,
+                expected
+            );
+        }
+
+        let with_report = agent_definition_version_summary_dto(AgentDefinitionVersionRecord {
+            definition_id: "custom-1".into(),
+            version: 2,
+            snapshot: json!({"schema": "xero.agent_definition.v1"}),
+            validation_report: Some(json!({
+                "status": "invalid",
+                "diagnostics": [{"code": "one"}, {"code": "two"}],
+            })),
+            created_at: "2026-07-18T12:00:00Z".into(),
+        });
+        assert_eq!(with_report.validation_status.as_deref(), Some("invalid"));
+        assert_eq!(with_report.validation_diagnostic_count, 2);
+        assert!(with_report.validation_report.is_some());
+
+        let without_report = agent_definition_version_summary_dto(AgentDefinitionVersionRecord {
+            definition_id: "custom-1".into(),
+            version: 1,
+            snapshot: json!({}),
+            validation_report: None,
+            created_at: "2026-07-18T11:00:00Z".into(),
+        });
+        assert!(without_report.validation_status.is_none());
+        assert_eq!(without_report.validation_diagnostic_count, 0);
+    }
+
+    fn run_record(status: AgentRunStatus) -> AgentRunRecord {
+        AgentRunRecord {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: "engineer".into(),
+            agent_definition_version: 3,
+            project_id: "project-1".into(),
+            agent_session_id: "session-1".into(),
+            run_id: "run-1".into(),
+            trace_id: "trace-1".into(),
+            lineage_kind: "subagent".into(),
+            parent_run_id: Some("run-parent".into()),
+            parent_trace_id: Some("trace-parent".into()),
+            parent_subagent_id: Some("subagent-parent".into()),
+            subagent_role: Some("worker".into()),
+            provider_id: "fixture-provider".into(),
+            model_id: "fixture-model".into(),
+            status,
+            prompt: "Audit the fixture.".into(),
+            system_prompt: "fixture-system".into(),
+            started_at: "2026-07-18T12:00:00Z".into(),
+            last_heartbeat_at: Some("2026-07-18T12:00:01Z".into()),
+            completed_at: Some("2026-07-18T12:01:00Z".into()),
+            cancelled_at: None,
+            last_error: Some(AgentRunDiagnosticRecord {
+                code: "fixture_error".into(),
+                message: "Fixture failed.".into(),
+            }),
+            updated_at: "2026-07-18T12:01:00Z".into(),
+        }
+    }
+
+    fn attachment(
+        id: i64,
+        kind: AgentMessageAttachmentKind,
+        width: Option<i64>,
+        height: Option<i64>,
+    ) -> AgentMessageAttachmentRecord {
+        AgentMessageAttachmentRecord {
+            id,
+            message_id: 1,
+            project_id: "project-1".into(),
+            run_id: "run-1".into(),
+            kind,
+            storage_path: format!("/fixture/attachment-{id}"),
+            media_type: "application/octet-stream".into(),
+            original_name: format!("attachment-{id}"),
+            size_bytes: 42,
+            width,
+            height,
+            created_at: "2026-07-18T12:00:01Z".into(),
+        }
+    }
+
+    fn definition_record(
+        scope: &str,
+        lifecycle_state: &str,
+        base_capability_profile: &str,
+    ) -> AgentDefinitionRecord {
+        AgentDefinitionRecord {
+            definition_id: "custom-1".into(),
+            current_version: 2,
+            display_name: "Custom agent".into(),
+            short_label: "Custom".into(),
+            description: "Fixture definition".into(),
+            scope: scope.into(),
+            lifecycle_state: lifecycle_state.into(),
+            base_capability_profile: base_capability_profile.into(),
+            created_at: "2026-07-18T11:00:00Z".into(),
+            updated_at: "2026-07-18T12:00:00Z".into(),
+        }
     }
 }

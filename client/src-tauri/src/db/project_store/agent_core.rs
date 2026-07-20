@@ -7430,4 +7430,415 @@ mod tests {
             AgentRunDriveLeaseClaimResult::RunNotDrivable(AgentRunStatus::Cancelled)
         ));
     }
+
+    #[test]
+    fn agent_store_fixture_covers_recovery_lists_actions_usage_and_subagent_lookup() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-store-matrix";
+        create_project_database(&repo_root, project_id);
+
+        let start_run_id = "run-ready-start";
+        let start = owned_start_run(project_id, start_run_id);
+        let payload_hash = "1".repeat(64);
+        register_agent_run_start(
+            &repo_root,
+            &start,
+            &payload_hash,
+            r#"{"schema":"fixture.agent_start.v1"}"#,
+            std::process::id(),
+            "fixture-process-birth",
+        )
+        .expect("register recoverable start");
+        assert!(list_ready_agent_run_starts(&repo_root, project_id)
+            .expect("list ready starts before ready")
+            .is_empty());
+        mark_agent_run_start_ready(
+            &repo_root,
+            project_id,
+            start_run_id,
+            "2026-07-15T12:00:01Z",
+        )
+        .expect("mark start ready");
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            start_run_id,
+            AgentRunStatus::Running,
+            None,
+            "2026-07-15T12:00:02Z",
+        )
+        .expect("activate ready start");
+        let ready = list_ready_agent_run_starts(&repo_root, project_id)
+            .expect("list recoverable ready starts");
+        assert_eq!(ready.len(), 1);
+        assert_eq!(ready[0].run_id, start_run_id);
+        assert_eq!(ready[0].payload_hash, payload_hash);
+
+        append_action(&repo_root, project_id, start_run_id, "action-bulk-1");
+        append_action(&repo_root, project_id, start_run_id, "action-bulk-2");
+        answer_pending_agent_action_requests(
+            &repo_root,
+            project_id,
+            start_run_id,
+            "Approved as one fixture batch.",
+        )
+        .expect("answer every pending action");
+        let answered = load_agent_run(&repo_root, project_id, start_run_id)
+            .expect("load answered actions");
+        assert_eq!(answered.action_requests.len(), 2);
+        assert!(answered.action_requests.iter().all(|action| {
+            action.status == "answered"
+                && action.response.as_deref() == Some("Approved as one fixture batch.")
+                && action.resolved_at.is_some()
+        }));
+
+        append_action(&repo_root, project_id, start_run_id, "action-reject");
+        let rejected = reject_pending_agent_action_request(
+            &repo_root,
+            project_id,
+            start_run_id,
+            "action-reject",
+            Some("Not safe for this run."),
+        )
+        .expect("reject one pending action");
+        assert_eq!(rejected.status, "rejected");
+        assert_eq!(rejected.response.as_deref(), Some("Not safe for this run."));
+        assert_eq!(
+            reject_pending_agent_action_request(
+                &repo_root,
+                project_id,
+                start_run_id,
+                "action-reject",
+                None,
+            )
+            .expect_err("resolved action cannot be rejected twice")
+            .code,
+            "agent_action_request_already_resolved",
+        );
+        assert_eq!(
+            reject_pending_agent_action_request(
+                &repo_root,
+                project_id,
+                start_run_id,
+                "missing-action",
+                None,
+            )
+            .expect_err("missing action must fail closed")
+            .code,
+            "agent_action_request_not_found",
+        );
+
+        let continuation_run_id = "run-prepared-continuation";
+        seed_run(&repo_root, project_id, continuation_run_id);
+        update_agent_run_status(
+            &repo_root,
+            project_id,
+            continuation_run_id,
+            AgentRunStatus::Completed,
+            None,
+            "2026-07-15T13:00:00Z",
+        )
+        .expect("complete run before continuation");
+        let continuation_hash = "2".repeat(64);
+        let continuation = continuation_preparation(
+            project_id,
+            continuation_run_id,
+            "continuation-list-fixture",
+            &continuation_hash,
+        );
+        prepare_agent_continuation(&repo_root, &continuation)
+            .expect("prepare listed continuation");
+        let prepared = list_prepared_agent_continuation_requests(&repo_root, project_id)
+            .expect("list prepared continuations");
+        assert_eq!(prepared.len(), 1);
+        assert_eq!(prepared[0].request_id, "continuation-list-fixture");
+        let for_run = list_agent_continuation_requests_for_run(
+            &repo_root,
+            project_id,
+            continuation_run_id,
+        )
+        .expect("list continuations for run");
+        assert_eq!(for_run, prepared);
+        assert!(list_agent_continuation_requests_for_run(
+            &repo_root,
+            project_id,
+            start_run_id,
+        )
+        .expect("list absent run continuations")
+        .is_empty());
+
+        for usage in [
+            AgentUsageRecord {
+                project_id: project_id.into(),
+                run_id: start_run_id.into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 2,
+                provider_id: "provider-a".into(),
+                model_id: "model-a".into(),
+                input_tokens: 100,
+                billable_input_tokens: 80,
+                output_tokens: 20,
+                total_tokens: 120,
+                cache_read_tokens: 20,
+                cache_creation_tokens: 0,
+                estimated_cost_micros: 500,
+                updated_at: "2026-07-15T14:00:00Z".into(),
+            },
+            AgentUsageRecord {
+                project_id: project_id.into(),
+                run_id: continuation_run_id.into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 2,
+                provider_id: "provider-b".into(),
+                model_id: "model-b".into(),
+                input_tokens: 50,
+                billable_input_tokens: 50,
+                output_tokens: 10,
+                total_tokens: 60,
+                cache_read_tokens: 0,
+                cache_creation_tokens: 5,
+                estimated_cost_micros: 900,
+                updated_at: "2026-07-15T14:01:00Z".into(),
+            },
+        ] {
+            upsert_agent_usage(&repo_root, &usage).expect("persist fixture usage");
+        }
+        let totals = project_usage_totals(&repo_root, project_id).expect("aggregate usage totals");
+        assert_eq!(totals.run_count, 2);
+        assert_eq!(totals.total_tokens, 180);
+        assert_eq!(totals.estimated_cost_micros, 1_400);
+        let breakdown =
+            project_usage_breakdown(&repo_root, project_id).expect("aggregate model usage");
+        assert_eq!(breakdown.len(), 2);
+        assert_eq!(breakdown[0].provider_id, "provider-b");
+        let (summary_totals, summary_breakdown) =
+            project_usage_summary(&repo_root, project_id).expect("load usage summary");
+        assert_eq!(summary_totals, totals);
+        assert_eq!(summary_breakdown, breakdown);
+        let cost_rows = list_agent_usage_cost_rows(&repo_root).expect("list cost backfill rows");
+        assert_eq!(cost_rows.len(), 2);
+        assert!(cost_rows.iter().any(|row| {
+            row.run_id == start_run_id
+                && row.billable_input_tokens == 80
+                && row.estimated_cost_micros == 500
+        }));
+        update_agent_usage_cost(&repo_root, project_id, start_run_id, 1_250)
+            .expect("update one usage cost");
+        assert_eq!(
+            project_usage_totals(&repo_root, project_id)
+                .expect("reload updated usage total")
+                .estimated_cost_micros,
+            2_150,
+        );
+        assert_eq!(
+            project_usage_totals(&repo_root, "project-without-usage")
+                .expect("empty usage project totals")
+                .run_count,
+            0,
+        );
+
+        let subagent = AgentSubagentTaskRecord {
+            project_id: project_id.into(),
+            parent_run_id: start_run_id.into(),
+            subagent_id: "subagent-fixture".into(),
+            role: "reviewer".into(),
+            role_label: "Reviewer".into(),
+            prompt_hash: "3".repeat(64),
+            prompt_preview: "Review the fixture.".into(),
+            model_id: Some("model-a".into()),
+            write_set_json: "[]".into(),
+            workflow_structure_json: Some(r#"{"startPhaseId":"review","phases":[{"id":"review","title":"Review","allowedTools":["read"]}]}"#.into()),
+            verification_contract: "Return a bounded review.".into(),
+            depth: 1,
+            max_tool_calls: 4,
+            max_tokens: 2_000,
+            max_cost_micros: 10_000,
+            used_tool_calls: 1,
+            used_tokens: 250,
+            used_cost_micros: 500,
+            budget_status: "within_budget".into(),
+            budget_diagnostic_json: Some(r#"{"remainingToolCalls":3}"#.into()),
+            status: "running".into(),
+            created_at: "2026-07-15T15:00:00Z".into(),
+            started_at: Some("2026-07-15T15:00:01Z".into()),
+            completed_at: None,
+            cancelled_at: None,
+            integrated_at: None,
+            child_run_id: None,
+            child_trace_id: None,
+            parent_trace_id: Some("4".repeat(32)),
+            input_log_json: r#"[{"kind":"prompt"}]"#.into(),
+            result_summary: None,
+            result_artifact: None,
+            parent_decision: None,
+            latest_summary: Some("Review is active.".into()),
+            updated_at: "2026-07-15T15:00:01Z".into(),
+        };
+        upsert_agent_subagent_task(&repo_root, &subagent).expect("persist subagent task");
+        assert_eq!(
+            load_agent_subagent_task(
+                &repo_root,
+                project_id,
+                start_run_id,
+                "subagent-fixture",
+            )
+            .expect("load subagent task"),
+            Some(subagent.clone()),
+        );
+        assert_eq!(
+            list_agent_subagent_tasks_for_parent(&repo_root, project_id, start_run_id)
+                .expect("list subagent tasks"),
+            vec![subagent],
+        );
+        assert!(load_agent_subagent_task(
+            &repo_root,
+            project_id,
+            start_run_id,
+            "missing-subagent",
+        )
+        .expect("load absent subagent task")
+        .is_none());
+    }
+
+    #[test]
+    fn agent_message_fixture_commits_all_attachment_kinds_and_rolls_back_invalid_rows() {
+        let temp = tempfile::tempdir().expect("temp dir");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        let project_id = "project-message-matrix";
+        let run_id = "run-message-matrix";
+        create_project_database(&repo_root, project_id);
+        seed_run(&repo_root, project_id, run_id);
+
+        let message = append_agent_message(
+            &repo_root,
+            &NewAgentMessageRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                role: AgentMessageRole::User,
+                content: "Inspect these fixtures.".into(),
+                provider_metadata_json: Some(r#"{"source":"fixture"}"#.into()),
+                created_at: "2026-07-15T16:00:00Z".into(),
+                attachments: vec![
+                    NewMessageAttachmentInput {
+                        kind: AgentMessageAttachmentKind::Image,
+                        storage_path: "attachments/screenshot.png".into(),
+                        media_type: "image/png".into(),
+                        original_name: "screenshot.png".into(),
+                        size_bytes: 128,
+                        width: Some(640),
+                        height: Some(480),
+                    },
+                    NewMessageAttachmentInput {
+                        kind: AgentMessageAttachmentKind::Document,
+                        storage_path: "attachments/spec.pdf".into(),
+                        media_type: "application/pdf".into(),
+                        original_name: "spec.pdf".into(),
+                        size_bytes: 256,
+                        width: None,
+                        height: None,
+                    },
+                    NewMessageAttachmentInput {
+                        kind: AgentMessageAttachmentKind::Text,
+                        storage_path: "attachments/notes.md".into(),
+                        media_type: "text/markdown".into(),
+                        original_name: "notes.md".into(),
+                        size_bytes: 64,
+                        width: None,
+                        height: None,
+                    },
+                ],
+            },
+        )
+        .expect("append message fixture");
+        assert_eq!(message.attachments.len(), 3);
+        assert_eq!(message.attachments[0].message_id, message.id);
+        assert_eq!(message.attachments[0].width, Some(640));
+        assert_eq!(message.attachments[1].kind, AgentMessageAttachmentKind::Document);
+        assert_eq!(message.attachments[2].kind, AgentMessageAttachmentKind::Text);
+
+        let metadata_only = append_agent_message(
+            &repo_root,
+            &NewAgentMessageRecord {
+                project_id: project_id.into(),
+                run_id: run_id.into(),
+                role: AgentMessageRole::Assistant,
+                content: String::new(),
+                provider_metadata_json: Some(r#"{"reasoning":{"encrypted":"opaque"}}"#.into()),
+                created_at: "2026-07-15T16:00:01Z".into(),
+                attachments: Vec::new(),
+            },
+        )
+        .expect("append metadata-only assistant message");
+        assert!(metadata_only.content.is_empty());
+
+        let before_invalid = load_agent_run(&repo_root, project_id, run_id)
+            .expect("load messages before invalid rows")
+            .messages
+            .len();
+        for (invalid, expected_code, expected_message) in [
+            (
+                NewAgentMessageRecord {
+                    project_id: project_id.into(),
+                    run_id: run_id.into(),
+                    role: AgentMessageRole::User,
+                    content: String::new(),
+                    provider_metadata_json: None,
+                    created_at: "2026-07-15T16:00:02Z".into(),
+                    attachments: Vec::new(),
+                },
+                "invalid_request",
+                "content",
+            ),
+            (
+                NewAgentMessageRecord {
+                    project_id: project_id.into(),
+                    run_id: run_id.into(),
+                    role: AgentMessageRole::Assistant,
+                    content: "invalid metadata".into(),
+                    provider_metadata_json: Some("[]".into()),
+                    created_at: "2026-07-15T16:00:03Z".into(),
+                    attachments: Vec::new(),
+                },
+                "invalid_request",
+                "providerMetadata",
+            ),
+            (
+                NewAgentMessageRecord {
+                    project_id: project_id.into(),
+                    run_id: run_id.into(),
+                    role: AgentMessageRole::User,
+                    content: "negative attachment".into(),
+                    provider_metadata_json: None,
+                    created_at: "2026-07-15T16:00:04Z".into(),
+                    attachments: vec![NewMessageAttachmentInput {
+                        kind: AgentMessageAttachmentKind::Image,
+                        storage_path: "attachments/invalid.png".into(),
+                        media_type: "image/png".into(),
+                        original_name: "invalid.png".into(),
+                        size_bytes: -1,
+                        width: None,
+                        height: None,
+                    }],
+                },
+                "agent_message_attachment_invalid_size",
+                "negative size",
+            ),
+        ] {
+            let error = append_agent_message(&repo_root, &invalid)
+                .expect_err("invalid message fixture must fail closed");
+            assert_eq!(error.code, expected_code);
+            assert!(
+                error.message.contains(expected_message),
+                "unexpected error: {error:?}"
+            );
+        }
+        let after_invalid = load_agent_run(&repo_root, project_id, run_id)
+            .expect("load messages after invalid rows");
+        assert_eq!(after_invalid.messages.len(), before_invalid);
+        assert_eq!(after_invalid.messages[0], message);
+        assert_eq!(after_invalid.messages[1], metadata_only);
+    }
 }

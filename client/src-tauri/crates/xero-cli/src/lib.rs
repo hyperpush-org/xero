@@ -617,7 +617,9 @@ fn command_agent_exec(
     let thinking_effort = take_option(&mut args, "--thinking-effort")?
         .map(|effort| normalize_cli_thinking_effort(&effort))
         .transpose()?;
-    let requested_approval_mode = take_option(&mut args, "--approval-mode")?;
+    let requested_approval_mode = take_option(&mut args, "--approval-mode")?
+        .map(|mode| normalize_cli_approval_mode(&mode))
+        .transpose()?;
     if take_option(&mut args, "--attachments-json")?.is_some() {
         return Err(CliError::usage(
             "Attachments require the desktop-backed Xero TUI runtime.",
@@ -636,14 +638,10 @@ fn command_agent_exec(
     let (project_id, store) = open_run_store_for_provider(&globals, project_id, &provider)?;
     let agent_definition = store
         .resolve_agent_definition_for_run(agent_definition_id.as_deref(), &runtime_agent_id)?;
-    let default_approval_mode = if globals.ci {
-        "strict"
-    } else if headless_runtime_agent_allows_writes(&runtime_agent_id) {
-        "on_request"
-    } else {
-        "suggest"
-    };
-    let approval_mode = requested_approval_mode.unwrap_or_else(|| default_approval_mode.into());
+    let default_approval_mode = if globals.ci { "strict" } else { "suggest" };
+    let approval_mode = requested_approval_mode
+        .filter(|mode| headless_runtime_agent_allows_approval_mode(&runtime_agent_id, mode))
+        .unwrap_or_else(|| default_approval_mode.into());
     let provider = provider
         .with_project_workspace(&store)
         .with_workspace_writes(headless_runtime_agent_allows_writes(&runtime_agent_id));
@@ -699,7 +697,7 @@ fn command_agent_exec(
             "kind": "agentExec",
             "executionMode": provider.execution_mode,
             "ciMode": globals.ci,
-            "sandboxDefaults": sandbox_defaults_json(globals.ci),
+            "sandboxDefaults": sandbox_defaults_json(globals.ci, &approval_mode),
             "storePath": store.path(),
             "providerPreflight": provider_preflight,
             "snapshot": snapshot,
@@ -1688,6 +1686,7 @@ fn command_conversation_retry(
     let (store, snapshot) = load_conversation_from_args(&globals, args)?;
     let provider = resolve_runtime_for_existing_snapshot(&globals, &snapshot)?;
     let provider_preflight = ensure_cli_provider_preflight_for_run(&globals, &provider)?;
+    let retry_controls = headless_retry_controls(&snapshot, globals.ci);
     let runtime = HeadlessProviderRuntime::new(
         store.clone(),
         provider.execution,
@@ -1707,14 +1706,7 @@ fn command_conversation_retry(
                 provider_id: provider.provider_id,
                 model_id: provider.model_id,
             },
-            controls: Some(RunControls {
-                runtime_agent_id: snapshot.runtime_agent_id.clone(),
-                agent_definition_id: Some(snapshot.agent_definition_id.clone()),
-                agent_definition_version: Some(snapshot.agent_definition_version),
-                thinking_effort: None,
-                approval_mode: if globals.ci { "strict" } else { "on_request" }.into(),
-                plan_mode_required: globals.ci,
-            }),
+            controls: Some(retry_controls),
         })
         .map_err(core_error)?;
     let text = format!(
@@ -5063,7 +5055,39 @@ fn last_assistant_message(snapshot: &RunSnapshot) -> Option<String> {
         .map(|message| message.content.clone())
 }
 
-fn sandbox_defaults_json(ci: bool) -> JsonValue {
+fn headless_retry_controls(snapshot: &RunSnapshot, ci: bool) -> RunControls {
+    let run_started = snapshot
+        .events
+        .iter()
+        .find(|event| event.event_kind == RuntimeEventKind::RunStarted);
+    let thinking_effort = run_started
+        .and_then(|event| event.payload.get("thinkingEffort"))
+        .and_then(JsonValue::as_str)
+        .and_then(|effort| normalize_cli_thinking_effort(effort).ok());
+    let approval_mode = if ci {
+        "strict".to_owned()
+    } else {
+        run_started
+            .and_then(|event| event.payload.get("approvalMode"))
+            .and_then(JsonValue::as_str)
+            .filter(|mode| matches!(*mode, "suggest" | "auto_edit" | "yolo"))
+            .filter(|mode| {
+                headless_runtime_agent_allows_approval_mode(&snapshot.runtime_agent_id, mode)
+            })
+            .unwrap_or("suggest")
+            .to_owned()
+    };
+    RunControls {
+        runtime_agent_id: snapshot.runtime_agent_id.clone(),
+        agent_definition_id: Some(snapshot.agent_definition_id.clone()),
+        agent_definition_version: Some(snapshot.agent_definition_version),
+        thinking_effort,
+        plan_mode_required: approval_mode == "strict",
+        approval_mode,
+    }
+}
+
+fn sandbox_defaults_json(ci: bool, approval_mode: &str) -> JsonValue {
     if ci {
         json!({
             "profile": "ci_strict",
@@ -5076,8 +5100,8 @@ fn sandbox_defaults_json(ci: bool) -> JsonValue {
         json!({
             "profile": "local_headless",
             "network": "approval_gated",
-            "approvalMode": "on_request",
-            "planModeRequired": false,
+            "approvalMode": approval_mode,
+            "planModeRequired": approval_mode == "strict",
             "interactivePrompts": false
         })
     }
@@ -5450,7 +5474,29 @@ impl CliProviderExecution {
 }
 
 fn headless_runtime_agent_allows_writes(runtime_agent_id: &str) -> bool {
-    !matches!(runtime_agent_id, "ask" | "plan" | "agent_create")
+    !matches!(
+        runtime_agent_id,
+        "ask" | "computer_use" | "plan" | "crawl" | "agent_create"
+    )
+}
+
+fn headless_runtime_agent_allows_approval_mode(
+    runtime_agent_id: &str,
+    approval_mode: &str,
+) -> bool {
+    headless_runtime_agent_allows_writes(runtime_agent_id) || approval_mode == "suggest"
+}
+
+fn normalize_cli_approval_mode(value: &str) -> Result<String, CliError> {
+    match value.trim().replace('-', "_").to_ascii_lowercase().as_str() {
+        "suggest" => Ok("suggest".into()),
+        "auto_edit" | "autoedit" => Ok("auto_edit".into()),
+        "yolo" => Ok("yolo".into()),
+        _ => Err(CliError::user_fixable(
+            "xero_cli_approval_mode_unsupported",
+            "Invalid --approval-mode. Use suggest, auto_edit, or yolo.",
+        )),
+    }
 }
 
 fn normalize_cli_thinking_effort(value: &str) -> Result<String, CliError> {
@@ -12050,6 +12096,30 @@ mod tests {
     }
 
     #[test]
+    fn agent_exec_rejects_invalid_approval_mode_before_creating_state() {
+        let state_dir = unique_temp_dir("agent-exec-invalid-approval-mode");
+        let error = run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "fake_provider",
+            "--approval-mode",
+            "unattended",
+            "Inspect the project.",
+        ])
+        .expect_err("unsupported approval mode must fail closed");
+
+        assert_eq!(error.code, "xero_cli_approval_mode_unsupported");
+        assert!(
+            !state_dir.join(AGENT_CORE_STATE_FILE).exists(),
+            "invalid controls must not create the harness run store"
+        );
+    }
+
+    #[test]
     fn openai_codex_resolves_app_data_oauth_without_headless_profile() {
         let app_data_root = unique_temp_dir("openai-codex-app-oauth");
         let state_dir = app_data_root.join(HEADLESS_DIRECTORY_NAME);
@@ -12475,6 +12545,442 @@ mod tests {
     }
 
     #[test]
+    fn real_provider_agent_exec_approval_modes_control_tool_surface() {
+        let state_dir = unique_temp_dir("agent-exec-real-provider-approval-modes");
+        let workspace = unique_temp_dir("agent-exec-real-provider-approval-modes-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let server = MockOpenAiCompatibleServer::start(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Suggest mode stayed read-only."
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Auto-edit mode exposed file tools only."
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Full-auto mode exposed commands too."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let cases = [
+            ("suggest", false, false),
+            ("auto_edit", true, false),
+            ("yolo", true, true),
+        ];
+        for (approval_mode, expect_writes, expect_commands) in cases {
+            let run_id = format!("run-{approval_mode}");
+            let output = run_with_args([
+                "xero",
+                "--json",
+                "--state-dir",
+                state_dir.to_str().expect("state dir"),
+                "agent",
+                "exec",
+                "--provider",
+                "openai_api",
+                "--model",
+                "test-model",
+                "--project-id",
+                "project-real",
+                "--session-id",
+                approval_mode,
+                "--run-id",
+                run_id.as_str(),
+                "--runtime-agent-id",
+                "engineer",
+                "--approval-mode",
+                approval_mode,
+                "Inspect the available tools.",
+            ])
+            .expect("approval-mode fixture run should succeed");
+            assert_eq!(
+                output.json["sandboxDefaults"]["approvalMode"],
+                json!(approval_mode),
+                "result metadata must report the effective approval mode"
+            );
+            let descriptor_names = output.json["snapshot"]["events"]
+                .as_array()
+                .expect("events")
+                .iter()
+                .find(|event| event["eventKind"] == json!("tool_registry_snapshot"))
+                .expect("tool registry snapshot")["payload"]["descriptorNames"]
+                .as_array()
+                .expect("descriptor names");
+
+            assert_eq!(
+                descriptor_names.iter().any(|name| name == "write"),
+                expect_writes,
+                "{approval_mode} write visibility"
+            );
+            assert_eq!(
+                descriptor_names.iter().any(|name| name == "command"),
+                expect_commands,
+                "{approval_mode} command visibility"
+            );
+        }
+        server.join();
+    }
+
+    #[test]
+    fn conversation_continue_preserves_headless_approval_mode() {
+        let state_dir = unique_temp_dir("conversation-continue-approval-mode");
+        let workspace = unique_temp_dir("conversation-continue-approval-mode-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let (server, captured_requests) = MockOpenAiCompatibleServer::start_capturing(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Initial turn complete."
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Continuation complete."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-yolo",
+            "--run-id",
+            "run-yolo",
+            "--approval-mode",
+            "yolo",
+            "--thinking-effort",
+            "high",
+            "Start the task.",
+        ])
+        .expect("initial fixture run should succeed");
+
+        let continued = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "continue",
+            "run-yolo",
+            "--project-id",
+            "project-real",
+            "--prompt",
+            "Continue the task.",
+        ])
+        .expect("continuation fixture run should succeed");
+        server.join();
+
+        let captured_requests = captured_requests
+            .lock()
+            .expect("captured provider requests");
+        let continuation_request = captured_requests.last().expect("continuation request");
+        let continuation_body = continuation_request
+            .split_once("\r\n\r\n")
+            .map(|(_, body)| body)
+            .expect("continuation request body");
+        let continuation_body: JsonValue =
+            serde_json::from_str(continuation_body).expect("continuation request JSON");
+        assert_eq!(continuation_body["reasoning_effort"], json!("high"));
+
+        let registry_snapshots = continued.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .filter(|event| event["eventKind"] == json!("tool_registry_snapshot"))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            registry_snapshots.len(),
+            2,
+            "one registry per provider turn"
+        );
+        let continued_tools = registry_snapshots[1]["payload"]["descriptorNames"]
+            .as_array()
+            .expect("continued descriptor names");
+        assert!(continued_tools.iter().any(|name| name == "write"));
+        assert!(continued_tools.iter().any(|name| name == "command"));
+    }
+
+    #[test]
+    fn conversation_retry_preserves_headless_approval_mode() {
+        let state_dir = unique_temp_dir("conversation-retry-approval-mode");
+        let workspace = unique_temp_dir("conversation-retry-approval-mode-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let server = MockOpenAiCompatibleServer::start(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Initial turn complete."
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Retry complete."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-yolo",
+            "--run-id",
+            "run-yolo",
+            "--approval-mode",
+            "yolo",
+            "--thinking-effort",
+            "high",
+            "Start the task.",
+        ])
+        .expect("initial fixture run should succeed");
+
+        let retried = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "retry",
+            "run-yolo",
+            "--project-id",
+            "project-real",
+        ])
+        .expect("retry fixture run should succeed");
+        server.join();
+
+        let retried_tools = retried.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .find(|event| event["eventKind"] == json!("tool_registry_snapshot"))
+            .expect("retry tool registry snapshot")["payload"]["descriptorNames"]
+            .as_array()
+            .expect("retry descriptor names");
+        assert!(retried_tools.iter().any(|name| name == "write"));
+        assert!(retried_tools.iter().any(|name| name == "command"));
+        let retry_started = retried.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .find(|event| event["eventKind"] == json!("run_started"))
+            .expect("retry run started event");
+        assert_eq!(retry_started["payload"]["approvalMode"], json!("yolo"));
+        assert_eq!(retry_started["payload"]["thinkingEffort"], json!("high"));
+    }
+
+    #[test]
+    fn real_provider_http_failure_marks_persisted_run_failed() {
+        let state_dir = unique_temp_dir("agent-exec-provider-http-failure");
+        let workspace = unique_temp_dir("agent-exec-provider-http-failure-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let server = MockOpenAiCompatibleServer::start_provider_failure(
+            503,
+            json!({ "error": { "message": "fixture provider unavailable" } }),
+        );
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+        let error = run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-failed",
+            "--run-id",
+            "run-failed",
+            "Trigger the provider fixture failure.",
+        ])
+        .expect_err("HTTP fixture failure must surface to the caller");
+        server.join();
+        assert_eq!(error.code, "agent_core_provider_status_failed");
+
+        let shown = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "show",
+            "run-failed",
+            "--project-id",
+            "project-real",
+        ])
+        .expect("failed run must remain inspectable");
+        assert_eq!(shown.json["snapshot"]["status"], json!("failed"));
+        assert!(shown.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| {
+                event["eventKind"] == json!("run_failed")
+                    && event["payload"]["code"] == json!("agent_core_provider_status_failed")
+            }));
+    }
+
+    #[test]
+    fn real_provider_turn_setup_failure_marks_persisted_run_failed() {
+        let state_dir = unique_temp_dir("agent-exec-turn-setup-failure");
+        let workspace = unique_temp_dir("agent-exec-turn-setup-failure-workspace");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        let workspace_for_server = workspace.clone();
+        let server = MockOpenAiCompatibleServer::start_preflight_only(move || {
+            fs::remove_dir_all(&workspace_for_server).expect("remove fixture workspace");
+        });
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+        let error = run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-failed",
+            "--run-id",
+            "run-failed",
+            "Trigger the turn setup fixture failure.",
+        ])
+        .expect_err("turn setup fixture failure must surface to the caller");
+        server.join();
+        assert_eq!(error.code, "agent_environment_startup_failed");
+
+        fs::create_dir_all(&workspace).expect("restore fixture workspace for inspection");
+        let shown = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "show",
+            "run-failed",
+            "--project-id",
+            "project-real",
+        ])
+        .expect("failed run must remain inspectable");
+        assert_eq!(shown.json["snapshot"]["status"], json!("failed"));
+        assert!(shown.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| {
+                event["eventKind"] == json!("run_failed")
+                    && event["payload"]["code"]
+                        .as_str()
+                        .is_some_and(|code| !code.trim().is_empty())
+            }));
+    }
+
+    #[test]
     fn real_provider_agent_exec_backfills_missing_generalist_definition() {
         let state_dir = unique_temp_dir("agent-exec-real-provider-generalist");
         let workspace = unique_temp_dir("agent-exec-real-provider-generalist-workspace");
@@ -12729,6 +13235,8 @@ mod tests {
             "session-real",
             "--run-id",
             "run-real",
+            "--approval-mode",
+            "auto_edit",
             "Write a scratch file.",
         ]);
         let output = output.expect("real provider run should succeed");
@@ -12840,6 +13348,8 @@ mod tests {
             "session-real",
             "--run-id",
             "run-real",
+            "--approval-mode",
+            "auto_edit",
             "Attempt a denied write.",
         ]);
         let output = output.expect("real provider run should finish after denied tool result");
@@ -13057,6 +13567,8 @@ mod tests {
             "session-real",
             "--run-id",
             "run-real",
+            "--approval-mode",
+            "yolo",
             "Run a command and apply a patch.",
         ]);
         let output = output.expect("real provider run should succeed");
@@ -15289,14 +15801,27 @@ mod tests {
     }
 
     impl MockOpenAiCompatibleServer {
-        fn start(mut responses: Vec<JsonValue>) -> Self {
+        fn start(responses: Vec<JsonValue>) -> Self {
+            Self::start_capturing(responses).0
+        }
+
+        fn start_capturing(
+            mut responses: Vec<JsonValue>,
+        ) -> (Self, std::sync::Arc<std::sync::Mutex<Vec<String>>>) {
             let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock provider");
             let address = listener.local_addr().expect("mock address");
             responses.insert(0, mock_preflight_response());
+            let captured_requests =
+                std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+            let captured_requests_for_thread = std::sync::Arc::clone(&captured_requests);
             let handle = std::thread::spawn(move || {
                 for response in responses {
                     let (mut stream, _) = listener.accept().expect("accept provider request");
-                    read_http_request(&mut stream);
+                    let request = read_http_request(&mut stream);
+                    captured_requests_for_thread
+                        .lock()
+                        .expect("capture provider request")
+                        .push(request);
                     let body = serde_json::to_string(&response).expect("serialize response");
                     let reply = format!(
                         "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -15308,6 +15833,75 @@ mod tests {
                         .write_all(reply.as_bytes())
                         .expect("write provider response");
                 }
+            });
+            (
+                Self {
+                    base_url: format!("http://{address}/v1"),
+                    handle,
+                },
+                captured_requests,
+            )
+        }
+
+        fn start_provider_failure(status: u16, body: JsonValue) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock provider");
+            let address = listener.local_addr().expect("mock address");
+            let handle = std::thread::spawn(move || {
+                let (mut preflight_stream, _) = listener
+                    .accept()
+                    .expect("accept provider preflight request");
+                read_http_request(&mut preflight_stream);
+                let preflight = serde_json::to_string(&mock_preflight_response())
+                    .expect("serialize preflight response");
+                let preflight_reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    preflight.len(),
+                    preflight
+                );
+                use std::io::Write as _;
+                preflight_stream
+                    .write_all(preflight_reply.as_bytes())
+                    .expect("write preflight response");
+
+                let (mut provider_stream, _) =
+                    listener.accept().expect("accept provider run request");
+                read_http_request(&mut provider_stream);
+                let body = serde_json::to_string(&body).expect("serialize provider failure");
+                let reply = format!(
+                    "HTTP/1.1 {status} Fixture Failure\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                provider_stream
+                    .write_all(reply.as_bytes())
+                    .expect("write provider failure");
+            });
+            Self {
+                base_url: format!("http://{address}/v1"),
+                handle,
+            }
+        }
+
+        fn start_preflight_only(on_preflight: impl FnOnce() + Send + 'static) -> Self {
+            let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind mock provider");
+            let address = listener.local_addr().expect("mock address");
+            let handle = std::thread::spawn(move || {
+                let (mut preflight_stream, _) = listener
+                    .accept()
+                    .expect("accept provider preflight request");
+                read_http_request(&mut preflight_stream);
+                on_preflight();
+                let preflight = serde_json::to_string(&mock_preflight_response())
+                    .expect("serialize preflight response");
+                let reply = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    preflight.len(),
+                    preflight
+                );
+                use std::io::Write as _;
+                preflight_stream
+                    .write_all(reply.as_bytes())
+                    .expect("write preflight response");
             });
             Self {
                 base_url: format!("http://{address}/v1"),
@@ -15391,20 +15985,42 @@ mod tests {
         }
     }
 
-    fn read_http_request(stream: &mut std::net::TcpStream) {
+    fn read_http_request(stream: &mut std::net::TcpStream) -> String {
         use std::io::Read as _;
         let mut buffer = [0_u8; 8192];
         let mut request = Vec::new();
+        let mut expected_len = None;
         loop {
             let read = stream.read(&mut buffer).expect("read request");
             if read == 0 {
                 break;
             }
             request.extend_from_slice(&buffer[..read]);
-            if request.windows(4).any(|window| window == b"\r\n\r\n") {
+            if expected_len.is_none() {
+                if let Some(header_end) = request
+                    .windows(4)
+                    .position(|window| window == b"\r\n\r\n")
+                    .map(|position| position + 4)
+                {
+                    let headers = String::from_utf8_lossy(&request[..header_end]);
+                    let content_len = headers
+                        .lines()
+                        .find_map(|line| {
+                            line.split_once(':').and_then(|(name, value)| {
+                                name.eq_ignore_ascii_case("content-length")
+                                    .then(|| value.trim().parse::<usize>().ok())
+                                    .flatten()
+                            })
+                        })
+                        .unwrap_or(0);
+                    expected_len = Some(header_end.saturating_add(content_len));
+                }
+            }
+            if expected_len.is_some_and(|expected_len| request.len() >= expected_len) {
                 break;
             }
         }
+        String::from_utf8_lossy(&request).into_owned()
     }
 
     fn unique_temp_dir(label: &str) -> PathBuf {

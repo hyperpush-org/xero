@@ -795,7 +795,9 @@ pub fn run_openai_compatible_provider_preflight_probe(
                     required_features: request.required_features,
                     capabilities,
                     credential_ready: Some(true),
-                    endpoint_reachable: Some(status.as_u16() != 404),
+                    // Receiving any HTTP response proves that the configured endpoint is
+                    // reachable. A 404 is classified separately as model/route unavailable.
+                    endpoint_reachable: Some(true),
                     model_available: Some(!matches!(
                         error.class,
                         ProviderPreflightErrorClass::ModelUnavailable
@@ -1028,7 +1030,9 @@ pub fn run_xai_provider_preflight_probe(
                     required_features: request.required_features,
                     capabilities,
                     credential_ready: Some(true),
-                    endpoint_reachable: Some(status.as_u16() != 404),
+                    // Receiving any HTTP response proves that the configured endpoint is
+                    // reachable. A 404 is classified separately as model/route unavailable.
+                    endpoint_reachable: Some(true),
                     model_available: Some(!matches!(
                         error.class,
                         ProviderPreflightErrorClass::ModelUnavailable
@@ -1093,26 +1097,15 @@ pub fn openai_compatible_preflight_chat_url(
             "A provider base URL is required for live provider preflight.",
         ));
     }
-    if trimmed.starts_with("http://") && !is_local_http_endpoint(trimmed) {
-        return Err(CoreError::invalid_request(
-            "provider_preflight_base_url_insecure",
-            "Live provider preflight allows plain HTTP only for localhost endpoints.",
-        ));
-    }
     let chat_url = if trimmed.ends_with("/chat/completions") {
         trimmed.to_owned()
     } else {
         format!("{trimmed}/chat/completions")
     };
+    let mut url = validate_provider_preflight_url(&chat_url, base_url, "provider")?;
     let Some(api_version) = api_version.map(str::trim).filter(|value| !value.is_empty()) else {
-        return Ok(chat_url);
+        return Ok(url.into());
     };
-    let mut url = reqwest::Url::parse(&chat_url).map_err(|error| {
-        CoreError::invalid_request(
-            "provider_preflight_base_url_invalid",
-            format!("Live provider preflight rejected base URL `{base_url}`: {error}"),
-        )
-    })?;
     url.query_pairs_mut()
         .append_pair("api-version", api_version);
     Ok(url.into())
@@ -1126,17 +1119,43 @@ pub fn xai_preflight_responses_url(base_url: &str) -> CoreResult<String> {
             "An xAI provider base URL is required for live provider preflight.",
         ));
     }
-    if trimmed.starts_with("http://") && !is_local_http_endpoint(trimmed) {
-        return Err(CoreError::invalid_request(
-            "provider_preflight_base_url_insecure",
-            "Live xAI preflight allows plain HTTP only for localhost endpoints.",
-        ));
-    }
-    Ok(if trimmed.ends_with("/responses") {
+    let responses_url = if trimmed.ends_with("/responses") {
         trimmed.to_owned()
     } else {
         format!("{trimmed}/responses")
-    })
+    };
+    Ok(validate_provider_preflight_url(&responses_url, base_url, "xAI")?.into())
+}
+
+fn validate_provider_preflight_url(
+    url: &str,
+    base_url: &str,
+    provider_label: &str,
+) -> CoreResult<reqwest::Url> {
+    let url = reqwest::Url::parse(url).map_err(|error| {
+        CoreError::invalid_request(
+            "provider_preflight_base_url_invalid",
+            format!("Live {provider_label} preflight rejected base URL `{base_url}`: {error}"),
+        )
+    })?;
+    if !matches!(url.scheme(), "http" | "https") {
+        return Err(CoreError::invalid_request(
+            "provider_preflight_base_url_invalid",
+            format!(
+                "Live {provider_label} preflight requires an HTTP or HTTPS base URL, but `{base_url}` uses `{}`.",
+                url.scheme()
+            ),
+        ));
+    }
+    if url.scheme() == "http" && !is_local_http_endpoint(url.as_str()) {
+        return Err(CoreError::invalid_request(
+            "provider_preflight_base_url_insecure",
+            format!(
+                "Live {provider_label} preflight allows plain HTTP only for localhost endpoints."
+            ),
+        ));
+    }
+    Ok(url)
 }
 
 struct BooleanCheckMessages<'a> {
@@ -1599,11 +1618,23 @@ fn classify_provider_preflight_http_error(status: u16, body: &str) -> ProviderPr
 }
 
 fn is_local_http_endpoint(base_url: &str) -> bool {
-    let lower = base_url.to_ascii_lowercase();
-    lower.starts_with("http://localhost")
-        || lower.starts_with("http://127.")
-        || lower.starts_with("http://[::1]")
-        || lower.starts_with("http://0.0.0.0")
+    let Ok(url) = reqwest::Url::parse(base_url) else {
+        return false;
+    };
+    if url.scheme() != "http" {
+        return false;
+    }
+    let Some(host) = url.host_str() else {
+        return false;
+    };
+    if host.eq_ignore_ascii_case("localhost") {
+        return true;
+    }
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    host.parse::<std::net::IpAddr>().is_ok_and(|address| {
+        address.is_loopback()
+            || matches!(address, std::net::IpAddr::V4(ipv4) if ipv4.is_unspecified())
+    })
 }
 
 fn normalize_preflight_timeout(timeout_ms: u64) -> u64 {
@@ -1753,6 +1784,117 @@ mod tests {
         provider_capability_catalog, ProviderCapabilityCatalogInput,
         DEFAULT_PROVIDER_CATALOG_TTL_SECONDS,
     };
+    use std::{
+        io::{Read, Write},
+        net::TcpListener,
+        thread::JoinHandle,
+    };
+
+    fn serve_http_once(status: &str, body: impl Into<String>) -> (String, JoinHandle<String>) {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind provider preflight fixture");
+        let address = listener.local_addr().expect("provider preflight fixture address");
+        let status = status.to_owned();
+        let body = body.into();
+        let handle = std::thread::spawn(move || {
+            let (mut stream, _) = listener
+                .accept()
+                .expect("accept provider preflight fixture request");
+            stream
+                .set_read_timeout(Some(Duration::from_secs(2)))
+                .expect("set provider preflight fixture timeout");
+            let mut request = Vec::new();
+            let mut buffer = [0_u8; 4096];
+            let (header_end, content_length) = loop {
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("read provider preflight fixture request");
+                assert!(read > 0, "provider preflight request ended before headers");
+                request.extend_from_slice(&buffer[..read]);
+                let Some(header_end) = request.windows(4).position(|bytes| bytes == b"\r\n\r\n")
+                else {
+                    continue;
+                };
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        let (name, value) = line.split_once(':')?;
+                        name.eq_ignore_ascii_case("content-length")
+                            .then(|| value.trim().parse::<usize>().expect("content length"))
+                    })
+                    .unwrap_or_default();
+                break (header_end + 4, content_length);
+            };
+            while request.len() < header_end + content_length {
+                let read = stream
+                    .read(&mut buffer)
+                    .expect("read provider preflight fixture body");
+                assert!(read > 0, "provider preflight request body ended early");
+                request.extend_from_slice(&buffer[..read]);
+            }
+            let response = format!(
+                "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                body.len()
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write provider preflight fixture response");
+            String::from_utf8(request).expect("provider preflight request is UTF-8")
+        });
+        (format!("http://{address}/v1"), handle)
+    }
+
+    fn unused_local_base_url() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind unused provider endpoint");
+        let address = listener.local_addr().expect("unused provider endpoint address");
+        drop(listener);
+        format!("http://{address}/v1")
+    }
+
+    fn openai_probe_request(base_url: impl Into<String>) -> OpenAiCompatibleProviderPreflightProbeRequest {
+        OpenAiCompatibleProviderPreflightProbeRequest {
+            profile_id: "openai-test".into(),
+            provider_id: OPENAI_API_PROVIDER_ID.into(),
+            model_id: "gpt-5.4".into(),
+            base_url: base_url.into(),
+            api_version: None,
+            api_key: Some("test-key".into()),
+            timeout_ms: 1_000,
+            required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+            credential_proof: Some("test-fixture".into()),
+            context_window_tokens: Some(128_000),
+            max_output_tokens: Some(16_384),
+            context_limit_source: Some("test-fixture".into()),
+            context_limit_confidence: Some("high".into()),
+            thinking_supported: true,
+            thinking_efforts: vec!["low".into(), "high".into()],
+            thinking_default_effort: Some("low".into()),
+            input_modalities: vec!["text".into()],
+            input_modalities_source: Some("test-fixture".into()),
+        }
+    }
+
+    fn xai_probe_request(base_url: impl Into<String>) -> XaiProviderPreflightProbeRequest {
+        XaiProviderPreflightProbeRequest {
+            profile_id: "xai-test".into(),
+            provider_id: "xai".into(),
+            model_id: "grok-4.5".into(),
+            base_url: base_url.into(),
+            bearer_token: Some("test-token".into()),
+            timeout_ms: 1_000,
+            required_features: ProviderPreflightRequiredFeatures::owned_agent_text_turn(),
+            credential_proof: Some("test-fixture".into()),
+            context_window_tokens: Some(128_000),
+            max_output_tokens: Some(16_384),
+            context_limit_source: Some("test-fixture".into()),
+            context_limit_confidence: Some("high".into()),
+            thinking_supported: true,
+            thinking_efforts: vec!["low".into(), "high".into()],
+            thinking_default_effort: Some("low".into()),
+            input_modalities: vec!["text".into()],
+            input_modalities_source: Some("test-fixture".into()),
+        }
+    }
 
     fn capabilities(source: &str) -> ProviderCapabilityCatalog {
         provider_capability_catalog(ProviderCapabilityCatalogInput {
@@ -1819,6 +1961,123 @@ mod tests {
     }
 
     #[test]
+    fn preflight_value_cache_admission_url_and_timestamp_boundaries_are_canonical() {
+        for (status, wire) in [
+            (ProviderPreflightStatus::Passed, "passed"),
+            (ProviderPreflightStatus::Warning, "warning"),
+            (ProviderPreflightStatus::Failed, "failed"),
+            (ProviderPreflightStatus::Skipped, "skipped"),
+        ] {
+            assert_eq!(status.as_str(), wire);
+        }
+        for (source, wire, can_green_light) in [
+            (ProviderPreflightSource::LiveProbe, "live_probe", false),
+            (ProviderPreflightSource::LiveCatalog, "live_catalog", true),
+            (ProviderPreflightSource::CachedProbe, "cached_probe", true),
+            (ProviderPreflightSource::StaticManual, "static_manual", false),
+            (ProviderPreflightSource::Unavailable, "unavailable", false),
+        ] {
+            assert_eq!(source.as_str(), wire);
+            assert_eq!(source.can_green_light_static_capabilities(), can_green_light);
+        }
+
+        let mut snapshot = run_openai_compatible_provider_preflight_probe(
+            OpenAiCompatibleProviderPreflightProbeRequest {
+                api_key: None,
+                base_url: "https://api.openai.com/v1".into(),
+                ..openai_probe_request("https://api.openai.com/v1")
+            },
+        );
+        snapshot = bind_provider_preflight_cache(snapshot, "  ", "");
+        let binding = snapshot.cache_binding.as_ref().expect("cache binding");
+        assert_eq!(binding.endpoint_fingerprint, "unknown_endpoint");
+        assert_eq!(binding.account_class, "unknown_account");
+        assert!(!binding.cache_key.is_empty());
+
+        snapshot.source = ProviderPreflightSource::Unavailable;
+        snapshot.required_features = ProviderPreflightRequiredFeatures::default();
+        snapshot.checks.clear();
+        let required = ProviderPreflightRequiredFeatures {
+            streaming: false,
+            tool_calls: true,
+            reasoning_controls: true,
+            attachments: false,
+            attachment_input_modalities: Vec::new(),
+        };
+        let blockers = provider_preflight_admission_blockers(&snapshot, &required);
+        let codes = blockers
+            .iter()
+            .map(|check| check.code.as_str())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"provider_preflight_required_features_mismatch"));
+        assert!(codes.contains(&"provider_preflight_source_unavailable"));
+        assert!(codes.contains(&"provider_preflight_tool_schema"));
+        assert!(codes.contains(&"provider_preflight_reasoning"));
+
+        snapshot.source = ProviderPreflightSource::LiveProbe;
+        snapshot.checked_at = "unix:0".into();
+        snapshot.ttl_seconds = 1;
+        let cached = provider_preflight_snapshot_as_cached_probe(snapshot);
+        assert_eq!(cached.source, ProviderPreflightSource::CachedProbe);
+        assert!(cached.stale);
+        assert!(cached.age_seconds.is_some_and(|age| age > 1));
+
+        assert_eq!(normalize_preflight_timeout(0), DEFAULT_PROVIDER_PREFLIGHT_TIMEOUT_MS);
+        assert_eq!(normalize_preflight_timeout(123), 123);
+        assert!(is_local_http_endpoint("http://localhost:1234/v1"));
+        assert!(is_local_http_endpoint("http://[::1]:1234/v1"));
+        assert!(is_local_http_endpoint("http://0.0.0.0:1234/v1"));
+        assert!(!is_local_http_endpoint("https://localhost/v1"));
+        assert!(!is_local_http_endpoint("not a url"));
+        assert_eq!(
+            openai_compatible_preflight_chat_url("", None)
+                .expect_err("missing provider URL")
+                .code,
+            "provider_preflight_base_url_missing"
+        );
+        assert_eq!(
+            xai_preflight_responses_url(" ")
+                .expect_err("missing xAI URL")
+                .code,
+            "provider_preflight_base_url_missing"
+        );
+        assert_eq!(
+            openai_compatible_preflight_chat_url("ftp://localhost/v1", None)
+                .expect_err("non-HTTP URL")
+                .code,
+            "provider_preflight_base_url_invalid"
+        );
+        assert_eq!(
+            xai_preflight_responses_url("ftp://localhost/v1")
+                .expect_err("non-HTTP xAI URL")
+                .code,
+            "provider_preflight_base_url_invalid"
+        );
+
+        assert_eq!(parse_timestamp_to_epoch_seconds("unix:42"), Some(42));
+        for invalid in [
+            "unix:not-a-number",
+            "not-a-date",
+            "2026-13-01T00:00:00Z",
+            "2026-01-32T00:00:00Z",
+            "2026-01-01Tbad:00:00Z",
+            "2026-01-01T00:bad:00Z",
+            "2026-01-01T00:00:badZ",
+            "2026-01-01T00:00:00+bad:00",
+        ] {
+            assert_eq!(parse_timestamp_to_epoch_seconds(invalid), None, "{invalid}");
+        }
+        assert_eq!(
+            parse_timestamp_to_epoch_seconds("1970-01-01T01:00:00+01:00"),
+            Some(0)
+        );
+        assert_eq!(
+            parse_timestamp_to_epoch_seconds("1969-12-31T23:00:00-01:00"),
+            Some(0)
+        );
+    }
+
+    #[test]
     fn http_402_classifies_as_credit_limit_and_is_not_retryable() {
         let error = classify_provider_preflight_http_error(
             402,
@@ -1831,6 +2090,159 @@ mod tests {
             "a credit/billing limit must not be treated as retryable",
         );
         assert!(error.message.contains("HTTP 402"));
+    }
+
+    #[test]
+    fn live_probe_entrypoints_fail_closed_without_credentials() {
+        let mut openai = openai_probe_request("https://api.openai.com/v1");
+        openai.api_key = Some("  ".into());
+        let openai = run_openai_compatible_provider_preflight_probe(openai);
+
+        let mut xai = xai_probe_request("https://api.x.ai/v1");
+        xai.bearer_token = None;
+        let xai = run_xai_provider_preflight_probe(xai);
+
+        for snapshot in [&openai, &xai] {
+            assert_eq!(snapshot.status, ProviderPreflightStatus::Failed);
+            let blocker_codes = provider_preflight_blockers(snapshot)
+                .into_iter()
+                .map(|check| check.code)
+                .collect::<Vec<_>>();
+            assert!(blocker_codes.contains(&"provider_preflight_credentials".into()));
+            assert!(blocker_codes.contains(&"provider_preflight_provider_error".into()));
+        }
+    }
+
+    #[test]
+    fn live_probe_entrypoints_report_invalid_endpoints_without_network_io() {
+        let openai = run_openai_compatible_provider_preflight_probe(openai_probe_request("::bad"));
+        let xai = run_xai_provider_preflight_probe(xai_probe_request("::bad"));
+
+        for snapshot in [&openai, &xai] {
+            assert_eq!(snapshot.status, ProviderPreflightStatus::Failed);
+            assert!(provider_preflight_blockers(snapshot)
+                .iter()
+                .any(|check| check.code == "provider_preflight_endpoint"));
+            assert!(
+                snapshot.checks.iter().any(|check| {
+                    check.code == "provider_preflight_provider_error"
+                        && check.message.contains("endpoint_unreachable")
+                        && !check.retryable
+                }),
+                "invalid endpoint snapshot should be a non-retryable admission failure: {snapshot:#?}"
+            );
+        }
+    }
+
+    #[test]
+    fn preflight_url_admission_rejects_plain_http_hostname_confusion() {
+        for base_url in [
+            "http://localhost.evil.example/v1",
+            "http://127.example.com/v1",
+            "http://0.0.0.0.evil.example/v1",
+        ] {
+            let openai = openai_compatible_preflight_chat_url(base_url, None)
+                .expect_err("OpenAI-compatible preflight must reject a lookalike host");
+            let xai = xai_preflight_responses_url(base_url)
+                .expect_err("xAI preflight must reject a lookalike host");
+
+            assert_eq!(openai.code, "provider_preflight_base_url_insecure");
+            assert_eq!(xai.code, "provider_preflight_base_url_insecure");
+        }
+    }
+
+    #[test]
+    fn live_probe_entrypoints_accept_local_success_responses_with_expected_auth() {
+        let (openai_base_url, openai_request) = serve_http_once("200 OK", "{}");
+        let openai = run_openai_compatible_provider_preflight_probe(openai_probe_request(
+            openai_base_url,
+        ));
+        let openai_request = openai_request.join().expect("OpenAI preflight fixture");
+
+        let (xai_base_url, xai_request) = serve_http_once("200 OK", "{}");
+        let xai = run_xai_provider_preflight_probe(xai_probe_request(xai_base_url));
+        let xai_request = xai_request.join().expect("xAI preflight fixture");
+
+        assert_eq!(openai.status, ProviderPreflightStatus::Passed);
+        assert_eq!(xai.status, ProviderPreflightStatus::Passed);
+        assert!(provider_preflight_blockers(&openai).is_empty());
+        assert!(provider_preflight_blockers(&xai).is_empty());
+        assert!(openai_request.starts_with("POST /v1/chat/completions HTTP/1.1\r\n"));
+        assert!(openai_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-key\r\n"));
+        assert!(xai_request.starts_with("POST /v1/responses HTTP/1.1\r\n"));
+        assert!(xai_request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer test-token\r\n"));
+    }
+
+    #[test]
+    fn live_probe_http_404_marks_the_endpoint_reachable_but_the_model_unavailable() {
+        let mut snapshots = Vec::new();
+
+        let (openai_base_url, openai_request) =
+            serve_http_once("404 Not Found", r#"{"error":"model not found"}"#);
+        snapshots.push(run_openai_compatible_provider_preflight_probe(
+            openai_probe_request(openai_base_url),
+        ));
+        openai_request.join().expect("OpenAI preflight fixture");
+
+        let (xai_base_url, xai_request) =
+            serve_http_once("404 Not Found", r#"{"error":"model not found"}"#);
+        snapshots.push(run_xai_provider_preflight_probe(xai_probe_request(
+            xai_base_url,
+        )));
+        xai_request.join().expect("xAI preflight fixture");
+
+        for snapshot in snapshots {
+            let endpoint = snapshot
+                .checks
+                .iter()
+                .find(|check| check.code == "provider_preflight_endpoint")
+                .expect("endpoint check");
+            let model = snapshot
+                .checks
+                .iter()
+                .find(|check| check.code == "provider_preflight_model")
+                .expect("model check");
+            assert_eq!(endpoint.status, ProviderPreflightStatus::Passed);
+            assert_eq!(model.status, ProviderPreflightStatus::Failed);
+            assert!(snapshot.checks.iter().any(|check| {
+                check.code == "provider_preflight_provider_error"
+                    && check.message.contains("model_unavailable")
+                    && !check.retryable
+            }));
+        }
+    }
+
+    #[test]
+    fn live_probe_transport_failures_are_retryable_and_do_not_claim_model_state() {
+        let openai = run_openai_compatible_provider_preflight_probe(openai_probe_request(
+            unused_local_base_url(),
+        ));
+        let xai = run_xai_provider_preflight_probe(xai_probe_request(unused_local_base_url()));
+
+        for snapshot in [&openai, &xai] {
+            let endpoint = snapshot
+                .checks
+                .iter()
+                .find(|check| check.code == "provider_preflight_endpoint")
+                .expect("endpoint check");
+            let model = snapshot
+                .checks
+                .iter()
+                .find(|check| check.code == "provider_preflight_model")
+                .expect("model check");
+            assert_eq!(endpoint.status, ProviderPreflightStatus::Failed);
+            assert!(endpoint.retryable);
+            assert_eq!(model.status, ProviderPreflightStatus::Warning);
+            assert!(snapshot.checks.iter().any(|check| {
+                check.code == "provider_preflight_provider_error"
+                    && check.message.contains("endpoint_unreachable")
+                    && check.retryable
+            }));
+        }
     }
 
     #[test]
@@ -1858,6 +2270,49 @@ mod tests {
         assert!(!provider_preflight_message_indicates_credit_limit(
             "Provider preflight failed with model_unavailable: model not found"
         ));
+    }
+
+    #[test]
+    fn provider_http_statuses_map_to_typed_retry_policies() {
+        let cases = [
+            (401, ProviderPreflightErrorClass::Authentication, false),
+            (403, ProviderPreflightErrorClass::Authorization, false),
+            (404, ProviderPreflightErrorClass::ModelUnavailable, false),
+            (429, ProviderPreflightErrorClass::RateLimited, true),
+            (400, ProviderPreflightErrorClass::ProviderRejectedRequest, false),
+            (422, ProviderPreflightErrorClass::ProviderRejectedRequest, false),
+            (500, ProviderPreflightErrorClass::ProviderServerError, true),
+            (599, ProviderPreflightErrorClass::ProviderServerError, true),
+            (418, ProviderPreflightErrorClass::Unknown, true),
+        ];
+
+        for (status, expected_class, expected_retryable) in cases {
+            let error = classify_provider_preflight_http_error(status, "generic provider failure");
+            assert_eq!(error.class, expected_class, "HTTP {status}");
+            assert_eq!(error.retryable, expected_retryable, "HTTP {status}");
+            assert_eq!(
+                error.class.as_str(),
+                match expected_class {
+                    ProviderPreflightErrorClass::Authentication => "authentication",
+                    ProviderPreflightErrorClass::Authorization => "authorization",
+                    ProviderPreflightErrorClass::ModelUnavailable => "model_unavailable",
+                    ProviderPreflightErrorClass::RateLimited => "rate_limited",
+                    ProviderPreflightErrorClass::ProviderRejectedRequest => {
+                        "provider_rejected_request"
+                    }
+                    ProviderPreflightErrorClass::ProviderServerError => "provider_server_error",
+                    ProviderPreflightErrorClass::Unknown => "unknown",
+                    class => panic!("unexpected fixture class: {class:?}"),
+                }
+            );
+        }
+
+        assert_eq!(
+            ProviderPreflightErrorClass::EndpointUnreachable.as_str(),
+            "endpoint_unreachable"
+        );
+        assert_eq!(ProviderPreflightErrorClass::CreditLimit.as_str(), "credit_limit");
+        assert_eq!(ProviderPreflightErrorClass::Decode.as_str(), "decode");
     }
 
     #[test]

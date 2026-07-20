@@ -4410,6 +4410,7 @@ fn create_or_load_handoff_target_run(
     project_store::load_agent_run(&request.repo_root, &request.project_id, target_run_id)
 }
 
+#[derive(Debug)]
 enum HandoffTargetStartRecovery {
     Ready(AgentRunSnapshotRecord),
     ReplaceInterrupted,
@@ -7385,6 +7386,180 @@ mod tests {
         assert_eq!(error.code, "agent_subagent_child_identity_lineage_mismatch");
     }
 
+    #[test]
+    fn subagent_executor_fixture_rejects_busy_children_then_continues_cancels_and_exports() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "subagent-executor-fixture";
+        let definition_id = "subagent_parent_fixture";
+        let parent_run_id = "parent-subagent-executor";
+        let child_run_id = "parent-subagent-executor-subagent-1";
+        create_project_database(&repo_root, project_id);
+        project_store::insert_agent_definition(
+            &repo_root,
+            &custom_definition_record(definition_id, "engineering", json!([])),
+        )
+        .expect("insert parent definition");
+        let parent = project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some(definition_id.into()),
+                agent_definition_version: Some(1),
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: parent_run_id.into(),
+                provider_id: FAKE_PROVIDER_ID.into(),
+                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                prompt: "Coordinate the child fixture.".into(),
+                system_prompt: "parent system".into(),
+                now: "2026-07-16T12:00:00Z".into(),
+            },
+        )
+        .expect("insert parent run");
+        project_store::update_agent_run_status(
+            &repo_root,
+            project_id,
+            parent_run_id,
+            AgentRunStatus::Running,
+            None,
+            "2026-07-16T12:00:01Z",
+        )
+        .expect("start parent run");
+
+        let parent_definition =
+            load_agent_definition_snapshot_for_run(&repo_root, &parent.run)
+                .expect("load parent definition");
+        let parent_policy =
+            agent_tool_policy_from_snapshot(&parent_definition).expect("parent tool policy");
+        let role_policy = AutonomousAgentToolPolicy::for_subagent_role(
+            AutonomousSubagentRole::Researcher,
+            Some(&parent_policy),
+            false,
+        );
+        let mut task =
+            subagent_task_with_stages(AutonomousSubagentRole::Researcher, 1, None);
+        let identity = subagent_child_identity(
+            &task,
+            parent_run_id,
+            &parent.run.trace_id,
+            RuntimeAgentIdDto::Engineer,
+            &role_policy,
+            false,
+        );
+        let controls_input = RuntimeRunControlInputDto {
+            runtime_agent_id: RuntimeAgentIdDto::Engineer,
+            agent_definition_id: Some(definition_id.into()),
+            agent_definition_version: Some(1),
+            provider_profile_id: Some(FAKE_PROVIDER_ID.into()),
+            model_id: OPENAI_CODEX_PROVIDER_ID.into(),
+            thinking_effort: None,
+            approval_mode: RuntimeRunApprovalModeDto::Suggest,
+            plan_mode_required: false,
+            auto_compact_enabled: true,
+        };
+        create_owned_agent_run(&OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: child_run_id.into(),
+            prompt: identity.initial_prompt.clone(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(controls_input.clone()),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root)
+                .expect("child tool runtime")
+                .with_agent_tool_policy(Some(role_policy))
+                .with_subagent_child_identity(identity),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        })
+        .expect("create child run");
+        task.run_id = Some(child_run_id.into());
+        task.trace_id = Some(
+            project_store::load_agent_run(&repo_root, project_id, child_run_id)
+                .expect("load child")
+                .run
+                .trace_id,
+        );
+        task.parent_run_id = Some(parent_run_id.into());
+        task.parent_trace_id = Some(parent.run.trace_id.clone());
+        task.status = "running".into();
+
+        let cancellation = AgentRunCancellationToken::default();
+        let executor = OwnedAgentSubagentExecutor {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            parent_run_id: parent_run_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            controls: runtime_controls_from_request(Some(&controls_input)),
+            provider_config: AgentProviderConfig::Fake,
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("executor tool runtime"),
+            cancellation: cancellation.clone(),
+            subagent_tokens: Arc::new(std::sync::Mutex::new(BTreeMap::new())),
+            supervisor: None,
+        };
+
+        let no_run = subagent_task_with_stages(AutonomousSubagentRole::Researcher, 2, None);
+        assert_eq!(
+            executor
+                .send_subagent_input(&no_run, "continue")
+                .expect_err("unstarted child rejects input")
+                .code,
+            "autonomous_tool_subagent_continue_required"
+        );
+        assert!(executor.export_subagent_trace(&no_run).expect("empty trace")["events"]
+            .as_array()
+            .is_some_and(Vec::is_empty));
+
+        assert_eq!(
+            executor
+                .send_subagent_input(&task, "too early")
+                .expect_err("starting child rejects input")
+                .code,
+            "autonomous_tool_subagent_not_accepting_input"
+        );
+        project_store::update_agent_run_status(
+            &repo_root,
+            project_id,
+            child_run_id,
+            AgentRunStatus::Paused,
+            None,
+            "2026-07-16T12:00:02Z",
+        )
+        .expect("pause child for continuation");
+        let continued = executor
+            .send_subagent_input(&task, "Return a concise fixture result.")
+            .expect("continue paused child");
+        assert!(matches!(continued.status.as_str(), "completed" | "failed"));
+        assert_eq!(
+            executor
+                .send_subagent_input(&continued, "too late")
+                .expect_err("terminal child rejects input")
+                .code,
+            "autonomous_tool_subagent_not_accepting_input"
+        );
+        let trace = executor
+            .export_subagent_trace(&continued)
+            .expect("export child trace");
+        assert_eq!(trace["runId"], child_run_id);
+        assert!(trace["events"].as_array().is_some_and(|events| !events.is_empty()));
+
+        executor
+            .subagent_tokens
+            .lock()
+            .expect("subagent token lock")
+            .insert(task.subagent_id.clone(), cancellation.linked_child());
+        let cancelled = executor.cancel_subagent(&continued).expect("cancel child task");
+        assert_eq!(cancelled.status, "cancelled");
+        assert!(cancelled.cancelled_at.is_some());
+        assert!(executor
+            .acquire_child_run_lease(child_run_id)
+            .expect("no-supervisor lease")
+            .is_none());
+    }
+
     fn save_custom_definition(repo_root: &Path, definition_id: &str, profile: &str) {
         save_custom_definition_with_attached(repo_root, definition_id, profile, json!([]));
     }
@@ -7928,6 +8103,360 @@ mod tests {
             checkpoints: Vec::new(),
             action_requests: Vec::new(),
         }
+    }
+
+    #[test]
+    fn run_helper_fixture_validates_attached_skills_linked_paths_and_wait_summaries() {
+        assert_eq!(
+            attached_skill_refs_from_definition_snapshot(&json!({
+                "attachedSkills": [{
+                    "id": "attachment-1",
+                    "skillId": "skill-1",
+                    "sourceId": "source-1",
+                    "name": "Fixture skill",
+                    "description": "Fixture attached skill.",
+                    "sourceKind": "project",
+                    "scope": "project",
+                    "versionHash": "sha256:fixture",
+                    "includeSupportingAssets": false,
+                    "required": true
+                }]
+            }))
+            .expect("canonical attached skills")
+            .len(),
+            1
+        );
+        assert!(definition_has_attached_skills(&json!({ "attachedSkills": [1] }))
+            .expect("array shape"));
+        assert!(!definition_has_attached_skills(&json!({ "attachedSkills": [] }))
+            .expect("empty array"));
+        assert_eq!(
+            definition_has_attached_skills(&json!({}))
+                .expect_err("missing attached skills")
+                .code,
+            "agent_definition_attached_skills_missing"
+        );
+        assert_eq!(
+            definition_has_attached_skills(&json!({ "attachedSkills": {} }))
+                .expect_err("invalid attached skills")
+                .code,
+            "agent_definition_attached_skills_invalid"
+        );
+
+        let linked_paths = vec![
+            RuntimeLinkedPathDto {
+                kind: crate::commands::RuntimeLinkedPathKindDto::File,
+                absolute_path: " /tmp/file.txt ".into(),
+            },
+            RuntimeLinkedPathDto {
+                kind: crate::commands::RuntimeLinkedPathKindDto::Folder,
+                absolute_path: "/tmp/folder".into(),
+            },
+            RuntimeLinkedPathDto {
+                kind: crate::commands::RuntimeLinkedPathKindDto::Folder,
+                absolute_path: " ".into(),
+            },
+        ];
+        let payload = linked_path_grant_payload(&linked_paths).expect("linked path payload");
+        assert_eq!(payload["paths"].as_array().expect("paths").len(), 2);
+        assert_eq!(payload["paths"][0]["kind"], "file");
+        assert_eq!(payload["paths"][1]["kind"], "folder");
+        assert!(linked_path_grant_payload(&linked_paths[2..]).is_none());
+
+        let mut snapshot =
+            snapshot_for_handoff_source(RuntimeAgentIdDto::Engineer, "linked-paths");
+        snapshot.events = vec![
+            project_store::AgentEventRecord {
+                id: 1,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolPermissionGrant,
+                payload_json: payload.to_string(),
+                created_at: "2026-07-10T00:00:00Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 2,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ToolPermissionGrant,
+                payload_json: json!({
+                    "schema": "wrong",
+                    "grantKind": "linked_context_paths",
+                    "paths": [{ "absolutePath": "/ignored" }]
+                })
+                .to_string(),
+                created_at: "2026-07-10T00:00:01Z".into(),
+            },
+        ];
+        assert_eq!(
+            linked_read_roots_from_snapshot(&snapshot),
+            vec![PathBuf::from("/tmp/file.txt"), PathBuf::from("/tmp/folder")]
+        );
+
+        assert_eq!(
+            scheduled_wait_checkpoint_summary(&[]),
+            "Agent waiting for a scheduled wakeup."
+        );
+        assert_eq!(
+            scheduled_wait_checkpoint_summary(&[json!({
+                "wakeId": " wake-1 ",
+                "dueAt": "2026-07-10T01:00:00Z"
+            })]),
+            "Agent waiting for scheduled wakeup `wake-1` due at 2026-07-10T01:00:00Z."
+        );
+        assert_eq!(
+            scheduled_wait_checkpoint_summary(&[json!({})]),
+            "Agent waiting for scheduled wakeup `pending`."
+        );
+    }
+
+    #[test]
+    fn run_helper_fixture_covers_handoff_redaction_topics_and_every_agent_shape() {
+        let bundle = json!({ "schema": "xero.agent_handoff.v1", "summary": "safe" });
+        assert!(render_handoff_seed_message(&bundle)
+            .expect("seed message")
+            .contains("source-cited data"));
+        assert!(render_handoff_record_text(&bundle)
+            .expect("record text")
+            .contains("agent handoff bundle"));
+
+        assert_eq!(truncate_chars("  short  ", 10), "short");
+        assert_eq!(truncate_chars("αβγδε", 3), "αβγ...");
+        let mut redaction_count = 0;
+        let preview = handoff_preview("authorization: Bearer secret-token", 200, &mut redaction_count);
+        assert!(!preview.contains("secret-token"));
+        assert_eq!(redaction_count, 1);
+
+        let mut snapshot =
+            snapshot_for_handoff_source(RuntimeAgentIdDto::Engineer, "handoff-helpers");
+        snapshot.events = vec![
+            project_store::AgentEventRecord {
+                id: 1,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::PlanUpdated,
+                payload_json: json!({
+                    "items": [{ "id": "old", "status": "pending", "text": "old plan" }]
+                })
+                .to_string(),
+                created_at: "2026-07-10T00:00:00Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 2,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::PlanUpdated,
+                payload_json: json!({
+                    "items": [
+                        { "id": "done", "status": "completed", "text": "ignore" },
+                        {
+                            "id": "next",
+                            "status": "in_progress",
+                            "title": "Use api_key=secret-value"
+                        }
+                    ]
+                })
+                .to_string(),
+                created_at: "2026-07-10T00:00:01Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 3,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::ValidationCompleted,
+                payload_json: json!({ "label": "verification", "passed": true }).to_string(),
+                created_at: "2026-07-10T00:00:02Z".into(),
+            },
+            project_store::AgentEventRecord {
+                id: 4,
+                project_id: snapshot.run.project_id.clone(),
+                run_id: snapshot.run.run_id.clone(),
+                event_kind: AgentRunEventKind::VerificationGate,
+                payload_json: json!({ "status": "passed" }).to_string(),
+                created_at: "2026-07-10T00:00:03Z".into(),
+            },
+        ];
+
+        let todos = handoff_todo_items(&snapshot, &mut redaction_count);
+        assert_eq!(todos.len(), 1);
+        assert_eq!(todos[0]["id"], "next");
+        assert!(!todos[0]["text"]
+            .as_str()
+            .expect("todo text")
+            .contains("secret-value"));
+        let matching = handoff_events_by_kind(
+            &snapshot,
+            "verification",
+            &["verification"],
+            &mut redaction_count,
+        );
+        assert_eq!(matching.len(), 1);
+        let verification = handoff_verification_status(&snapshot, &mut redaction_count);
+        assert_eq!(verification["status"], "recorded");
+        assert_eq!(verification["evidence"].as_array().expect("evidence").len(), 2);
+
+        let completed = vec![json!({ "summary": "work" })];
+        let changed = vec![json!({ "path": "src/lib.rs" })];
+        let fixtures = [
+            (RuntimeAgentIdDto::Ask, "questionBeingAnswered"),
+            (RuntimeAgentIdDto::ComputerUse, "computerUseIntent"),
+            (RuntimeAgentIdDto::Plan, "planningIntent"),
+            (RuntimeAgentIdDto::Engineer, "implementationPlanState"),
+            (RuntimeAgentIdDto::Debug, "symptom"),
+            (RuntimeAgentIdDto::Crawl, "crawlPrompt"),
+            (RuntimeAgentIdDto::AgentCreate, "agentDefinitionIntent"),
+            (RuntimeAgentIdDto::Generalist, "userIntent"),
+        ];
+        for (agent, expected_key) in fixtures {
+            let handoff = agent_specific_handoff(
+                agent,
+                "Continue safely.",
+                &completed,
+                &changed,
+                &verification,
+                &mut redaction_count,
+            );
+            assert!(handoff.get(expected_key).is_some(), "{agent:?}");
+        }
+
+        snapshot.run.status = AgentRunStatus::Starting;
+        assert!(handoff_target_needs_drive(&snapshot));
+        snapshot.run.status = AgentRunStatus::Running;
+        assert!(handoff_target_needs_drive(&snapshot));
+        snapshot.run.status = AgentRunStatus::Paused;
+        assert!(!handoff_target_needs_drive(&snapshot));
+    }
+
+    #[test]
+    fn run_helper_fixture_covers_subagent_budget_error_identity_and_summary_boundaries() {
+        let mut researcher =
+            subagent_task_with_stages(AutonomousSubagentRole::Researcher, 1, None);
+        assert!(subagent_ownership_boundary(&researcher).contains("read-only role"));
+        let prompt = subagent_prompt(&researcher, "parent-run");
+        assert!(prompt.contains("parent-run"));
+        assert!(prompt.contains("10 delegated tool calls"));
+
+        let first_request_id = subagent_continuation_request_id(&researcher, "inspect");
+        assert_eq!(
+            first_request_id,
+            subagent_continuation_request_id(&researcher, "inspect")
+        );
+        researcher
+            .input_log
+            .push(crate::runtime::autonomous_tool_runtime::AutonomousSubagentInputRecord {
+                kind: "user_input".into(),
+                text: "inspect".into(),
+                created_at: "2026-07-10T00:00:00Z".into(),
+            });
+        assert_ne!(
+            first_request_id,
+            subagent_continuation_request_id(&researcher, "inspect")
+        );
+
+        let mut engineer =
+            subagent_task_with_stages(AutonomousSubagentRole::Engineer, 1, None);
+        assert!(subagent_ownership_boundary(&engineer).contains("no writeSet"));
+        engineer.write_set = vec!["src/lib.rs".into(), "tests/lib.rs".into()];
+        assert!(subagent_ownership_boundary(&engineer).contains("src/lib.rs, tests/lib.rs"));
+
+        engineer.budget_status.clear();
+        apply_subagent_usage_budget_status(&mut engineer);
+        assert_eq!(engineer.budget_status, "within_budget");
+        engineer.used_tokens = engineer.max_tokens + 1;
+        apply_subagent_usage_budget_status(&mut engineer);
+        assert_eq!(engineer.status, "budget_exhausted");
+        assert_eq!(engineer.budget_status, "tokens_exhausted");
+        engineer.used_tokens = 0;
+        engineer.used_cost_micros = engineer.max_cost_micros + 1;
+        engineer.status = "running".into();
+        apply_subagent_usage_budget_status(&mut engineer);
+        assert_eq!(engineer.budget_status, "cost_exhausted");
+
+        let error_fixtures = [
+            (AGENT_RUN_CANCELLED_CODE, "cancelled", "within_budget"),
+            (
+                "autonomous_tool_subagent_tool_budget_exhausted",
+                "budget_exhausted",
+                "tool_calls_exhausted",
+            ),
+            (
+                "autonomous_tool_subagent_token_budget_exhausted",
+                "budget_exhausted",
+                "tokens_exhausted",
+            ),
+            (
+                "autonomous_tool_subagent_cost_budget_exhausted",
+                "budget_exhausted",
+                "cost_exhausted",
+            ),
+            ("unexpected_failure", "failed", "within_budget"),
+        ];
+        for (code, expected_status, expected_budget) in error_fixtures {
+            let mut task =
+                subagent_task_with_stages(AutonomousSubagentRole::Researcher, 1, None);
+            apply_subagent_error_to_task(
+                &mut task,
+                &CommandError::user_fixable(code, "fixture failure"),
+            );
+            assert_eq!(task.status, expected_status, "{code}");
+            assert_eq!(task.budget_status, expected_budget, "{code}");
+            assert!(task
+                .result_summary
+                .as_deref()
+                .is_some_and(|summary| summary.contains("fixture failure")));
+        }
+        for terminal in [
+            "completed",
+            "failed",
+            "cancelled",
+            "interrupted",
+            "closed",
+            "handed_off",
+            "budget_exhausted",
+        ] {
+            assert!(subagent_status_is_terminal(terminal), "{terminal}");
+        }
+        assert!(!subagent_status_is_terminal("running"));
+
+        let mut snapshot =
+            snapshot_for_handoff_source(RuntimeAgentIdDto::Engineer, "subagent-summary");
+        snapshot.run.last_error = Some(project_store::AgentRunDiagnosticRecord {
+            code: "child_failed".into(),
+            message: "failure detail".into(),
+        });
+        assert_eq!(
+            subagent_result_summary(&snapshot),
+            "child_failed: failure detail"
+        );
+        snapshot.run.last_error = None;
+        snapshot.messages.push(project_store::AgentMessageRecord {
+            id: 1,
+            project_id: snapshot.run.project_id.clone(),
+            run_id: snapshot.run.run_id.clone(),
+            role: AgentMessageRole::Assistant,
+            content: "  completed child work  ".into(),
+            provider_metadata_json: None,
+            created_at: "2026-07-10T00:00:00Z".into(),
+            attachments: Vec::new(),
+        });
+        assert_eq!(subagent_result_summary(&snapshot), "completed child work");
+        snapshot.messages.clear();
+        snapshot.run.status = AgentRunStatus::Paused;
+        assert!(subagent_result_summary(&snapshot).contains("Paused"));
+
+        let routed = route_provider_config_model(
+            AgentProviderConfig::OpenAiResponses(OpenAiResponsesProviderConfig::default()),
+            "override-model",
+        );
+        assert!(matches!(
+            routed,
+            AgentProviderConfig::OpenAiResponses(config)
+                if config.model_id == "override-model"
+        ));
+        assert!(matches!(
+            route_provider_config_model(AgentProviderConfig::Fake, "override-model"),
+            AgentProviderConfig::Fake
+        ));
     }
 
     #[test]
@@ -8617,6 +9146,188 @@ mod tests {
         })
         .expect_err("handoff replay with different input must conflict");
         assert_eq!(conflict.code, "agent_continuation_request_conflict");
+    }
+
+    #[test]
+    fn handoff_target_start_recovery_fixture_covers_ready_failed_interrupted_and_live_owners() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "handoff-target-start-recovery";
+        let source_run_id = "handoff-recovery-source";
+        create_project_database(&repo_root, project_id);
+
+        let source = run_owned_agent_task(OwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+            run_id: source_run_id.into(),
+            prompt: "Explain the current implementation.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Ask,
+                "ask",
+                RuntimeRunApprovalModeDto::Suggest,
+            )),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+        })
+        .expect("complete source run");
+        assert_eq!(source.run.status, AgentRunStatus::Completed);
+
+        let request = ContinueOwnedAgentRunRequest {
+            repo_root: repo_root.clone(),
+            project_id: project_id.into(),
+            run_id: source_run_id.into(),
+            continuation_request_id: "handoff-start-recovery-1".into(),
+            prompt: "The user accepted routing to Engineer; implement the change.".into(),
+            attachments: Vec::new(),
+            linked_paths: Vec::new(),
+            controls: Some(custom_controls(
+                RuntimeAgentIdDto::Engineer,
+                "engineer",
+                RuntimeRunApprovalModeDto::Suggest,
+            )),
+            tool_runtime: AutonomousToolRuntime::new(&repo_root).expect("runtime"),
+            provider_config: AgentProviderConfig::Fake,
+            provider_preflight: None,
+            answer_pending_actions: false,
+            answer_pending_action_id: None,
+            auto_compact: None,
+            internal_resume: None,
+        };
+        let prepared = prepare_owned_agent_continuation_for_drive(&request)
+            .expect("prepare handoff target");
+        let target_request = prepared.drive_request.clone();
+        let start = project_store::load_agent_run_start_request(
+            &repo_root,
+            project_id,
+            &target_request.run_id,
+        )
+        .expect("load target start")
+        .expect("target start exists");
+
+        assert!(matches!(
+            recover_handoff_target_start(
+                &request,
+                &target_request,
+                &start.payload_hash,
+                start.clone(),
+            )
+            .expect("ready target replays"),
+            HandoffTargetStartRecovery::Ready(_)
+        ));
+        assert_eq!(
+            recover_handoff_target_start(
+                &request,
+                &target_request,
+                &"0".repeat(64),
+                start.clone(),
+            )
+            .expect_err("a different start identity must conflict")
+            .code,
+            "agent_handoff_target_start_conflict"
+        );
+
+        let mut missing_continuation = target_request.clone();
+        missing_continuation.continuation_request_id = "missing-continuation".into();
+        assert_eq!(
+            recover_handoff_target_start(
+                &request,
+                &missing_continuation,
+                &start.payload_hash,
+                start.clone(),
+            )
+            .expect_err("ready target requires its durable continuation")
+            .code,
+            "agent_handoff_target_continuation_missing"
+        );
+
+        let mut failed = start.clone();
+        failed.state = project_store::AgentRunStartRequestState::Failed;
+        assert!(matches!(
+            recover_handoff_target_start(
+                &request,
+                &target_request,
+                &start.payload_hash,
+                failed.clone(),
+            )
+            .expect("failed pre-dispatch target can be rebuilt"),
+            HandoffTargetStartRecovery::ReplaceInterrupted
+        ));
+
+        let mut preparing = start.clone();
+        preparing.state = project_store::AgentRunStartRequestState::Preparing;
+        assert!(matches!(
+            recover_handoff_target_start(
+                &request,
+                &target_request,
+                &start.payload_hash,
+                preparing.clone(),
+            )
+            .expect("fully prepared target promotes to ready"),
+            HandoffTargetStartRecovery::Ready(_)
+        ));
+
+        assert_eq!(
+            recover_handoff_target_start(
+                &request,
+                &missing_continuation,
+                &start.payload_hash,
+                preparing.clone(),
+            )
+            .expect_err("a live owner keeps preparation exclusive")
+            .code,
+            "agent_handoff_target_start_in_progress"
+        );
+        preparing.owner_process_id = u32::MAX;
+        preparing.owner_process_birth_identity = "dead-fixture-owner".into();
+        assert!(matches!(
+            recover_handoff_target_start(
+                &request,
+                &missing_continuation,
+                &start.payload_hash,
+                preparing.clone(),
+            )
+            .expect("interrupted pre-dispatch start can be replaced"),
+            HandoffTargetStartRecovery::ReplaceInterrupted
+        ));
+
+        assert!(matches!(
+            project_store::mark_agent_continuation_drive_started(
+                &repo_root,
+                project_id,
+                &target_request.run_id,
+                &target_request.continuation_request_id,
+                &now_timestamp(),
+            )
+            .expect("mark target continuation driving"),
+            project_store::AgentContinuationDriveStartResult::Started(_)
+        ));
+        assert_eq!(
+            recover_handoff_target_start(
+                &request,
+                &target_request,
+                &start.payload_hash,
+                failed,
+            )
+            .expect_err("failed post-dispatch target is unsafe to rebuild")
+            .code,
+            "agent_handoff_target_start_failed"
+        );
+        assert_eq!(
+            recover_handoff_target_start(
+                &request,
+                &target_request,
+                &start.payload_hash,
+                preparing,
+            )
+            .expect_err("interrupted post-dispatch target outcome is unknown")
+            .code,
+            "agent_handoff_target_start_outcome_unknown"
+        );
     }
 
     #[test]
@@ -9646,5 +10357,519 @@ mod tests {
         let error = snapshot.run.last_error.expect("last error");
         assert_eq!(error.code, "agent_tool_boundary_violation");
         assert!(error.message.contains("write"));
+    }
+
+    fn replay_tool_call_fixture(
+        state: AgentToolCallState,
+        result: Option<serde_json::Value>,
+        error_code: Option<&str>,
+    ) -> project_store::AgentToolCallRecord {
+        project_store::AgentToolCallRecord {
+            project_id: "approval-replay-project".into(),
+            run_id: "approval-replay-run".into(),
+            tool_call_id: "approval-replay-call".into(),
+            tool_name: "fixture_tool".into(),
+            input_json: "{}".into(),
+            state,
+            result_json: result.map(|value| value.to_string()),
+            error: error_code.map(|code| project_store::AgentRunDiagnosticRecord {
+                code: code.into(),
+                message: "fixture failure".into(),
+            }),
+            started_at: "2026-07-19T00:00:00Z".into(),
+            completed_at: Some("2026-07-19T00:00:01Z".into()),
+        }
+    }
+
+    fn replay_result_fixture(output: serde_json::Value) -> serde_json::Value {
+        json!({
+            "toolName": "fixture_tool",
+            "summary": "fixture result",
+            "commandResult": null,
+            "output": output,
+        })
+    }
+
+    fn insert_runtime_run_fixture(
+        repo_root: &Path,
+        project_id: &str,
+        run_id: &str,
+        runtime_agent_id: RuntimeAgentIdDto,
+    ) -> project_store::AgentRunSnapshotRecord {
+        project_store::insert_agent_run(
+            repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id,
+                agent_definition_id: None,
+                agent_definition_version: None,
+                project_id: project_id.into(),
+                agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                run_id: run_id.into(),
+                provider_id: FAKE_PROVIDER_ID.into(),
+                model_id: "fixture-model".into(),
+                prompt: "Exercise the runtime state fixture.".into(),
+                system_prompt: "fixture system prompt".into(),
+                now: "2026-07-19T00:00:00Z".into(),
+            },
+        )
+        .expect("insert runtime fixture run")
+    }
+
+    #[test]
+    fn answered_tool_replay_fixture_covers_failure_and_command_boundaries() {
+        let action_id = sanitize_action_id("tool-approval-replay-call");
+        let answered = BTreeSet::from([action_id.as_str()]);
+        for code in RERUNNABLE_APPROVED_TOOL_ERROR_CODES {
+            let tool_call = replay_tool_call_fixture(AgentToolCallState::Failed, None, Some(code));
+            assert_eq!(
+                answered_tool_replay_kind(&tool_call, &answered).expect("classify write replay"),
+                Some(AnsweredToolReplayKind::ApprovedExistingWrite)
+            );
+        }
+
+        let system_read = replay_tool_call_fixture(
+            AgentToolCallState::Failed,
+            None,
+            Some("autonomous_tool_system_read_requires_approval"),
+        );
+        assert_eq!(
+            answered_tool_replay_kind(&system_read, &answered)
+                .expect("classify system-read replay"),
+            Some(AnsweredToolReplayKind::OperatorApprovedSystemRead)
+        );
+        assert_eq!(
+            answered_tool_replay_kind(&system_read, &BTreeSet::new())
+                .expect("ignore unanswered system read"),
+            None
+        );
+
+        let command = replay_tool_call_fixture(
+            AgentToolCallState::Succeeded,
+            Some(replay_result_fixture(json!({
+                "kind": "command",
+                "argv": ["cargo", "test"],
+                "cwd": ".",
+                "intent": "read_only_verification",
+                "stdout": null,
+                "stderr": null,
+                "stdoutTruncated": false,
+                "stderrTruncated": false,
+                "stdoutRedacted": false,
+                "stderrRedacted": false,
+                "exitCode": null,
+                "timedOut": false,
+                "spawned": false,
+                "policy": {
+                    "outcome": "escalated",
+                    "approvalMode": "suggest",
+                    "profile": "read_only_verification",
+                    "code": "approval_required",
+                    "reason": "fixture approval"
+                },
+                "changedFilesTruncated": false
+            }))),
+            None,
+        );
+        assert_eq!(
+            command_approval_action_id_for_tool_call(&command).expect("command action id"),
+            Some("command-cargo-test".into())
+        );
+        let command_action_id = "command-cargo-test";
+        assert_eq!(
+            answered_tool_replay_kind(&command, &BTreeSet::from([command_action_id]))
+                .expect("classify command replay"),
+            Some(AnsweredToolReplayKind::OperatorApprovedCommand)
+        );
+
+        let mut spawned_command = command.clone();
+        spawned_command.result_json = Some(
+            replay_result_fixture(json!({
+                "kind": "command",
+                "argv": ["cargo", "test"],
+                "cwd": ".",
+                "intent": "fixture",
+                "stdout": null,
+                "stderr": null,
+                "stdoutTruncated": false,
+                "stderrTruncated": false,
+                "stdoutRedacted": false,
+                "stderrRedacted": false,
+                "exitCode": null,
+                "timedOut": false,
+                "spawned": true,
+                "policy": {
+                    "outcome": "allowed",
+                    "approvalMode": "yolo",
+                    "profile": "general_execution",
+                    "code": "allowed",
+                    "reason": "fixture"
+                },
+                "changedFilesTruncated": false
+            }))
+            .to_string(),
+        );
+        assert_eq!(
+            command_approval_action_id_for_tool_call(&spawned_command)
+                .expect("spawned command has no replay approval"),
+            None
+        );
+    }
+
+    #[test]
+    fn approval_replay_result_fixture_covers_definition_and_platform_outputs() {
+        let no_result = replay_tool_call_fixture(AgentToolCallState::Succeeded, None, None);
+        assert_eq!(agent_definition_approval_action_id_for_tool_call(&no_result).unwrap(), None);
+        assert_eq!(workflow_definition_approval_action_id_for_tool_call(&no_result).unwrap(), None);
+        assert_eq!(command_approval_action_id_for_tool_call(&no_result).unwrap(), None);
+        assert_eq!(macos_approval_action_id_for_tool_call(&no_result).unwrap(), None);
+        assert_eq!(system_diagnostics_approval_action_id_for_tool_call(&no_result).unwrap(), None);
+        assert_eq!(desktop_approval_action_id_for_tool_call(&no_result).unwrap(), None);
+
+        let mut malformed = no_result.clone();
+        malformed.result_json = Some("{not-json".into());
+        for error in [
+            agent_definition_approval_action_id_for_tool_call(&malformed).unwrap_err(),
+            workflow_definition_approval_action_id_for_tool_call(&malformed).unwrap_err(),
+            command_approval_action_id_for_tool_call(&malformed).unwrap_err(),
+            macos_approval_action_id_for_tool_call(&malformed).unwrap_err(),
+            system_diagnostics_approval_action_id_for_tool_call(&malformed).unwrap_err(),
+            desktop_approval_action_id_for_tool_call(&malformed).unwrap_err(),
+        ] {
+            assert_eq!(error.code, "agent_tool_replay_result_decode_failed");
+        }
+
+        let agent_definition = replay_tool_call_fixture(
+            AgentToolCallState::Succeeded,
+            Some(replay_result_fixture(json!({
+                "kind": "agent_definition",
+                "action": "save",
+                "message": "review agent",
+                "applied": false,
+                "approvalRequired": true
+            }))),
+            None,
+        );
+        assert_eq!(
+            agent_definition_approval_action_id_for_tool_call(&agent_definition).unwrap(),
+            Some("agent-definition-save".into())
+        );
+        assert_eq!(
+            answered_tool_replay_kind(
+                &agent_definition,
+                &BTreeSet::from(["agent-definition-save"])
+            )
+            .unwrap(),
+            Some(AnsweredToolReplayKind::OperatorApprovedCommand)
+        );
+
+        let workflow_definition = replay_tool_call_fixture(
+            AgentToolCallState::Succeeded,
+            Some(replay_result_fixture(json!({
+                "kind": "workflow_definition",
+                "action": "update",
+                "message": "review workflow",
+                "applied": false,
+                "approvalRequired": true
+            }))),
+            None,
+        );
+        assert_eq!(
+            workflow_definition_approval_action_id_for_tool_call(&workflow_definition).unwrap(),
+            Some("workflow-definition-update".into())
+        );
+        assert_eq!(
+            answered_tool_replay_kind(
+                &workflow_definition,
+                &BTreeSet::from(["workflow-definition-update"])
+            )
+            .unwrap(),
+            Some(AnsweredToolReplayKind::OperatorApprovedCommand)
+        );
+
+        let macos = replay_tool_call_fixture(
+            AgentToolCallState::Succeeded,
+            Some(replay_result_fixture(json!({
+                "kind": "macos_automation",
+                "action": "mac_app_activate",
+                "phase": "approval",
+                "platformSupported": true,
+                "performed": false,
+                "apps": [],
+                "windows": [],
+                "permissions": [],
+                "screenshot": null,
+                "policy": {
+                    "riskLevel": "os_automation",
+                    "approvalRequired": true,
+                    "code": "approval_required",
+                    "reason": "fixture"
+                },
+                "message": "review macOS action"
+            }))),
+            None,
+        );
+        assert_eq!(
+            macos_approval_action_id_for_tool_call(&macos).unwrap(),
+            Some("macos-mac_app_activate".into())
+        );
+        assert_eq!(
+            answered_tool_replay_kind(&macos, &BTreeSet::from(["macos-mac_app_activate"]))
+                .unwrap(),
+            Some(AnsweredToolReplayKind::OperatorApprovedCommand)
+        );
+
+        let diagnostics = replay_tool_call_fixture(
+            AgentToolCallState::Succeeded,
+            Some(replay_result_fixture(json!({
+                "kind": "system_diagnostics",
+                "action": "process_sample",
+                "platformSupported": true,
+                "performed": false,
+                "target": {
+                    "pid": 42,
+                    "processName": null,
+                    "bundleId": null,
+                    "appName": null,
+                    "windowId": null
+                },
+                "policy": {
+                    "riskLevel": "system_read",
+                    "approvalRequired": true,
+                    "code": "approval_required",
+                    "reason": "fixture"
+                },
+                "summary": "review diagnostics",
+                "rows": [],
+                "truncated": false,
+                "redacted": false,
+                "artifact": null,
+                "diagnostics": []
+            }))),
+            None,
+        );
+        assert_eq!(
+            system_diagnostics_approval_action_id_for_tool_call(&diagnostics).unwrap(),
+            Some("system-diagnostics-process_sample-pid-42".into())
+        );
+        assert_eq!(
+            answered_tool_replay_kind(
+                &diagnostics,
+                &BTreeSet::from(["system-diagnostics-process_sample-pid-42"])
+            )
+            .unwrap(),
+            Some(AnsweredToolReplayKind::OperatorApprovedCommand)
+        );
+
+        let desktop = replay_tool_call_fixture(
+            AgentToolCallState::Succeeded,
+            Some(replay_result_fixture(json!({
+                "kind": "desktop_control",
+                "tool": "desktop_control",
+                "action": "click",
+                "requestId": "desktop-request",
+                "phase": "approval",
+                "status": "approval_required",
+                "platform": "macos",
+                "sidecar": {
+                    "schemaVersion": 1,
+                    "platform": "macos",
+                    "transport": "fixture",
+                    "authenticated": true,
+                    "health": "ready",
+                    "message": "ready"
+                },
+                "capabilities": {
+                    "platform": "macos",
+                    "schemaVersion": 1,
+                    "displayList": false,
+                    "screenshot": false,
+                    "windowList": false,
+                    "appList": false,
+                    "foregroundState": false,
+                    "cursorState": false,
+                    "accessibilitySnapshot": false,
+                    "ocrSnapshot": false,
+                    "mouseInput": false,
+                    "keyboardInput": false,
+                    "clipboard": false,
+                    "accessibilityActions": false,
+                    "menuSelect": false,
+                    "webrtcStream": false,
+                    "screenshotFallbackStream": false,
+                    "manualCloudControl": false
+                },
+                "permissions": [],
+                "policy": {
+                    "category": "control_approval_required",
+                    "decision": "approval_required",
+                    "decisionId": "desktop-decision",
+                    "code": "approval_required",
+                    "reason": "fixture",
+                    "approvalRequired": true,
+                    "userActionRequired": true
+                },
+                "message": "review desktop control"
+            }))),
+            None,
+        );
+        let desktop_action = desktop_approval_action_id_for_tool_call(&desktop)
+            .expect("desktop approval action decodes")
+            .expect("desktop approval action exists");
+        assert_eq!(desktop_action, "desktop-desktop_control-click-desktop-decision");
+        assert_eq!(
+            answered_tool_replay_kind(&desktop, &BTreeSet::from([desktop_action.as_str()]))
+                .unwrap(),
+            Some(AnsweredToolReplayKind::OperatorApprovedCommand)
+        );
+
+        for (mut output, helper) in [
+            (
+                replay_result_fixture(json!({
+                    "kind": "agent_definition",
+                    "action": "save",
+                    "message": "already applied",
+                    "applied": true,
+                    "approvalRequired": true
+                })),
+                agent_definition_approval_action_id_for_tool_call
+                    as fn(&project_store::AgentToolCallRecord) -> CommandResult<Option<String>>,
+            ),
+            (
+                replay_result_fixture(json!({
+                    "kind": "workflow_definition",
+                    "action": "save",
+                    "message": "approval not needed",
+                    "applied": false,
+                    "approvalRequired": false
+                })),
+                workflow_definition_approval_action_id_for_tool_call,
+            ),
+        ] {
+            output["summary"] = json!("negative approval boundary");
+            let tool_call = replay_tool_call_fixture(
+                AgentToolCallState::Succeeded,
+                Some(output),
+                None,
+            );
+            assert_eq!(helper(&tool_call).expect("decode negative approval boundary"), None);
+        }
+    }
+
+    #[test]
+    fn cancellation_and_route_fixture_covers_active_terminal_and_builtin_boundaries() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo root");
+        let project_id = "cancellation-route-fixture";
+        create_project_database(&repo_root, project_id);
+
+        let running = insert_runtime_run_fixture(
+            &repo_root,
+            project_id,
+            "cancel-through-cas",
+            RuntimeAgentIdDto::Engineer,
+        );
+        let cancelled = cancel_owned_agent_run(&repo_root, project_id, &running.run.run_id)
+            .expect("cancel running fixture through durable CAS");
+        assert_eq!(cancelled.run.status, AgentRunStatus::Cancelled);
+        assert_eq!(
+            cancelled
+                .events
+                .iter()
+                .filter(|event| event.event_kind == AgentRunEventKind::RunFailed)
+                .count(),
+            1
+        );
+        let cancelled_again = cancel_owned_agent_run(&repo_root, project_id, &running.run.run_id)
+            .expect("terminal cancellation is idempotent");
+        assert_eq!(cancelled_again.run.status, AgentRunStatus::Cancelled);
+        assert_eq!(cancelled_again.events.len(), cancelled.events.len());
+
+        let marking = insert_runtime_run_fixture(
+            &repo_root,
+            project_id,
+            "mark-cancelled",
+            RuntimeAgentIdDto::Engineer,
+        );
+        let marked = mark_owned_agent_run_cancelled(&repo_root, project_id, &marking.run.run_id)
+            .expect("mark active run cancelled");
+        assert_eq!(marked.run.status, AgentRunStatus::Cancelled);
+        assert!(marked.events.iter().any(|event| {
+            event.event_kind == AgentRunEventKind::RunFailed
+                && event.payload_json.contains(AGENT_RUN_CANCELLED_CODE)
+        }));
+
+        let cancelling = insert_runtime_run_fixture(
+            &repo_root,
+            project_id,
+            "already-cancelling",
+            RuntimeAgentIdDto::Engineer,
+        );
+        project_store::update_agent_run_status(
+            &repo_root,
+            project_id,
+            &cancelling.run.run_id,
+            AgentRunStatus::Cancelling,
+            None,
+            "2026-07-19T00:00:01Z",
+        )
+        .expect("mark fixture cancelling");
+        let cancelled =
+            mark_owned_agent_run_cancelled(&repo_root, project_id, &cancelling.run.run_id)
+                .expect("finish cancelling fixture");
+        assert_eq!(cancelled.run.status, AgentRunStatus::Cancelled);
+        assert!(cancelled.events.is_empty());
+
+        let completed = insert_runtime_run_fixture(
+            &repo_root,
+            project_id,
+            "already-completed",
+            RuntimeAgentIdDto::Engineer,
+        );
+        project_store::update_agent_run_status(
+            &repo_root,
+            project_id,
+            &completed.run.run_id,
+            AgentRunStatus::Completed,
+            None,
+            "2026-07-19T00:00:01Z",
+        )
+        .expect("complete fixture run");
+        let unchanged =
+            mark_owned_agent_run_cancelled(&repo_root, project_id, &completed.run.run_id)
+                .expect("terminal run remains unchanged");
+        assert_eq!(unchanged.run.status, AgentRunStatus::Completed);
+        assert!(unchanged.events.is_empty());
+
+        let source = insert_runtime_run_fixture(
+            &repo_root,
+            project_id,
+            "route-source",
+            RuntimeAgentIdDto::Engineer,
+        );
+        let same_target = resolve_agent_route_target(
+            &repo_root,
+            project_id,
+            &source.run.run_id,
+            RuntimeAgentIdDto::Engineer,
+            Some("  "),
+            None,
+        )
+        .expect_err("active built-in identity cannot route to itself");
+        assert_eq!(same_target.code, "agent_route_target_is_active");
+
+        let target = resolve_agent_route_target(
+            &repo_root,
+            project_id,
+            &source.run.run_id,
+            RuntimeAgentIdDto::Ask,
+            None,
+            None,
+        )
+        .expect("resolve another built-in route target");
+        assert_eq!(target.runtime_agent_id, RuntimeAgentIdDto::Ask);
+        assert_eq!(target.target_kind, "built_in");
+        assert!(target.auto_routable);
+        assert!(!target.display_name.trim().is_empty());
     }
 }

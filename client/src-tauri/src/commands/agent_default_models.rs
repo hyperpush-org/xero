@@ -218,3 +218,104 @@ fn validate_agent_default_model(default_model: &AgentDefaultModelDto) -> Command
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::commands::{ProviderModelThinkingEffortDto, RuntimeAgentIdDto};
+
+    fn model() -> AgentDefaultModelDto {
+        AgentDefaultModelDto {
+            provider_id: "provider-1".into(),
+            provider_profile_id: Some("profile-1".into()),
+            model_id: "model-1".into(),
+            selection_key: Some("provider-1:model-1".into()),
+            thinking_effort: Some(ProviderModelThinkingEffortDto::High),
+        }
+    }
+
+    #[test]
+    fn builtin_default_model_store_round_trips_resets_and_fails_closed_on_corruption() {
+        let root = tempfile::tempdir().expect("temp dir");
+        let path = root.path().join("app-data").join("xero.db");
+        assert_eq!(
+            load_builtin_agent_default_model(&path, RuntimeAgentIdDto::Engineer)
+                .expect("load missing model"),
+            None
+        );
+
+        let expected = model();
+        upsert_builtin_agent_default_model(
+            &path,
+            RuntimeAgentIdDto::Engineer,
+            Some(expected.clone()),
+        )
+        .expect("save default model");
+        assert_eq!(
+            load_builtin_agent_default_model(&path, RuntimeAgentIdDto::Engineer)
+                .expect("load saved model"),
+            Some(expected)
+        );
+
+        let connection = open_global_database(&path).expect("open fixture database");
+        connection
+            .execute_batch("PRAGMA ignore_check_constraints = ON;")
+            .expect("allow corruption fixture");
+        connection
+            .execute(
+                "UPDATE builtin_agent_default_models SET payload = 'malformed' WHERE runtime_agent_id = 'engineer'",
+                [],
+            )
+            .expect("corrupt fixture payload");
+        assert_eq!(
+            load_builtin_agent_default_model(&path, RuntimeAgentIdDto::Engineer)
+                .expect_err("corrupt model must fail closed")
+                .code,
+            "builtin_agent_default_model_decode_failed"
+        );
+
+        upsert_builtin_agent_default_model(&path, RuntimeAgentIdDto::Engineer, None)
+            .expect("reset default model");
+        assert_eq!(
+            load_builtin_agent_default_model(&path, RuntimeAgentIdDto::Engineer)
+                .expect("load reset model"),
+            None
+        );
+    }
+
+    #[test]
+    fn default_model_validation_covers_optional_identifier_boundaries() {
+        validate_agent_default_model(&model()).expect("valid model");
+        for invalid in [
+            AgentDefaultModelDto {
+                provider_id: " ".into(),
+                ..model()
+            },
+            AgentDefaultModelDto {
+                model_id: "".into(),
+                ..model()
+            },
+            AgentDefaultModelDto {
+                provider_profile_id: Some("\n".into()),
+                ..model()
+            },
+            AgentDefaultModelDto {
+                selection_key: Some(" ".into()),
+                ..model()
+            },
+        ] {
+            assert_eq!(
+                validate_agent_default_model(&invalid)
+                    .expect_err("invalid default model")
+                    .code,
+                "invalid_request"
+            );
+        }
+        validate_agent_default_model(&AgentDefaultModelDto {
+            provider_profile_id: None,
+            selection_key: None,
+            ..model()
+        })
+        .expect("optional model identifiers may be omitted");
+    }
+}

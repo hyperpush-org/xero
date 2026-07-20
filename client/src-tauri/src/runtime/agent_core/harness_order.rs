@@ -23,10 +23,6 @@ impl HarnessStepStatus {
         }
     }
 
-    const fn is_terminal(&self) -> bool {
-        matches!(self, Self::Passed | Self::Failed | Self::SkippedWithReason)
-    }
-
     fn from_report_cell(value: &str) -> Option<Self> {
         match value.trim() {
             "passed" => Some(Self::Passed),
@@ -95,419 +91,6 @@ struct HarnessTargetProfile {
     pass_condition: &'static str,
     skip_condition: &'static str,
     cleanup_requirement: &'static str,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct HarnessToolAssignment {
-    tool_call_id: String,
-    item_id: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) enum HarnessToolBatchDecision {
-    Allow {
-        assignments: Vec<HarnessToolAssignment>,
-    },
-    Reprompt {
-        message: String,
-    },
-}
-
-#[derive(Debug, Clone, Default)]
-pub(crate) struct HarnessTestOrderGate {
-    items: Vec<HarnessManifestItem>,
-    manifest_signature: Option<String>,
-    manifest_revision: u32,
-}
-
-impl HarnessTestOrderGate {
-    pub(crate) fn for_controls(_controls: &RuntimeRunControlStateDto) -> Option<Self> {
-        None
-    }
-
-    pub(crate) fn refresh_manifest(
-        &mut self,
-        repo_root: &Path,
-        project_id: &str,
-        run_id: &str,
-        registry: &ToolRegistry,
-    ) -> CommandResult<()> {
-        let mut next_items = canonical_manifest_items(registry);
-        for item in &mut next_items {
-            if let Some(previous) = self
-                .items
-                .iter()
-                .find(|previous| previous.item_id == item.item_id)
-            {
-                item.status = previous.status.clone();
-                item.observed_tool_call_id = previous.observed_tool_call_id.clone();
-                item.observed_tool_name = previous.observed_tool_name.clone();
-                item.evidence = previous.evidence.clone();
-                item.skip_reason = previous.skip_reason.clone();
-            }
-        }
-        self.items = next_items;
-
-        let signature = manifest_signature(&self.items)?;
-        if self.manifest_signature.as_deref() == Some(signature.as_str()) {
-            return Ok(());
-        }
-        self.manifest_signature = Some(signature.clone());
-        self.manifest_revision = self.manifest_revision.saturating_add(1);
-        append_event(
-            repo_root,
-            project_id,
-            run_id,
-            AgentRunEventKind::ValidationStarted,
-            json!({
-                "kind": "harness_test_manifest",
-                "label": "harness_test_manifest",
-                "manifestVersion": HARNESS_MANIFEST_VERSION,
-                "revision": self.manifest_revision,
-                "signature": signature,
-                "status": "active",
-                "expected": self.next_pending_manifest_item_json(),
-                "items": self.items.clone(),
-                "terminalCounts": self.terminal_counts_json(),
-            }),
-        )?;
-        Ok(())
-    }
-
-    pub(crate) fn evaluate_tool_calls(
-        &self,
-        repo_root: &Path,
-        project_id: &str,
-        run_id: &str,
-        tool_calls: &[AgentToolCall],
-    ) -> CommandResult<HarnessToolBatchDecision> {
-        let Some(first_pending_index) = self.next_pending_tool_item_index() else {
-            let observed = tool_calls
-                .iter()
-                .map(|call| call.tool_name.as_str())
-                .collect::<Vec<_>>()
-                .join(", ");
-            let message = self.reprompt_message(
-                "The harness manifest has no pending tool steps. Produce the final report instead of calling more tools.",
-            );
-            self.record_gate_block(
-                repo_root,
-                project_id,
-                run_id,
-                "unexpected_tool_after_manifest_satisfied",
-                Some(observed),
-                message.as_str(),
-            )?;
-            return Ok(HarnessToolBatchDecision::Reprompt { message });
-        };
-
-        let mut assignments = Vec::with_capacity(tool_calls.len());
-        for (offset, tool_call) in tool_calls.iter().enumerate() {
-            let Some(expected) = self.items.get(first_pending_index + offset) else {
-                let observed = tool_calls
-                    .iter()
-                    .map(|call| call.tool_name.as_str())
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let message = self.reprompt_message(
-                    "The harness tool batch is longer than the remaining ordered manifest.",
-                );
-                self.record_gate_block(
-                    repo_root,
-                    project_id,
-                    run_id,
-                    "tool_batch_exceeds_manifest",
-                    Some(observed),
-                    message.as_str(),
-                )?;
-                return Ok(HarnessToolBatchDecision::Reprompt { message });
-            };
-            if expected.status.is_terminal() || expected.target != tool_call.tool_name {
-                let message = self.reprompt_message(&format!(
-                    "Expected `{}` for step `{}` next, but observed `{}`.",
-                    expected.target, expected.step_id, tool_call.tool_name
-                ));
-                self.record_gate_block(
-                    repo_root,
-                    project_id,
-                    run_id,
-                    "out_of_order_tool_call",
-                    Some(tool_call.tool_name.clone()),
-                    message.as_str(),
-                )?;
-                return Ok(HarnessToolBatchDecision::Reprompt { message });
-            }
-            assignments.push(HarnessToolAssignment {
-                tool_call_id: tool_call.tool_call_id.clone(),
-                item_id: expected.item_id.clone(),
-            });
-        }
-
-        append_event(
-            repo_root,
-            project_id,
-            run_id,
-            AgentRunEventKind::ValidationStarted,
-            json!({
-                "kind": "harness_test_order_gate",
-                "label": "harness_test_order_gate",
-                "outcome": "allowed",
-                "assignments": assignments.iter().map(|assignment| {
-                    json!({
-                        "toolCallId": assignment.tool_call_id,
-                        "itemId": assignment.item_id,
-                    })
-                }).collect::<Vec<_>>(),
-            }),
-        )?;
-
-        Ok(HarnessToolBatchDecision::Allow { assignments })
-    }
-
-    pub(crate) fn record_tool_outcomes(
-        &mut self,
-        repo_root: &Path,
-        project_id: &str,
-        run_id: &str,
-        assignments: &[HarnessToolAssignment],
-        snapshot: &AgentRunSnapshotRecord,
-    ) -> CommandResult<()> {
-        for assignment in assignments {
-            let Some(tool_call) = snapshot
-                .tool_calls
-                .iter()
-                .find(|tool_call| tool_call.tool_call_id == assignment.tool_call_id)
-            else {
-                continue;
-            };
-            let Some(item) = self
-                .items
-                .iter_mut()
-                .find(|item| item.item_id == assignment.item_id)
-            else {
-                continue;
-            };
-            item.observed_tool_call_id = Some(tool_call.tool_call_id.clone());
-            item.observed_tool_name = Some(tool_call.tool_name.clone());
-            match tool_call.state {
-                AgentToolCallState::Succeeded => {
-                    item.status = HarnessStepStatus::Passed;
-                    item.evidence = Some(tool_result_summary(tool_call));
-                    item.skip_reason = None;
-                }
-                AgentToolCallState::Failed => {
-                    item.status = HarnessStepStatus::Failed;
-                    item.evidence = tool_call
-                        .error
-                        .as_ref()
-                        .map(|error| format!("{}: {}", error.code, error.message))
-                        .or_else(|| Some("Tool call failed without persisted diagnostic.".into()));
-                    item.skip_reason = None;
-                }
-                AgentToolCallState::Pending | AgentToolCallState::Running => continue,
-            }
-            let item = item.clone();
-            self.record_step_event(repo_root, project_id, run_id, &item)?;
-        }
-        Ok(())
-    }
-
-    pub(crate) fn evaluate_completion(
-        &mut self,
-        repo_root: &Path,
-        project_id: &str,
-        run_id: &str,
-        message: &str,
-    ) -> CommandResult<Option<String>> {
-        self.apply_final_report_skips(repo_root, project_id, run_id, message)?;
-        if self.next_pending_tool_item_index().is_none() {
-            if let Some(final_report) = self
-                .items
-                .iter_mut()
-                .find(|item| item.step_id == "final_report")
-            {
-                final_report.status = HarnessStepStatus::Passed;
-                final_report.evidence =
-                    Some("Final report accepted after manifest satisfaction.".into());
-                final_report.skip_reason = None;
-                let final_report = final_report.clone();
-                self.record_step_event(repo_root, project_id, run_id, &final_report)?;
-            }
-            append_event(
-                repo_root,
-                project_id,
-                run_id,
-                AgentRunEventKind::ValidationCompleted,
-                json!({
-                    "kind": "harness_test_manifest",
-                    "label": "harness_test_manifest",
-                    "manifestVersion": HARNESS_MANIFEST_VERSION,
-                    "outcome": "satisfied",
-                    "items": self.items.clone(),
-                    "terminalCounts": self.terminal_counts_json(),
-                }),
-            )?;
-            return Ok(None);
-        }
-
-        let message = self.reprompt_message(
-            "The provider returned a final response before the harness manifest was satisfied.",
-        );
-        self.record_gate_block(
-            repo_root,
-            project_id,
-            run_id,
-            "final_response_before_manifest_satisfied",
-            None,
-            message.as_str(),
-        )?;
-        Ok(Some(message))
-    }
-
-    fn apply_final_report_skips(
-        &mut self,
-        repo_root: &Path,
-        project_id: &str,
-        run_id: &str,
-        message: &str,
-    ) -> CommandResult<()> {
-        for row in parse_final_report_rows(message) {
-            if row.status != HarnessStepStatus::SkippedWithReason {
-                continue;
-            }
-            if row.skip_reason.trim().is_empty() || row.skip_reason.trim() == "none" {
-                continue;
-            }
-            let Some(item) = self.items.iter_mut().find(|item| {
-                item.step_id == row.step_id
-                    && item.target == row.target
-                    && !item.status.is_terminal()
-            }) else {
-                continue;
-            };
-            item.status = HarnessStepStatus::SkippedWithReason;
-            item.evidence = (!row.evidence.trim().is_empty() && row.evidence.trim() != "none")
-                .then(|| row.evidence.clone());
-            item.skip_reason = Some(row.skip_reason.clone());
-            let item = item.clone();
-            self.record_step_event(repo_root, project_id, run_id, &item)?;
-        }
-        Ok(())
-    }
-
-    fn next_pending_tool_item_index(&self) -> Option<usize> {
-        self.items
-            .iter()
-            .position(|item| !item.status.is_terminal() && item.step_id != "final_report")
-    }
-
-    fn next_pending_manifest_item_json(&self) -> JsonValue {
-        self.next_pending_tool_item_index()
-            .and_then(|index| self.items.get(index))
-            .map(|item| {
-                json!({
-                    "itemId": item.item_id,
-                    "stepId": item.step_id,
-                    "target": item.target,
-                    "status": item.status.as_str(),
-                })
-            })
-            .unwrap_or_else(|| {
-                json!({
-                    "stepId": "final_report",
-                    "target": "final_report",
-                    "status": "pending",
-                })
-            })
-    }
-
-    fn terminal_counts_json(&self) -> JsonValue {
-        let mut passed = 0usize;
-        let mut failed = 0usize;
-        let mut skipped = 0usize;
-        let mut pending = 0usize;
-        for item in &self.items {
-            match item.status {
-                HarnessStepStatus::Passed => passed += 1,
-                HarnessStepStatus::Failed => failed += 1,
-                HarnessStepStatus::SkippedWithReason => skipped += 1,
-                HarnessStepStatus::Pending => pending += 1,
-            }
-        }
-        json!({
-            "passed": passed,
-            "failed": failed,
-            "skipped": skipped,
-            "pending": pending,
-        })
-    }
-
-    fn reprompt_message(&self, reason: &str) -> String {
-        let expected = self.next_pending_manifest_item_json();
-        let expected_step = expected
-            .get("stepId")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("final_report");
-        let expected_target = expected
-            .get("target")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("final_report");
-        format!(
-            "Xero harness order gate: {reason}\n\nNext required manifest item: step `{expected_step}`, target `{expected_target}`. Continue the Test-agent harness in canonical order. If this item cannot be safely exercised, include a final-report table row for this exact step and target with status `skipped_with_reason` and a concrete skip reason; otherwise call the expected tool next."
-        )
-    }
-
-    fn record_gate_block(
-        &self,
-        repo_root: &Path,
-        project_id: &str,
-        run_id: &str,
-        code: &str,
-        observed: Option<String>,
-        message: &str,
-    ) -> CommandResult<()> {
-        append_event(
-            repo_root,
-            project_id,
-            run_id,
-            AgentRunEventKind::ValidationCompleted,
-            json!({
-                "kind": "harness_test_order_gate",
-                "label": "harness_test_order_gate",
-                "outcome": "blocked",
-                "code": code,
-                "observed": observed,
-                "expected": self.next_pending_manifest_item_json(),
-                "message": message,
-                "terminalCounts": self.terminal_counts_json(),
-            }),
-        )?;
-        Ok(())
-    }
-
-    fn record_step_event(
-        &self,
-        repo_root: &Path,
-        project_id: &str,
-        run_id: &str,
-        item: &HarnessManifestItem,
-    ) -> CommandResult<()> {
-        append_event(
-            repo_root,
-            project_id,
-            run_id,
-            AgentRunEventKind::ValidationCompleted,
-            json!({
-                "kind": "harness_test_step",
-                "label": "harness_test_step",
-                "manifestVersion": HARNESS_MANIFEST_VERSION,
-                "item": item,
-                "outcome": item.status.as_str(),
-                "terminalCounts": self.terminal_counts_json(),
-            }),
-        )?;
-        Ok(())
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -725,29 +308,6 @@ fn manifest_signature(items: &[HarnessManifestItem]) -> CommandResult<String> {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     Ok(format!("{:x}", hasher.finalize()))
-}
-
-fn tool_result_summary(tool_call: &project_store::AgentToolCallRecord) -> String {
-    let Some(result_json) = tool_call.result_json.as_deref() else {
-        return "Tool call succeeded without persisted result payload.".into();
-    };
-    serde_json::from_str::<JsonValue>(result_json)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("summary")
-                .and_then(JsonValue::as_str)
-                .map(str::to_owned)
-                .or_else(|| {
-                    value
-                        .get("output")
-                        .and_then(|output| output.get("summary"))
-                        .and_then(JsonValue::as_str)
-                        .map(str::to_owned)
-                })
-        })
-        .filter(|summary| !summary.trim().is_empty())
-        .unwrap_or_else(|| "Tool call succeeded and persisted a result payload.".into())
 }
 
 fn target_manifest_profile(step: &HarnessStepDefinition, target: &str) -> HarnessTargetProfile {
@@ -1284,41 +844,6 @@ mod tests {
         )
     }
 
-    fn controls_for_agent(runtime_agent_id: RuntimeAgentIdDto) -> RuntimeRunControlStateDto {
-        RuntimeRunControlStateDto {
-            active: RuntimeRunActiveControlSnapshotDto {
-                runtime_agent_id,
-                agent_definition_id: None,
-                agent_definition_version: None,
-                provider_profile_id: None,
-                model_id: OPENAI_CODEX_PROVIDER_ID.into(),
-                thinking_effort: None,
-                approval_mode: RuntimeRunApprovalModeDto::Suggest,
-                plan_mode_required: false,
-                auto_compact_enabled: true,
-                revision: 1,
-                applied_at: "2026-05-05T00:00:00Z".into(),
-            },
-            pending: None,
-        }
-    }
-
-    #[test]
-    fn order_gate_stays_disabled_after_test_agent_removal() {
-        for runtime_agent_id in [
-            RuntimeAgentIdDto::Ask,
-            RuntimeAgentIdDto::Engineer,
-            RuntimeAgentIdDto::Debug,
-            RuntimeAgentIdDto::Crawl,
-            RuntimeAgentIdDto::AgentCreate,
-        ] {
-            assert!(
-                HarnessTestOrderGate::for_controls(&controls_for_agent(runtime_agent_id)).is_none(),
-                "{runtime_agent_id:?} must not receive Test-agent harness ordering behavior"
-            );
-        }
-    }
-
     #[test]
     fn manifest_orders_active_tools_by_canonical_harness_sequence() {
         let registry = test_registry(&[
@@ -1516,5 +1041,152 @@ mod tests {
         assert!(output["comparison"]["unsafeRows"]
             .as_array()
             .is_some_and(|rows| !rows.is_empty()));
+    }
+
+    #[test]
+    fn harness_runner_manifest_and_request_validation_are_deterministic() {
+        let registry = test_registry(&[
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+            AUTONOMOUS_TOOL_READ,
+        ]);
+        let (summary, output) = harness_runner_tool_output(
+            &registry,
+            &AutonomousHarnessRunnerRequest {
+                action: AutonomousHarnessRunnerAction::Manifest,
+                final_report: None,
+            },
+        )
+        .expect("manifest output");
+        assert!(summary.contains("canonical manifest item(s)"));
+        assert_eq!(output["schema"], json!(HARNESS_RUNNER_SCHEMA));
+        assert_eq!(output["passed"], json!(true));
+        assert_eq!(output["comparison"]["mode"], json!("manifest_only"));
+        assert_eq!(
+            output["itemCount"],
+            json!(output["items"].as_array().expect("manifest items").len())
+        );
+        assert_eq!(
+            output["manifestSignature"]
+                .as_str()
+                .expect("manifest signature")
+                .len(),
+            64
+        );
+
+        assert_eq!(
+            harness_runner_tool_output(
+                &registry,
+                &AutonomousHarnessRunnerRequest {
+                    action: AutonomousHarnessRunnerAction::CompareReport,
+                    final_report: None,
+                },
+            )
+            .expect_err("compare requires report")
+            .code,
+            "harness_runner_final_report_required"
+        );
+    }
+
+    #[test]
+    fn harness_report_fixtures_detect_order_unexpected_rows_and_unsafe_evidence() {
+        let registry = test_registry(&[
+            AUTONOMOUS_TOOL_TOOL_SEARCH,
+            AUTONOMOUS_TOOL_TOOL_ACCESS,
+        ]);
+        let items = canonical_manifest_items(&registry);
+        let report = r#"ignored prose
+| Step | Target | Status | Evidence | Skip reason |
+| --- | --- | --- | --- | --- |
+| registry_discovery | tool_access | skipped_with_reason | none | none |
+| unknown | extra | failed | diagnostic | none |
+| registry_discovery | tool_search | passed | persisted | none |
+| too | short |
+| invalid | status | pending | none | none |
+"#;
+        let comparison = harness_runner_compare_report(&items, report);
+        assert_eq!(comparison["passed"], json!(false));
+        assert_eq!(comparison["observedRowCount"], json!(3));
+        assert!(!comparison["unexpectedRows"]
+            .as_array()
+            .expect("unexpected rows")
+            .is_empty());
+        assert!(!comparison["outOfOrderRows"]
+            .as_array()
+            .expect("out-of-order rows")
+            .is_empty());
+        assert_eq!(
+            comparison["unsafeRows"][0]["reason"],
+            json!("skipped_row_requires_reason")
+        );
+
+        assert_eq!(HarnessStepStatus::from_report_cell(" passed "), Some(HarnessStepStatus::Passed));
+        assert_eq!(HarnessStepStatus::from_report_cell("failed"), Some(HarnessStepStatus::Failed));
+        assert_eq!(
+            HarnessStepStatus::from_report_cell("skipped_with_reason"),
+            Some(HarnessStepStatus::SkippedWithReason)
+        );
+        assert_eq!(HarnessStepStatus::from_report_cell("pending"), None);
+    }
+
+    #[test]
+    fn every_canonical_harness_target_has_a_concrete_safety_profile() {
+        for step in canonical_step_definitions() {
+            for target in step.targets {
+                let profile = target_manifest_profile(step, target);
+                assert!(!profile.safe_input.trim().is_empty(), "safe input for {target}");
+                assert!(!profile.pass_condition.trim().is_empty(), "pass condition for {target}");
+                assert!(!profile.skip_condition.trim().is_empty(), "skip condition for {target}");
+                assert!(
+                    !profile.cleanup_requirement.trim().is_empty(),
+                    "cleanup requirement for {target}"
+                );
+            }
+        }
+
+        let dynamic = dynamic_mcp_step_definition();
+        let dynamic_profile = target_manifest_profile(
+            &dynamic,
+            "mcp__fixture__echo__000000000000",
+        );
+        assert!(dynamic_profile.safe_input.contains("dynamic MCP"));
+
+        let final_step = final_report_step_definition();
+        let final_profile = target_manifest_profile(&final_step, "final_report");
+        assert_eq!(final_profile.skip_condition, "Final report cannot be skipped.");
+
+        let fallback_step = HarnessStepDefinition {
+            step_id: "future_step",
+            targets: &[],
+            safe_input: "safe",
+            pass_condition: "passed",
+            skip_condition: "skipped",
+            cleanup_requirement: "none",
+        };
+        assert_eq!(
+            target_manifest_profile(&fallback_step, "future_tool"),
+            HarnessTargetProfile {
+                safe_input: "safe",
+                pass_condition: "passed",
+                skip_condition: "skipped",
+                cleanup_requirement: "none",
+            }
+        );
+    }
+
+    #[test]
+    fn manifest_signature_changes_with_terminal_evidence() {
+        let registry = test_registry(&[AUTONOMOUS_TOOL_TOOL_SEARCH]);
+        let items = canonical_manifest_items(&registry);
+        let pending_signature = manifest_signature(&items).expect("pending signature");
+        let mut completed = items.clone();
+        completed[0].status = HarnessStepStatus::Passed;
+        completed[0].observed_tool_call_id = Some("call-1".into());
+        completed[0].evidence = Some("persisted".into());
+        let completed_signature = manifest_signature(&completed).expect("completed signature");
+
+        assert_ne!(pending_signature, completed_signature);
+        assert_eq!(pending_signature.len(), 64);
+        assert_eq!(completed_signature.len(), 64);
     }
 }

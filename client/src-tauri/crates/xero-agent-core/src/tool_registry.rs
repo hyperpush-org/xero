@@ -276,7 +276,8 @@ impl ToolDescriptorV2 {
 
         let mut seen_tags = BTreeSet::new();
         for tag in &self.capability_tags {
-            if tag.trim().is_empty() || !seen_tags.insert(tag) {
+            let normalized = tag.trim();
+            if normalized.is_empty() || normalized != tag || !seen_tags.insert(normalized) {
                 return Err(ToolExecutionError::invalid_input(
                     "agent_tool_descriptor_invalid",
                     format!(
@@ -3445,19 +3446,28 @@ fn execute_prepared_call(
             ),
         ));
     }
-    let post_hook_payload = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+    let post_hook_payload = match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         prepared
             .handler
             .post_hook_payload(&prepared.call, &raw_result)
-    }))
-    .unwrap_or_else(|_| {
-        json!({
+    })) {
+        Ok(payload) => payload,
+        Err(_) => {
+            raw_result = Err(ToolExecutionError::retryable(
+                "agent_tool_post_hook_panicked",
+                format!(
+                    "Post-hook for tool `{}` panicked while finalizing its result.",
+                    prepared.call.tool_name
+                ),
+            ));
+            json!({
             "toolCallId": &prepared.call.tool_call_id,
             "toolName": &prepared.call.tool_name,
             "ok": false,
             "postHookPanicked": true,
-        })
-    });
+            })
+        }
+    };
     match raw_result {
         Ok(handler_output) => {
             let mut sandbox_metadata = prepared.sandbox_metadata;
@@ -4382,6 +4392,145 @@ mod tests {
     }
 
     #[test]
+    fn descriptor_validation_rejects_noncanonical_capability_tags() {
+        for capability_tags in [
+            vec![" test".into()],
+            vec!["test ".into()],
+            vec!["test".into(), "test".into()],
+            vec!["".into()],
+        ] {
+            let mut candidate = descriptor("tagged_tool", ToolMutability::ReadOnly);
+            candidate.capability_tags = capability_tags;
+
+            let error = candidate
+                .validate()
+                .expect_err("capability tags must be nonblank, canonical, and unique");
+            assert_eq!(error.code, "agent_tool_descriptor_invalid");
+        }
+    }
+
+    #[test]
+    fn descriptor_validation_covers_every_application_safety_contract() {
+        let legacy = ToolDescriptorV2::from_legacy_descriptor(
+            "legacy_observe",
+            "Observe legacy state.",
+            json!({"type": "object"}),
+        );
+        assert_eq!(legacy.application_metadata, ToolApplicationMetadata::default());
+        assert_eq!(legacy.effect_class, ToolEffectClass::Observe);
+        assert_eq!(legacy.mutability, ToolMutability::ReadOnly);
+        assert_eq!(legacy.sandbox_requirement, ToolSandboxRequirement::None);
+        assert_eq!(legacy.approval_requirement, ToolApprovalRequirement::Policy);
+        legacy.validate().expect("legacy descriptor defaults are valid");
+
+        let mut invalid_cases = Vec::new();
+
+        let mut missing_description = descriptor("missing_description", ToolMutability::ReadOnly);
+        missing_description.description = "  ".into();
+        invalid_cases.push(missing_description);
+
+        let mut non_object_schema = descriptor("non_object", ToolMutability::ReadOnly);
+        non_object_schema.input_schema = json!("string");
+        invalid_cases.push(non_object_schema);
+
+        let mut zero_output = descriptor("zero_output", ToolMutability::ReadOnly);
+        zero_output.result_truncation.max_output_bytes = 0;
+        invalid_cases.push(zero_output);
+
+        let mut missing_family = descriptor("missing_family", ToolMutability::ReadOnly);
+        missing_family.application_metadata.family = " ".into();
+        invalid_cases.push(missing_family);
+
+        let mut granular_batch = descriptor("granular_batch", ToolMutability::ReadOnly);
+        granular_batch.application_metadata.dispatch_safety =
+            ToolBatchDispatchSafety::ParallelReadOnly;
+        invalid_cases.push(granular_batch);
+
+        let mut mutating_read_batch = descriptor("mutating_read_batch", ToolMutability::Mutating);
+        mutating_read_batch.application_metadata = ToolApplicationMetadata {
+            family: "search".into(),
+            kind: ToolApplicationKind::ReadOnlyBatch,
+            dispatch_safety: ToolBatchDispatchSafety::ParallelReadOnly,
+            safety_requirements: vec!["read_only".into(), "bounded_results".into()],
+        };
+        invalid_cases.push(mutating_read_batch);
+
+        let mut sequential_read_batch = descriptor("sequential_read_batch", ToolMutability::ReadOnly);
+        sequential_read_batch.application_metadata = ToolApplicationMetadata {
+            family: "search".into(),
+            kind: ToolApplicationKind::ReadOnlyBatch,
+            dispatch_safety: ToolBatchDispatchSafety::SequentialMutating,
+            safety_requirements: vec!["read_only".into(), "bounded_results".into()],
+        };
+        invalid_cases.push(sequential_read_batch);
+
+        let mut parallel_mutation = descriptor("parallel_mutation", ToolMutability::Mutating);
+        parallel_mutation.application_metadata = ToolApplicationMetadata {
+            family: "edit".into(),
+            kind: ToolApplicationKind::MutatingBatch,
+            dispatch_safety: ToolBatchDispatchSafety::ParallelReadOnly,
+            safety_requirements: vec![
+                "supports_preview".into(),
+                "validates_all_targets_before_writing".into(),
+                "reports_summary".into(),
+            ],
+        };
+        invalid_cases.push(parallel_mutation);
+
+        let mut missing_target_validation = descriptor("missing_validation", ToolMutability::Mutating);
+        missing_target_validation.application_metadata = ToolApplicationMetadata {
+            family: "edit".into(),
+            kind: ToolApplicationKind::Declarative,
+            dispatch_safety: ToolBatchDispatchSafety::ToolOwnedAtomic,
+            safety_requirements: vec!["supports_dry_run".into(), "reports_diff".into()],
+        };
+        invalid_cases.push(missing_target_validation);
+
+        let mut missing_report = descriptor("missing_report", ToolMutability::Mutating);
+        missing_report.application_metadata = ToolApplicationMetadata {
+            family: "edit".into(),
+            kind: ToolApplicationKind::Declarative,
+            dispatch_safety: ToolBatchDispatchSafety::ToolOwnedAtomic,
+            safety_requirements: vec![
+                "supports_dry_run".into(),
+                "validates_targets_before_writing".into(),
+            ],
+        };
+        invalid_cases.push(missing_report);
+
+        for candidate in invalid_cases {
+            let error = candidate
+                .validate()
+                .expect_err("invalid application safety contract must fail closed");
+            assert_eq!(error.code, "agent_tool_descriptor_invalid");
+        }
+
+        let mut valid_read_batch = descriptor("valid_read_batch", ToolMutability::ReadOnly);
+        valid_read_batch.application_metadata = ToolApplicationMetadata {
+            family: "search".into(),
+            kind: ToolApplicationKind::ReadOnlyBatch,
+            dispatch_safety: ToolBatchDispatchSafety::ParallelReadOnly,
+            safety_requirements: vec!["read_only".into(), "bounded_results".into()],
+        };
+        valid_read_batch.validate().expect("valid read-only batch");
+
+        let mut valid_mutating_batch = descriptor("valid_mutating_batch", ToolMutability::Mutating);
+        valid_mutating_batch.application_metadata = ToolApplicationMetadata {
+            family: "edit".into(),
+            kind: ToolApplicationKind::MutatingBatch,
+            dispatch_safety: ToolBatchDispatchSafety::SequentialMutating,
+            safety_requirements: vec![
+                "supports_preview".into(),
+                "validates_all_targets_before_writing".into(),
+                "reports_summary".into(),
+            ],
+        };
+        valid_mutating_batch
+            .validate()
+            .expect("valid mutating batch");
+    }
+
+    #[test]
     fn register_rejects_tool_application_batch_descriptors_without_safety_metadata() {
         let mut registry = ToolRegistryV2::new();
         let mut search = descriptor("search_batch", ToolMutability::ReadOnly);
@@ -4516,6 +4665,567 @@ mod tests {
             .validate()
             .expect_err("duplicate fixtures should fail");
         assert_eq!(error.code, "agent_tool_extension_fixture_duplicate");
+    }
+
+    #[test]
+    fn extension_manifest_validation_covers_contract_schema_runtime_and_fixture_boundaries() {
+        let mut cases = Vec::new();
+
+        let mut unsupported = extension_manifest();
+        unsupported.contract_version += 1;
+        cases.push((unsupported, "agent_tool_extension_contract_unsupported"));
+
+        let mut blank_label = extension_manifest();
+        blank_label.label = " ".into();
+        cases.push((blank_label, "agent_tool_extension_text_invalid"));
+
+        let mut blank_description = extension_manifest();
+        blank_description.description.clear();
+        cases.push((blank_description, "agent_tool_extension_text_invalid"));
+
+        let mut invalid_schema = extension_manifest();
+        invalid_schema.input_schema = json!([]);
+        cases.push((invalid_schema, "agent_tool_extension_schema_invalid"));
+
+        let mut blank_permission_label = extension_manifest();
+        blank_permission_label.permission.label = "\t".into();
+        cases.push((blank_permission_label, "agent_tool_extension_text_invalid"));
+
+        let mut blank_audit_label = extension_manifest();
+        blank_audit_label.permission.audit_label.clear();
+        cases.push((blank_audit_label, "agent_tool_extension_text_invalid"));
+
+        for executable in ["", " handler", "../handler", "bin/handler"] {
+            let mut invalid_executable = extension_manifest();
+            invalid_executable.runtime.executable = executable.into();
+            cases.push((
+                invalid_executable,
+                "agent_tool_extension_executable_invalid",
+            ));
+        }
+
+        let mut nul_argument = extension_manifest();
+        nul_argument.runtime.args = vec!["bad\0argument".into()];
+        cases.push((nul_argument, "agent_tool_extension_arguments_invalid"));
+
+        let mut oversized_argument = extension_manifest();
+        oversized_argument.runtime.args = vec!["x".repeat(4_097)];
+        cases.push((
+            oversized_argument,
+            "agent_tool_extension_arguments_invalid",
+        ));
+
+        let mut invalid_fixture_input = extension_manifest();
+        invalid_fixture_input.test_fixtures[0].input = json!("not-an-object");
+        cases.push((
+            invalid_fixture_input,
+            "agent_tool_extension_fixture_invalid",
+        ));
+
+        let mut blank_fixture_summary = extension_manifest();
+        blank_fixture_summary.test_fixtures[0].expected_summary_contains = Some("  ".into());
+        cases.push((
+            blank_fixture_summary,
+            "agent_tool_extension_fixture_invalid",
+        ));
+
+        for (manifest, expected_code) in cases {
+            let error = manifest
+                .validate()
+                .expect_err("invalid extension boundary must fail closed");
+            assert_eq!(error.code, expected_code);
+        }
+    }
+
+    #[test]
+    fn execution_controls_budgets_and_static_policy_fail_closed_at_boundaries() {
+        let cancellation = ToolCancellationToken::new();
+        let control = ToolExecutionControl::new(
+            Some(Instant::now() + Duration::from_secs(1)),
+            cancellation.clone(),
+        );
+        assert!(control.remaining().is_some_and(|remaining| !remaining.is_zero()));
+        control
+            .ensure_not_cancelled("read_file")
+            .expect("future deadline remains runnable");
+        cancellation.cancel();
+        let cancelled = control
+            .ensure_not_cancelled("read_file")
+            .expect_err("explicit cancellation must stop the tool");
+        assert_eq!(cancelled.category, ToolErrorCategory::Timeout);
+        assert_eq!(cancelled.code, "agent_tool_call_cancelled");
+
+        let expired = ToolExecutionControl::new(
+            Some(Instant::now() - Duration::from_millis(1)),
+            ToolCancellationToken::new(),
+        );
+        assert_eq!(expired.remaining(), Some(Duration::ZERO));
+        assert!(expired.is_cancelled());
+
+        let mut call_budget = ToolBudget::default();
+        call_budget.max_tool_calls_per_turn = 1;
+        let mut tracker = ToolBudgetTracker::new(call_budget);
+        let first = call("budget-1", "read_file", "one.txt");
+        tracker.record_call(&first).expect("first budgeted call");
+        let exhausted = tracker
+            .record_call(&call("budget-2", "read_file", "two.txt"))
+            .expect_err("second call must exceed a one-call budget");
+        assert_eq!(exhausted.code, "agent_tool_budget_calls_exceeded");
+
+        let mut failure_budget = ToolBudget::default();
+        failure_budget.max_tool_failures_per_turn = 0;
+        let mut tracker = ToolBudgetTracker::new(failure_budget);
+        let exhausted = tracker
+            .record_failure(
+                &first,
+                &ToolExecutionError::retryable("fixture_failure", "fixture failed"),
+            )
+            .expect_err("first failure must exceed a zero-failure budget");
+        assert_eq!(exhausted.code, "agent_tool_budget_failures_exceeded");
+        assert_eq!(
+            tracker
+                .doom_loop_mut()
+                .record_completion_claim(1, true),
+            Some(ToolDoomLoopSignal::PendingTodosIgnoredAfterCompletionClaim)
+        );
+        assert_eq!(
+            ToolExecutionError::doom_loop("fixture_loop", "looped").category,
+            ToolErrorCategory::DoomLoopDetected
+        );
+
+        let mut always = descriptor("always", ToolMutability::ReadOnly);
+        always.approval_requirement = ToolApprovalRequirement::Always;
+        assert!(matches!(
+            AllowAllToolPolicy.evaluate(&always, &call("policy-1", "always", "one")),
+            ToolPolicyDecision::RequireApproval { .. }
+        ));
+
+        let policy = StaticToolPolicy::default()
+            .deny_tool("denied", "blocked by fixture")
+            .require_approval_for_tool("review", "review fixture");
+        assert!(matches!(
+            policy.evaluate(
+                &descriptor("denied", ToolMutability::ReadOnly),
+                &call("policy-2", "denied", "one")
+            ),
+            ToolPolicyDecision::Deny { .. }
+        ));
+        assert!(matches!(
+            policy.evaluate(
+                &descriptor("review", ToolMutability::ReadOnly),
+                &call("policy-3", "review", "one")
+            ),
+            ToolPolicyDecision::RequireApproval { .. }
+        ));
+        assert_eq!(
+            policy.evaluate(
+                &descriptor("allowed", ToolMutability::ReadOnly),
+                &call("policy-4", "allowed", "one")
+            ),
+            ToolPolicyDecision::Allow
+        );
+    }
+
+    #[test]
+    fn registry_internal_contract_helpers_cover_recovery_classification_and_shape_boundaries() {
+        let helper_descriptor = descriptor("helper", ToolMutability::ReadOnly);
+        let call = call("helper-call", "helper", "src/lib.rs");
+        let handler = StaticToolHandler::new(helper_descriptor.clone(), |_context, _call| {
+            Ok(ToolHandlerOutput::new(
+                "helper output",
+                json!({ "exitCode": 0 }),
+            ))
+        });
+        assert!(!handler.requires_parent_process_execution(&call));
+        handler
+            .validate_input(&call.input)
+            .expect("handler schema validation");
+        assert_eq!(handler.pre_hook_payload(&call)["toolName"], "helper");
+        let output = handler
+            .execute(&ToolExecutionContext::default(), &call)
+            .expect("default execute path");
+        assert_eq!(output.summary, "helper output");
+        assert_eq!(handler.post_hook_payload(&call, &Ok(output))["ok"], true);
+
+        let rollback = RecordingRollback;
+        assert!(!rollback.requires_parent_process());
+        assert_eq!(
+            rollback
+                .recover_after_termination(
+                    &call,
+                    &helper_descriptor,
+                    None,
+                    &ToolExecutionError::retryable("terminated", "terminated"),
+                )
+                .expect_err("recovery requires a checkpoint")
+                .code,
+            "agent_tool_mutation_checkpoint_unavailable"
+        );
+        assert_eq!(
+            rollback
+                .recover_after_termination(
+                    &call,
+                    &helper_descriptor,
+                    Some(&json!({ "path": "src/lib.rs" })),
+                    &ToolExecutionError::retryable("terminated", "terminated"),
+                )
+                .expect("rollback recovery")["rolledBack"],
+            "helper-call"
+        );
+
+        let manifest = extension_manifest();
+        let mismatch_handler = StaticToolHandler::new(
+            descriptor("other", ToolMutability::ReadOnly),
+            |_context, _call| Ok(ToolHandlerOutput::new("unused", json!({}))),
+        );
+        assert_eq!(
+            mismatch_handler
+                .verify_extension_test_fixtures(&manifest, &ToolExecutionContext::default())
+                .expect_err("handler/manifest mismatch")
+                .code,
+            "agent_tool_extension_handler_mismatch"
+        );
+        let failing_fixture_handler = StaticToolHandler::try_from_extension_manifest(
+            manifest.clone(),
+            |_context, _call| Err(ToolExecutionError::retryable("fixture_failed", "failed")),
+        )
+        .expect("extension handler");
+        let report = failing_fixture_handler
+            .verify_extension_test_fixtures(&manifest, &ToolExecutionContext::default())
+            .expect("fixture report");
+        assert!(!report.passed);
+        assert_eq!(report.fixtures[0].status, ToolExtensionFixtureStatus::Failed);
+
+        let paths = mutation_affected_paths(
+            &json!({
+                "path": " src/lib.rs ",
+                "paths": ["src/main.rs", "", 1],
+                "nested": { "sourcePath": "src/old.rs", "ignored": "secret" },
+                "writeSet": [{ "pathAfter": "src/generated.rs" }]
+            }),
+            Some(&json!({
+                "pathBefore": "src/original.rs",
+                "files": ["src/lib.rs", "src/extra.rs"]
+            })),
+        );
+        assert_eq!(
+            paths,
+            vec![
+                "src/extra.rs",
+                "src/generated.rs",
+                "src/lib.rs",
+                "src/main.rs",
+                "src/old.rs",
+                "src/original.rs",
+            ]
+        );
+
+        for (value, expected) in [
+            (
+                json!({ "timedOut": true }),
+                SandboxExitClassification::Timeout,
+            ),
+            (
+                json!({ "spawned": false }),
+                SandboxExitClassification::NotRun,
+            ),
+            (
+                json!({ "nested": [{ "exit_code": 0 }] }),
+                SandboxExitClassification::Success,
+            ),
+            (
+                json!({ "exitCode": 7 }),
+                SandboxExitClassification::Failed,
+            ),
+            (json!({}), SandboxExitClassification::Success),
+        ] {
+            assert_eq!(exit_classification_from_output(&value), expected);
+        }
+        assert_eq!(
+            exit_classification_from_error(&ToolExecutionError::sandbox_denied(
+                "denied", "denied"
+            )),
+            SandboxExitClassification::DeniedBySandbox
+        );
+        assert_eq!(
+            exit_classification_from_error(&ToolExecutionError::timeout("timeout", "timeout")),
+            SandboxExitClassification::Timeout
+        );
+        assert_eq!(
+            exit_classification_from_error(&ToolExecutionError::retryable("failed", "failed")),
+            SandboxExitClassification::Failed
+        );
+        assert_eq!(
+            int_field_recursive(
+                &json!({ "nested": [{ "exitCode": -2 }] }),
+                &["exitCode"]
+            ),
+            Some(-2)
+        );
+        assert_eq!(
+            bool_field_recursive(&json!([{ "nested": { "ok": false } }]), &["ok"]),
+            Some(false)
+        );
+        assert_eq!(int_field_recursive(&json!(true), &["exitCode"]), None);
+        assert_eq!(bool_field_recursive(&json!(1), &["ok"]), None);
+
+        let unchanged = ToolResultTruncationMetadata::unchanged(8, 16);
+        let telemetry = output_telemetry(&unchanged);
+        assert_eq!(telemetry["xero.tool.truncated"], "false");
+        assert_eq!(telemetry["xero.tool.returned_bytes"], "8");
+        assert!(group_deadline(&ToolBudget::default()) > Instant::now());
+        assert!(timeout_error_for_elapsed(
+            Duration::from_secs(2),
+            &ToolBudget {
+                max_wall_clock_time_per_tool_group_ms: 1,
+                ..ToolBudget::default()
+            },
+            false,
+        )
+        .is_some());
+        assert!(timeout_error_for_elapsed(Duration::ZERO, &ToolBudget::default(), false).is_none());
+
+        let timeout_outcome = ToolDispatchOutcome::Failed(failure_from_error(
+            &call,
+            ToolExecutionError::timeout("timeout", "timeout"),
+            json!({}),
+            json!({}),
+            Duration::ZERO,
+        ));
+        assert!(outcome_is_timeout(&timeout_outcome));
+        assert_eq!(
+            panic_failure_outcome(&call)
+                .failure()
+                .expect("panic failure")
+                .error
+                .code,
+            "agent_tool_thread_panicked"
+        );
+        assert_eq!(handler_panic_error(&call).code, "agent_tool_handler_panicked");
+
+        let mut large = json!({
+            "items": (0..70)
+                .map(|index| json!({ "value": format!("{index}-{}", "x".repeat(80)) }))
+                .collect::<Vec<_>>()
+        });
+        let mut changed = false;
+        truncate_json_value_in_place(&mut large, 16, &mut changed);
+        assert!(changed);
+        assert_eq!(large["items"].as_array().expect("items").len(), 65);
+        let scalar = truncate_preserving_json_shape(json!("x".repeat(500)), 80);
+        assert_eq!(scalar["xeroTruncation"]["wasTruncated"], true);
+        assert_eq!(truncate_utf8("éclair", 1), "");
+        assert_eq!(truncate_utf8("short", 10), "short");
+    }
+
+    #[test]
+    fn direct_mutation_post_hook_panic_matches_isolated_worker_failure_semantics() {
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(PanickingPostHook {
+                descriptor: descriptor("direct-post-panic", ToolMutability::Mutating),
+            })
+            .expect("register panicking post-hook");
+        let call = call(
+            "direct-post-panic-call",
+            "direct-post-panic",
+            "src/lib.rs",
+        );
+        let config = ToolDispatchConfig::default();
+        let prepared = registry
+            .prepare_call(
+                &call,
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+                Instant::now() + Duration::from_secs(1),
+                ToolCancellationToken::new(),
+            )
+            .expect("prepare direct mutation");
+
+        let outcome = execute_prepared_call(
+            prepared,
+            &config.context,
+            Some(&RecordingRollback),
+        );
+
+        let failure = outcome.failure().expect("post-hook panic must fail closed");
+        assert_eq!(failure.error.code, "agent_tool_post_hook_panicked");
+        assert!(failure.rollback_payload.is_some());
+        assert_eq!(failure.post_hook_payload["postHookPanicked"], true);
+    }
+
+    #[test]
+    fn direct_prepared_and_pending_failures_preserve_typed_supervision_metadata() {
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("direct-helper", ToolMutability::Mutating),
+                |_context, call| {
+                    if call.input.get("fail").is_some() {
+                        Err(ToolExecutionError::retryable("handler_failed", "failed"))
+                    } else {
+                        Ok(ToolHandlerOutput::new(
+                            "direct success",
+                            json!({ "exitCode": 0 }),
+                        ))
+                    }
+                },
+            ))
+            .expect("register direct helper");
+        let config = ToolDispatchConfig::default();
+        let prepare = |call: &ToolCallInput, cancellation_token: ToolCancellationToken| {
+            registry
+                .prepare_call(
+                    call,
+                    &mut ToolBudgetTracker::new(config.budget.clone()),
+                    &config,
+                    Instant::now() + Duration::from_secs(1),
+                    cancellation_token,
+                )
+                .expect("prepare helper call")
+        };
+
+        let checkpoint_call = call(
+            "checkpoint-failure",
+            "direct-helper",
+            "src/checkpoint.rs",
+        );
+        let checkpoint_failure = execute_prepared_call(
+            prepare(&checkpoint_call, ToolCancellationToken::new()),
+            &config.context,
+            Some(&FailingCheckpoint),
+        );
+        assert_eq!(
+            checkpoint_failure
+                .failure()
+                .expect("checkpoint failure")
+                .error
+                .code,
+            "checkpoint_denied"
+        );
+
+        let success_call = call("direct-success", "direct-helper", "src/success.rs");
+        let success = execute_prepared_call(
+            prepare(&success_call, ToolCancellationToken::new()),
+            &config.context,
+            None,
+        );
+        assert!(matches!(success, ToolDispatchOutcome::Succeeded(_)));
+
+        let mut failure_call = call("direct-failure", "direct-helper", "src/failure.rs");
+        failure_call.input["fail"] = json!(true);
+        let failed = execute_prepared_call(
+            prepare(&failure_call, ToolCancellationToken::new()),
+            &config.context,
+            Some(&RecordingRollback),
+        );
+        let failure = failed.failure().expect("handler failure");
+        assert_eq!(failure.error.code, "handler_failed");
+        assert!(failure.rollback_payload.is_some());
+
+        let cancellation = ToolCancellationToken::new();
+        let cancelled_prepared = prepare(
+            &call("direct-cancelled", "direct-helper", "src/cancelled.rs"),
+            cancellation.clone(),
+        );
+        cancellation.cancel();
+        let cancelled = execute_prepared_call(cancelled_prepared, &config.context, None);
+        assert_eq!(
+            cancelled.failure().expect("cancelled prepared call").error.code,
+            "agent_tool_group_timeout"
+        );
+
+        let pending_prepared = prepare(
+            &call("pending", "direct-helper", "src/pending.rs"),
+            ToolCancellationToken::new(),
+        );
+        let pending = PendingReadOnlyToolCall::from_prepared(&pending_prepared);
+        let timeout = timeout_failure_from_pending(pending, &config.budget);
+        assert_eq!(timeout.error.code, "agent_tool_group_timeout");
+        let pending = PendingReadOnlyToolCall::from_prepared(&pending_prepared);
+        let unavailable = failure_from_pending_error(
+            pending,
+            ToolExecutionError::unavailable("worker_unavailable", "worker unavailable"),
+        );
+        assert_eq!(unavailable.error.code, "worker_unavailable");
+
+        let pending_mutation = PendingMutationToolCall::from_prepared(&pending_prepared);
+        for (cancelled, crashed, code, classification) in [
+            (
+                false,
+                false,
+                "agent_tool_mutation_terminated",
+                SandboxExitClassification::Timeout,
+            ),
+            (
+                true,
+                false,
+                "agent_tool_mutation_cancelled",
+                SandboxExitClassification::Cancelled,
+            ),
+            (
+                false,
+                true,
+                "agent_tool_mutation_worker_crashed",
+                SandboxExitClassification::Unknown,
+            ),
+        ] {
+            let failure = pending_mutation.terminated_failure(
+                MutationWorkerPhase::Handler,
+                cancelled,
+                crashed,
+            );
+            assert_eq!(failure.error.code, code);
+            assert_eq!(
+                failure
+                    .sandbox_metadata
+                    .expect("sandbox metadata")
+                    .exit_classification,
+                classification
+            );
+        }
+        let unavailable = PendingMutationToolCall::from_prepared(&pending_prepared)
+            .unavailable_failure(ToolExecutionError::unavailable(
+                "boundary_unavailable",
+                "boundary unavailable",
+            ));
+        assert_eq!(unavailable.error.code, "boundary_unavailable");
+
+        let prior_call = call("prior", "direct-helper", "src/prior.rs");
+        let quarantine = MutationQuarantine {
+            project_id: config.context.project_id.clone(),
+            call: prior_call,
+            descriptor: descriptor("direct-helper", ToolMutability::Mutating),
+            checkpoint: Some(json!({ "path": "src/prior.rs" })),
+            error: ToolExecutionError::timeout("prior_timeout", "prior timeout"),
+            rollback_error: ToolExecutionError::retryable(
+                "rollback_failed",
+                "rollback failed",
+            ),
+            phase: MutationWorkerPhase::Rollback,
+            rollback: None,
+        };
+        let quarantined = pending_mutation.quarantined_failure(&quarantine);
+        assert_eq!(quarantined.error.code, "agent_tool_mutation_quarantined");
+        assert_eq!(
+            quarantined.error.telemetry_attributes["xero.mutation.quarantined_call_id"],
+            "prior"
+        );
+
+        let plain_scope = mutation_execution_scope(&ToolExecutionContext {
+            project_id: "project-1".into(),
+            ..ToolExecutionContext::default()
+        });
+        assert_eq!(plain_scope, "project-1");
+        let scoped = mutation_execution_scope(&ToolExecutionContext {
+            project_id: "project-1".into(),
+            telemetry_attributes: BTreeMap::from([(
+                MUTATION_EXECUTION_SCOPE_ATTRIBUTE.into(),
+                "agent-2".into(),
+            )]),
+            ..ToolExecutionContext::default()
+        });
+        assert_eq!(scoped, "project-1\u{1f}agent-2");
     }
 
     #[test]
@@ -4788,6 +5498,146 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_validates_schema_composition_dynamic_properties_and_all_bounds() {
+        let mut schema_descriptor = descriptor("schema_matrix", ToolMutability::ReadOnly);
+        schema_descriptor.input_schema = json!({
+            "type": "object",
+            "required": ["choice", "combined", "extras", "items", "ratio", "nullable"],
+            "properties": {
+                "choice": {
+                    "anyOf": [
+                        {"type": "string", "enum": ["auto", "manual"]},
+                        {"type": "integer", "minimum": 1, "maximum": 2}
+                    ]
+                },
+                "combined": {
+                    "allOf": [
+                        {"type": "string"},
+                        {"minLength": 2},
+                        {"maxLength": 4}
+                    ]
+                },
+                "extras": {
+                    "type": "object",
+                    "properties": {"known": {"type": "string"}},
+                    "additionalProperties": {"type": "string", "minLength": 1}
+                },
+                "items": {
+                    "type": "array",
+                    "minItems": 1,
+                    "maxItems": 2,
+                    "items": {"type": "number", "minimum": 0.0, "maximum": 1.0}
+                },
+                "ratio": {"type": "number", "minimum": 0.0, "maximum": 1.0},
+                "nullable": {"oneOf": [{"type": "null"}, {"type": "boolean"}]}
+            },
+            "additionalProperties": false
+        });
+        let mut registry = ToolRegistryV2::new();
+        registry
+            .register(StaticToolHandler::new(
+                schema_descriptor,
+                |_context, _call| Ok(ToolHandlerOutput::new("ok", json!({}))),
+            ))
+            .expect("register schema matrix");
+
+        let valid = json!({
+            "choice": 2,
+            "combined": "okay",
+            "extras": {"known": "yes", "dynamic": "value"},
+            "items": [0.0, 1.0],
+            "ratio": 0.5,
+            "nullable": null
+        });
+        let outcome = registry.dispatch_call(
+            ToolCallInput {
+                tool_call_id: "schema-valid".into(),
+                tool_name: "schema_matrix".into(),
+                input: valid.clone(),
+            },
+            &mut ToolBudgetTracker::new(ToolBudget::default()),
+            &ToolDispatchConfig::default(),
+        );
+        assert!(matches!(outcome, ToolDispatchOutcome::Succeeded(_)));
+
+        let invalid_inputs = [
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [0.5],
+                "ratio": 0.5
+            }),
+            json!({
+                "choice": "invalid", "combined": "okay", "extras": {}, "items": [0.5],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "x", "extras": {}, "items": [0.5],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "excess", "extras": {}, "items": [0.5],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {"dynamic": 42}, "items": [0.5],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {"dynamic": ""}, "items": [0.5],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [0.1, 0.2, 0.3],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [-0.1],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [1.1],
+                "ratio": 0.5, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [0.5],
+                "ratio": -0.1, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [0.5],
+                "ratio": 1.1, "nullable": true
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [0.5],
+                "ratio": 0.5, "nullable": "no"
+            }),
+            json!({
+                "choice": 2, "combined": "okay", "extras": {}, "items": [0.5],
+                "ratio": 0.5, "nullable": true, "unknown": false
+            }),
+        ];
+
+        for (index, input) in invalid_inputs.into_iter().enumerate() {
+            let outcome = registry.dispatch_call(
+                ToolCallInput {
+                    tool_call_id: format!("schema-invalid-{index}"),
+                    tool_name: "schema_matrix".into(),
+                    input,
+                },
+                &mut ToolBudgetTracker::new(ToolBudget::default()),
+                &ToolDispatchConfig::default(),
+            );
+            assert_eq!(
+                outcome.failure().expect("schema failure").error.category,
+                ToolErrorCategory::InvalidInput,
+                "invalid schema fixture {index}"
+            );
+        }
+    }
+
+    #[test]
     fn dispatch_reports_policy_denial_before_execution() {
         let executed = Arc::new(Mutex::new(false));
         let executed_for_handler = Arc::clone(&executed);
@@ -4947,6 +5797,1137 @@ mod tests {
         ) -> ToolRegistryResult<JsonValue> {
             Ok(json!({ "rolledBack": call.tool_call_id, "checkpoint": checkpoint }))
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_worker_ipc_reports_the_complete_success_lifecycle_in_process() {
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("worker_success", ToolMutability::Mutating),
+                |_context, call| {
+                    Ok(ToolHandlerOutput::new(
+                        "worker succeeded",
+                        json!({"path": call.input["path"]}),
+                    ))
+                },
+            ))
+            .expect("register worker success tool");
+        let config = ToolDispatchConfig::default();
+        let worker_call = call("worker-success-1", "worker_success", "src/lib.rs");
+        let prepared = registry
+            .prepare_call(
+                &worker_call,
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+                Instant::now() + Duration::from_secs(1),
+                ToolCancellationToken::new(),
+            )
+            .expect("prepare mutation worker call");
+        let (parent_stream, mut worker_stream) =
+            UnixStream::pair().expect("mutation worker fixture socket");
+
+        execute_mutation_worker(
+            prepared,
+            &config.context,
+            None,
+            None,
+            &mut worker_stream,
+        );
+        drop(worker_stream);
+        let (sender, receiver) = mpsc::channel();
+        read_mutation_worker_messages(parent_stream, sender);
+        let messages = receiver.into_iter().collect::<Vec<_>>();
+
+        assert!(matches!(
+            messages.as_slice(),
+            [
+                MutationWorkerMessage::Phase(MutationWorkerPhase::Checkpoint),
+                MutationWorkerMessage::Checkpoint(None),
+                MutationWorkerMessage::Phase(MutationWorkerPhase::Handler),
+                MutationWorkerMessage::Phase(MutationWorkerPhase::PostHook),
+                MutationWorkerMessage::Phase(MutationWorkerPhase::Completed),
+                MutationWorkerMessage::Outcome(_),
+            ]
+        ));
+        let MutationWorkerMessage::Outcome(outcome) = messages.last().expect("worker outcome")
+        else {
+            panic!("last worker message must be the outcome");
+        };
+        let ToolDispatchOutcome::Succeeded(success) = outcome.as_ref() else {
+            panic!("worker mutation should succeed");
+        };
+        assert_eq!(success.summary, "worker succeeded");
+        assert_eq!(success.output["path"], "src/lib.rs");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_worker_ipc_reports_checkpoint_and_rollback_on_handler_failure() {
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("worker_failure", ToolMutability::Mutating),
+                |_context, _call| {
+                    Err(ToolExecutionError::retryable(
+                        "worker_fixture_failed",
+                        "worker fixture failed after its checkpoint",
+                    ))
+                },
+            ))
+            .expect("register worker failure tool");
+        let config = ToolDispatchConfig::default();
+        let worker_call = call("worker-failure-1", "worker_failure", "src/lib.rs");
+        let prepared = registry
+            .prepare_call(
+                &worker_call,
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+                Instant::now() + Duration::from_secs(1),
+                ToolCancellationToken::new(),
+            )
+            .expect("prepare failing mutation worker call");
+        let (parent_stream, mut worker_stream) =
+            UnixStream::pair().expect("mutation worker fixture socket");
+        let rollback = RecordingRollback;
+
+        execute_mutation_worker(
+            prepared,
+            &config.context,
+            Some(&rollback),
+            None,
+            &mut worker_stream,
+        );
+        drop(worker_stream);
+        let (sender, receiver) = mpsc::channel();
+        read_mutation_worker_messages(parent_stream, sender);
+        let messages = receiver.into_iter().collect::<Vec<_>>();
+
+        assert!(matches!(
+            messages.as_slice(),
+            [
+                MutationWorkerMessage::Phase(MutationWorkerPhase::Checkpoint),
+                MutationWorkerMessage::Checkpoint(Some(_)),
+                MutationWorkerMessage::Phase(MutationWorkerPhase::Handler),
+                MutationWorkerMessage::Phase(MutationWorkerPhase::PostHook),
+                MutationWorkerMessage::Phase(MutationWorkerPhase::Rollback),
+                MutationWorkerMessage::Phase(MutationWorkerPhase::Completed),
+                MutationWorkerMessage::Outcome(_),
+            ]
+        ));
+        let MutationWorkerMessage::Outcome(outcome) = messages.last().expect("worker outcome")
+        else {
+            panic!("last worker message must be the outcome");
+        };
+        let failure = outcome.failure().expect("worker mutation should fail");
+        assert_eq!(failure.error.code, "worker_fixture_failed");
+        assert_eq!(
+            failure.rollback_payload.as_ref().map(|payload| &payload["rolledBack"]),
+            Some(&json!("worker-failure-1"))
+        );
+        assert!(failure.rollback_error.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_worker_ipc_contains_checkpoint_errors_and_panics() {
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("checkpoint_worker", ToolMutability::Mutating),
+                |_context, _call| Ok(ToolHandlerOutput::new("must not execute", json!({}))),
+            ))
+            .expect("register checkpoint worker tool");
+        let config = ToolDispatchConfig::default();
+        let failing = FailingCheckpoint;
+        let panicking = PanickingCheckpoint;
+
+        for (index, rollback, expected_code) in [
+            (
+                1,
+                &failing as &dyn ToolRollback,
+                "checkpoint_denied",
+            ),
+            (
+                2,
+                &panicking as &dyn ToolRollback,
+                "agent_tool_checkpoint_panicked",
+            ),
+        ] {
+            let worker_call = call(
+                &format!("checkpoint-worker-{index}"),
+                "checkpoint_worker",
+                "src/lib.rs",
+            );
+            let prepared = registry
+                .prepare_call(
+                    &worker_call,
+                    &mut ToolBudgetTracker::new(config.budget.clone()),
+                    &config,
+                    Instant::now() + Duration::from_secs(1),
+                    ToolCancellationToken::new(),
+                )
+                .expect("prepare checkpoint mutation worker call");
+            let (parent_stream, mut worker_stream) =
+                UnixStream::pair().expect("mutation worker fixture socket");
+
+            execute_mutation_worker(
+                prepared,
+                &config.context,
+                Some(rollback),
+                None,
+                &mut worker_stream,
+            );
+            drop(worker_stream);
+            let (sender, receiver) = mpsc::channel();
+            read_mutation_worker_messages(parent_stream, sender);
+            let mut messages = receiver.into_iter().collect::<Vec<_>>();
+            let MutationWorkerMessage::Outcome(outcome) =
+                messages.pop().expect("checkpoint worker outcome")
+            else {
+                panic!("last worker message must be the outcome");
+            };
+            assert_eq!(
+                outcome.failure().expect("checkpoint must fail").error.code,
+                expected_code
+            );
+            assert!(matches!(
+                messages.as_slice(),
+                [MutationWorkerMessage::Phase(MutationWorkerPhase::Checkpoint)]
+            ));
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_worker_ipc_fails_closed_before_handler_on_cancellation_and_publish_failure() {
+        #[derive(Debug)]
+        struct TrackingRollback {
+            rolled_back: Arc<AtomicBool>,
+        }
+
+        impl ToolRollback for TrackingRollback {
+            fn checkpoint_before(
+                &self,
+                call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+            ) -> ToolRegistryResult<Option<JsonValue>> {
+                Ok(Some(json!({ "checkpointFor": call.tool_call_id })))
+            }
+
+            fn rollback_after_failure(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+                _checkpoint: &JsonValue,
+                error: &ToolExecutionError,
+            ) -> ToolRegistryResult<JsonValue> {
+                self.rolled_back.store(true, Ordering::SeqCst);
+                assert_eq!(
+                    error.code,
+                    "agent_tool_mutation_checkpoint_publish_failed"
+                );
+                Ok(json!({ "rolledBack": true }))
+            }
+        }
+
+        let executed = Arc::new(AtomicBool::new(false));
+        let executed_for_handler = Arc::clone(&executed);
+        let mut registry = isolated_tool_registry();
+        registry
+            .register(StaticToolHandler::new(
+                descriptor("worker_preflight", ToolMutability::Mutating),
+                move |_context, _call| {
+                    executed_for_handler.store(true, Ordering::SeqCst);
+                    Ok(ToolHandlerOutput::new("must not execute", json!({})))
+                },
+            ))
+            .expect("register preflight worker tool");
+        let config = ToolDispatchConfig::default();
+
+        let cancellation = ToolCancellationToken::new();
+        let cancelled_call = call(
+            "worker-cancelled-1",
+            "worker_preflight",
+            "src/cancelled.rs",
+        );
+        let cancelled = registry
+            .prepare_call(
+                &cancelled_call,
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+                Instant::now() + Duration::from_secs(1),
+                cancellation.clone(),
+            )
+            .expect("prepare cancelled worker call");
+        cancellation.cancel();
+        let (parent_stream, mut worker_stream) =
+            UnixStream::pair().expect("cancelled worker fixture socket");
+        execute_mutation_worker(
+            cancelled,
+            &config.context,
+            None,
+            None,
+            &mut worker_stream,
+        );
+        drop(worker_stream);
+        let (sender, receiver) = mpsc::channel();
+        read_mutation_worker_messages(parent_stream, sender);
+        let messages = receiver.into_iter().collect::<Vec<_>>();
+        let MutationWorkerMessage::Outcome(outcome) = messages.last().expect("cancelled outcome")
+        else {
+            panic!("cancelled worker must publish an outcome");
+        };
+        assert_eq!(
+            outcome.failure().expect("cancelled worker must fail").error.code,
+            "agent_tool_group_timeout"
+        );
+        assert!(!executed.load(Ordering::SeqCst));
+
+        let publish_call = call(
+            "worker-publish-1",
+            "worker_preflight",
+            "src/publish.rs",
+        );
+        let prepared = registry
+            .prepare_call(
+                &publish_call,
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+                Instant::now() + Duration::from_secs(1),
+                ToolCancellationToken::new(),
+            )
+            .expect("prepare checkpoint publication call");
+        let rolled_back = Arc::new(AtomicBool::new(false));
+        let rollback = TrackingRollback {
+            rolled_back: Arc::clone(&rolled_back),
+        };
+        let (peer, mut disconnected_worker) =
+            UnixStream::pair().expect("disconnected worker fixture socket");
+        drop(peer);
+        execute_mutation_worker(
+            prepared,
+            &config.context,
+            Some(&rollback),
+            None,
+            &mut disconnected_worker,
+        );
+
+        assert!(rolled_back.load(Ordering::SeqCst));
+        assert!(!executed.load(Ordering::SeqCst));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_worker_ipc_contains_post_hook_and_rollback_failures() {
+        #[derive(Debug)]
+        struct FailingRollback;
+
+        impl ToolRollback for FailingRollback {
+            fn checkpoint_before(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+            ) -> ToolRegistryResult<Option<JsonValue>> {
+                Ok(Some(json!({ "checkpoint": true })))
+            }
+
+            fn rollback_after_failure(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+                _checkpoint: &JsonValue,
+                _error: &ToolExecutionError,
+            ) -> ToolRegistryResult<JsonValue> {
+                Err(ToolExecutionError::retryable(
+                    "rollback_fixture_failed",
+                    "rollback fixture failed",
+                ))
+            }
+        }
+
+        let config = ToolDispatchConfig::default();
+        let mut post_registry = isolated_tool_registry();
+        post_registry
+            .register(PanickingPostHook {
+                descriptor: descriptor("worker_post_panic", ToolMutability::Mutating),
+            })
+            .expect("register worker post-hook fixture");
+        let post_call = call(
+            "worker-post-panic-1",
+            "worker_post_panic",
+            "src/post.rs",
+        );
+        let prepared = post_registry
+            .prepare_call(
+                &post_call,
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+                Instant::now() + Duration::from_secs(1),
+                ToolCancellationToken::new(),
+            )
+            .expect("prepare post-hook worker call");
+        let (parent_stream, mut worker_stream) =
+            UnixStream::pair().expect("post-hook worker fixture socket");
+        execute_mutation_worker(
+            prepared,
+            &config.context,
+            Some(&RecordingRollback),
+            None,
+            &mut worker_stream,
+        );
+        drop(worker_stream);
+        let (sender, receiver) = mpsc::channel();
+        read_mutation_worker_messages(parent_stream, sender);
+        let messages = receiver.into_iter().collect::<Vec<_>>();
+        let MutationWorkerMessage::Outcome(outcome) = messages.last().expect("post-hook outcome")
+        else {
+            panic!("post-hook worker must publish an outcome");
+        };
+        let failure = outcome.failure().expect("post-hook panic must fail");
+        assert_eq!(failure.error.code, "agent_tool_post_hook_panicked");
+        assert!(failure.rollback_payload.is_some());
+
+        let mut failure_registry = isolated_tool_registry();
+        failure_registry
+            .register(StaticToolHandler::new(
+                descriptor("worker_rollback", ToolMutability::Mutating),
+                |_context, _call| {
+                    Err(ToolExecutionError::retryable(
+                        "handler_fixture_failed",
+                        "handler fixture failed",
+                    ))
+                },
+            ))
+            .expect("register rollback worker fixture");
+        let failing = FailingRollback;
+        let panicking = PanickingRollback;
+
+        for (index, rollback, expected_code) in [
+            (
+                1,
+                &failing as &dyn ToolRollback,
+                "rollback_fixture_failed",
+            ),
+            (
+                2,
+                &panicking as &dyn ToolRollback,
+                "agent_tool_rollback_panicked",
+            ),
+        ] {
+            let worker_call = call(
+                &format!("worker-rollback-{index}"),
+                "worker_rollback",
+                "src/rollback.rs",
+            );
+            let prepared = failure_registry
+                .prepare_call(
+                    &worker_call,
+                    &mut ToolBudgetTracker::new(config.budget.clone()),
+                    &config,
+                    Instant::now() + Duration::from_secs(1),
+                    ToolCancellationToken::new(),
+                )
+                .expect("prepare rollback worker call");
+            let (parent_stream, mut worker_stream) =
+                UnixStream::pair().expect("rollback worker fixture socket");
+            execute_mutation_worker(
+                prepared,
+                &config.context,
+                Some(rollback),
+                None,
+                &mut worker_stream,
+            );
+            drop(worker_stream);
+            let (sender, receiver) = mpsc::channel();
+            read_mutation_worker_messages(parent_stream, sender);
+            let messages = receiver.into_iter().collect::<Vec<_>>();
+            let MutationWorkerMessage::Outcome(outcome) =
+                messages.last().expect("rollback outcome")
+            else {
+                panic!("rollback worker must publish an outcome");
+            };
+            assert_eq!(
+                outcome
+                    .failure()
+                    .expect("handler and rollback must fail")
+                    .rollback_error
+                    .as_ref()
+                    .expect("typed rollback error")
+                    .code,
+                expected_code
+            );
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_quarantine_recovery_contains_missing_parent_and_panicking_providers() {
+        #[derive(Debug)]
+        struct ParentRecovery {
+            panics: bool,
+        }
+
+        impl ToolRollback for ParentRecovery {
+            fn requires_parent_process(&self) -> bool {
+                true
+            }
+
+            fn checkpoint_before(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+            ) -> ToolRegistryResult<Option<JsonValue>> {
+                Ok(None)
+            }
+
+            fn rollback_after_failure(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+                _checkpoint: &JsonValue,
+                _error: &ToolExecutionError,
+            ) -> ToolRegistryResult<JsonValue> {
+                unreachable!("recovery fixture overrides termination recovery")
+            }
+
+            fn recover_after_termination(
+                &self,
+                call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+                checkpoint: Option<&JsonValue>,
+                _error: &ToolExecutionError,
+            ) -> ToolRegistryResult<JsonValue> {
+                if self.panics {
+                    panic!("parent recovery fixture panic");
+                }
+                Ok(json!({
+                    "recovered": call.tool_call_id,
+                    "checkpoint": checkpoint,
+                }))
+            }
+        }
+
+        let config = ToolDispatchConfig::default();
+        let recovery_call = call(
+            "quarantine-recovery-1",
+            "recover_mutation",
+            "src/recovery.rs",
+        );
+        let quarantine = |rollback: Option<Arc<dyn ToolRollback>>| MutationQuarantine {
+            project_id: config.context.project_id.clone(),
+            call: recovery_call.clone(),
+            descriptor: descriptor("recover_mutation", ToolMutability::Mutating),
+            checkpoint: Some(json!({ "before": true })),
+            error: ToolExecutionError::timeout("terminated", "worker terminated"),
+            rollback_error: ToolExecutionError::retryable("pending", "recovery pending"),
+            phase: MutationWorkerPhase::Rollback,
+            rollback,
+        };
+
+        let missing = recover_mutation_quarantine(&quarantine(None), &config)
+            .expect_err("missing recovery provider must fail closed");
+        assert_eq!(missing.code, "agent_tool_mutation_recovery_unavailable");
+
+        let recovered = recover_mutation_quarantine(
+            &quarantine(Some(Arc::new(ParentRecovery { panics: false }))),
+            &config,
+        )
+        .expect("parent-process recovery should succeed");
+        assert_eq!(recovered["recovered"], "quarantine-recovery-1");
+        assert_eq!(recovered["checkpoint"]["before"], true);
+
+        let panicked = recover_mutation_quarantine(
+            &quarantine(Some(Arc::new(ParentRecovery { panics: true }))),
+            &config,
+        )
+        .expect_err("parent-process recovery panic must be contained");
+        assert_eq!(panicked.code, "agent_tool_rollback_panicked");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn mutation_ipc_readers_reject_truncated_oversized_and_malformed_frames() {
+        fn worker_messages_for(payload: &[u8]) -> Vec<MutationWorkerMessage> {
+            let (mut writer, reader) = UnixStream::pair().expect("worker IPC fixture socket");
+            writer.write_all(payload).expect("write worker IPC fixture");
+            drop(writer);
+            let (sender, receiver) = mpsc::channel();
+            read_mutation_worker_messages(reader, sender);
+            receiver.into_iter().collect()
+        }
+
+        assert!(worker_messages_for(&4_u32.to_be_bytes()).is_empty());
+        assert!(worker_messages_for(
+            &u32::try_from(MAX_MUTATION_WORKER_MESSAGE_BYTES + 1)
+                .expect("bounded IPC constant")
+                .to_be_bytes()
+        )
+        .is_empty());
+        let mut malformed = 1_u32.to_be_bytes().to_vec();
+        malformed.push(b'{');
+        assert!(worker_messages_for(&malformed).is_empty());
+
+        let (mut writer, reader) = UnixStream::pair().expect("disconnected receiver socket");
+        send_mutation_worker_message(
+            &mut writer,
+            &MutationWorkerMessage::Phase(MutationWorkerPhase::Handler),
+        )
+        .expect("write valid worker message");
+        drop(writer);
+        let (sender, receiver) = mpsc::channel();
+        drop(receiver);
+        read_mutation_worker_messages(reader, sender);
+
+        for payload in [
+            Vec::new(),
+            u32::try_from(MAX_MUTATION_WORKER_MESSAGE_BYTES + 1)
+                .expect("bounded recovery constant")
+                .to_be_bytes()
+                .to_vec(),
+            {
+                let mut payload = 2_u32.to_be_bytes().to_vec();
+                payload.push(b'{');
+                payload
+            },
+        ] {
+            let (mut writer, reader) = UnixStream::pair().expect("recovery IPC fixture socket");
+            writer
+                .write_all(&payload)
+                .expect("write recovery IPC fixture");
+            drop(writer);
+            assert!(read_mutation_recovery_result(reader).is_none());
+        }
+    }
+
+    #[test]
+    fn registry_schema_and_mutation_metadata_helpers_cover_defensive_boundaries() {
+        let descriptor = descriptor("schema_helper", ToolMutability::ReadOnly);
+        for schema in [
+            json!({ "oneOf": [{ "type": "string" }] }),
+            json!({ "anyOf": [{ "type": "boolean" }] }),
+            json!({ "allOf": [{ "type": "string" }] }),
+        ] {
+            assert!(validate_json_value_against_schema(
+                &descriptor,
+                "$",
+                &schema,
+                &json!(42)
+            )
+            .is_err());
+        }
+        assert!(validate_object_against_schema(
+            &descriptor,
+            "$",
+            &json!({}),
+            &json!([])
+        )
+        .is_err());
+        assert!(validate_array_against_schema(
+            &descriptor,
+            "$",
+            &json!({}),
+            &json!({})
+        )
+        .is_err());
+        assert!(validate_number_bounds(
+            &descriptor,
+            "$",
+            &json!({ "minimum": 1 }),
+            &json!("not-a-number")
+        )
+        .is_ok());
+        assert!(validate_string_bounds(
+            &descriptor,
+            "$",
+            &json!({ "minLength": 1 }),
+            &json!(false)
+        )
+        .is_ok());
+
+        let additional_schema = json!({
+            "type": "object",
+            "properties": {},
+            "additionalProperties": { "type": "string" },
+        });
+        assert!(validate_json_value_against_schema(
+            &descriptor,
+            "$",
+            &additional_schema,
+            &json!({ "extra": 1 })
+        )
+        .is_err());
+        for (schema, value) in [
+            (json!({ "type": "array", "minItems": 2 }), json!([1])),
+            (json!({ "type": "array", "maxItems": 1 }), json!([1, 2])),
+            (json!({ "type": "number", "minimum": 2 }), json!(1)),
+            (json!({ "type": "number", "maximum": 2 }), json!(3)),
+            (json!({ "type": "string", "minLength": 2 }), json!("x")),
+            (json!({ "type": "string", "maxLength": 1 }), json!("xx")),
+        ] {
+            assert!(validate_json_value_against_schema(
+                &descriptor,
+                "$",
+                &schema,
+                &value
+            )
+            .is_err());
+        }
+
+        for (expected_type, value) in [
+            ("array", json!([])),
+            ("boolean", json!(true)),
+            ("integer", json!(1)),
+            ("null", JsonValue::Null),
+            ("number", json!(1.5)),
+            ("object", json!({})),
+            ("string", json!("value")),
+            ("extension-defined", json!(false)),
+        ] {
+            assert!(schema_type_matches(expected_type, &value));
+            assert!(!json_type_name(&value).is_empty());
+            assert!(!stable_json_signature(&value).is_empty());
+        }
+        assert_eq!(child_path("$.nested", "field"), "$.nested.field");
+
+        let helper_call = call("metadata-helper", "schema_helper", "src/helper.rs");
+        let mut failure = failure_from_error(
+            &helper_call,
+            ToolExecutionError::retryable("metadata_failed", "metadata failed"),
+            json!({}),
+            json!("scalar post-hook"),
+            Duration::ZERO,
+        );
+        failure.rollback_error = Some(ToolExecutionError::retryable(
+            "rollback_failed",
+            "rollback failed",
+        ));
+        let mut outcome = ToolDispatchOutcome::Failed(failure);
+        attach_mutation_boundary_metadata(
+            &mut outcome,
+            &helper_call,
+            Some(&["src/helper.rs".into()]),
+            MutationWorkerPhase::Rollback,
+            &["fixture_event".into()],
+            false,
+        );
+        let failure = outcome.failure().expect("metadata helper failure");
+        assert_eq!(
+            failure.post_hook_payload["mutationBoundary"]["rollbackState"],
+            "failed"
+        );
+        assert_eq!(
+            failure.post_hook_payload["handlerPostHook"],
+            "scalar post-hook"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn parent_process_mutation_bookkeeping_contains_checkpoint_and_rollback_failures() {
+        #[derive(Debug)]
+        struct ParentCheckpointFailure {
+            panics: bool,
+        }
+
+        impl ToolRollback for ParentCheckpointFailure {
+            fn requires_parent_process(&self) -> bool {
+                true
+            }
+
+            fn checkpoint_before(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+            ) -> ToolRegistryResult<Option<JsonValue>> {
+                if self.panics {
+                    panic!("parent checkpoint fixture panic");
+                }
+                Err(ToolExecutionError::retryable(
+                    "parent_checkpoint_failed",
+                    "parent checkpoint fixture failed",
+                ))
+            }
+
+            fn rollback_after_failure(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+                _checkpoint: &JsonValue,
+                _error: &ToolExecutionError,
+            ) -> ToolRegistryResult<JsonValue> {
+                unreachable!("failed checkpoints must never reach rollback")
+            }
+        }
+
+        #[derive(Debug)]
+        struct ParentRollbackFailure {
+            panics: bool,
+        }
+
+        impl ToolRollback for ParentRollbackFailure {
+            fn requires_parent_process(&self) -> bool {
+                true
+            }
+
+            fn checkpoint_before(
+                &self,
+                call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+            ) -> ToolRegistryResult<Option<JsonValue>> {
+                Ok(Some(json!({ "checkpointFor": call.tool_call_id })))
+            }
+
+            fn rollback_after_failure(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+                _checkpoint: &JsonValue,
+                _error: &ToolExecutionError,
+            ) -> ToolRegistryResult<JsonValue> {
+                if self.panics {
+                    panic!("parent rollback fixture panic");
+                }
+                Err(ToolExecutionError::retryable(
+                    "parent_rollback_failed",
+                    "parent rollback fixture failed",
+                ))
+            }
+        }
+
+        for (index, panics, expected_code) in [
+            (1, false, "parent_checkpoint_failed"),
+            (2, true, "agent_tool_checkpoint_panicked"),
+        ] {
+            let executed = Arc::new(AtomicBool::new(false));
+            let executed_for_handler = Arc::clone(&executed);
+            let mut registry = isolated_tool_registry();
+            registry
+                .register(StaticToolHandler::new(
+                    descriptor("parent_checkpoint", ToolMutability::Mutating),
+                    move |_context, _call| {
+                        executed_for_handler.store(true, Ordering::SeqCst);
+                        Ok(ToolHandlerOutput::new("must not execute", json!({})))
+                    },
+                ))
+                .expect("register parent checkpoint fixture");
+            let config = ToolDispatchConfig {
+                rollback: Some(Arc::new(ParentCheckpointFailure { panics })),
+                ..ToolDispatchConfig::default()
+            };
+
+            let outcome = registry.dispatch_call(
+                call(
+                    &format!("parent-checkpoint-{index}"),
+                    "parent_checkpoint",
+                    "src/checkpoint.rs",
+                ),
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+            );
+
+            assert_eq!(
+                outcome
+                    .failure()
+                    .expect("checkpoint failure must fail dispatch")
+                    .error
+                    .code,
+                expected_code
+            );
+            assert!(!executed.load(Ordering::SeqCst));
+        }
+
+        for (index, panics, expected_code) in [
+            (1, false, "parent_rollback_failed"),
+            (2, true, "agent_tool_rollback_panicked"),
+        ] {
+            let mut registry = isolated_tool_registry();
+            registry
+                .register(StaticToolHandler::new(
+                    descriptor("parent_rollback", ToolMutability::Mutating),
+                    |_context, _call| {
+                        Err(ToolExecutionError::retryable(
+                            "parent_handler_failed",
+                            "parent handler fixture failed",
+                        ))
+                    },
+                ))
+                .expect("register parent rollback fixture");
+            let config = ToolDispatchConfig {
+                rollback: Some(Arc::new(ParentRollbackFailure { panics })),
+                ..ToolDispatchConfig::default()
+            };
+
+            let outcome = registry.dispatch_call(
+                call(
+                    &format!("parent-rollback-{index}"),
+                    "parent_rollback",
+                    "src/rollback.rs",
+                ),
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+            );
+
+            let failure = outcome.failure().expect("rollback failure must fail dispatch");
+            assert_eq!(failure.error.code, "parent_handler_failed");
+            assert_eq!(
+                failure
+                    .rollback_error
+                    .as_ref()
+                    .expect("rollback error must be preserved")
+                    .code,
+                expected_code
+            );
+            assert_eq!(
+                failure.post_hook_payload["mutationBoundary"]["rollbackState"],
+                "unresolved"
+            );
+            assert_eq!(
+                failure.post_hook_payload["mutationBoundary"]["quarantined"],
+                true
+            );
+        }
+    }
+
+    #[test]
+    fn registry_supervision_budget_and_cancellation_edges_fail_closed() {
+        struct MutableDescriptorHandler {
+            descriptor: ToolDescriptorV2,
+            invalid: Arc<AtomicBool>,
+        }
+
+        impl ToolHandler for MutableDescriptorHandler {
+            fn descriptor(&self) -> ToolDescriptorV2 {
+                let mut descriptor = self.descriptor.clone();
+                if self.invalid.load(Ordering::SeqCst) {
+                    descriptor.description.clear();
+                }
+                descriptor
+            }
+
+            fn execute(
+                &self,
+                _context: &ToolExecutionContext,
+                _call: &ToolCallInput,
+            ) -> ToolRegistryResult<ToolHandlerOutput> {
+                Ok(ToolHandlerOutput::new("must not execute", json!({})))
+            }
+        }
+
+        #[derive(Debug)]
+        struct CancellingCheckpoint {
+            cancellation: ToolCancellationToken,
+        }
+
+        impl ToolRollback for CancellingCheckpoint {
+            fn checkpoint_before(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+            ) -> ToolRegistryResult<Option<JsonValue>> {
+                self.cancellation.cancel();
+                Ok(Some(json!({ "checkpoint": true })))
+            }
+
+            fn rollback_after_failure(
+                &self,
+                _call: &ToolCallInput,
+                _descriptor: &ToolDescriptorV2,
+                _checkpoint: &JsonValue,
+                _error: &ToolExecutionError,
+            ) -> ToolRegistryResult<JsonValue> {
+                Ok(json!({ "rolledBack": true }))
+            }
+        }
+
+        let invalid = Arc::new(AtomicBool::new(false));
+        let dynamic_handler = Arc::new(MutableDescriptorHandler {
+            descriptor: descriptor("dynamic_descriptor", ToolMutability::ReadOnly),
+            invalid: Arc::clone(&invalid),
+        });
+        let mut dynamic_registry = isolated_tool_registry();
+        dynamic_registry
+            .register_arc(dynamic_handler)
+            .expect("register initially valid dynamic descriptor");
+        invalid.store(true, Ordering::SeqCst);
+        let config = ToolDispatchConfig::default();
+        let outcome = dynamic_registry.dispatch_call(
+            call(
+                "dynamic-descriptor-call",
+                "dynamic_descriptor",
+                "src/dynamic.rs",
+            ),
+            &mut ToolBudgetTracker::new(config.budget.clone()),
+            &config,
+        );
+        assert_eq!(
+            outcome
+                .failure()
+                .expect("descriptor must be revalidated before dispatch")
+                .error
+                .code,
+            "agent_tool_descriptor_invalid"
+        );
+
+        let mutation_executed = Arc::new(AtomicBool::new(false));
+        let mutation_executed_for_handler = Arc::clone(&mutation_executed);
+        let mut cancellation_registry = isolated_tool_registry();
+        cancellation_registry
+            .register(StaticToolHandler::new(
+                descriptor("cancel_after_checkpoint", ToolMutability::Mutating),
+                move |_context, _call| {
+                    mutation_executed_for_handler.store(true, Ordering::SeqCst);
+                    Ok(ToolHandlerOutput::new("must not execute", json!({})))
+                },
+            ))
+            .expect("register checkpoint cancellation fixture");
+        let cancellation = ToolCancellationToken::new();
+        let cancellation_call = call(
+            "cancel-after-checkpoint-call",
+            "cancel_after_checkpoint",
+            "src/cancel.rs",
+        );
+        let prepared = cancellation_registry
+            .prepare_call(
+                &cancellation_call,
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+                Instant::now() + Duration::from_secs(1),
+                cancellation.clone(),
+            )
+            .expect("prepare checkpoint cancellation fixture");
+        let outcome = execute_prepared_call(
+            prepared,
+            &config.context,
+            Some(&CancellingCheckpoint { cancellation }),
+        );
+        assert_eq!(
+            outcome
+                .failure()
+                .expect("checkpoint cancellation must fail")
+                .error
+                .code,
+            "agent_tool_group_timeout"
+        );
+        assert!(!mutation_executed.load(Ordering::SeqCst));
+
+        let mut late_registry = isolated_tool_registry();
+        late_registry
+            .register(StaticToolHandler::new_cancellable(
+                descriptor("cancel_during_handler", ToolMutability::ReadOnly),
+                |_context, _call, control| {
+                    control.cancellation_token.cancel();
+                    Ok(ToolHandlerOutput::new("late success", json!({})))
+                },
+            ))
+            .expect("register late cancellation fixture");
+        let late_call = call(
+            "cancel-during-handler-call",
+            "cancel_during_handler",
+            "src/late.rs",
+        );
+        let prepared = late_registry
+            .prepare_call(
+                &late_call,
+                &mut ToolBudgetTracker::new(config.budget.clone()),
+                &config,
+                Instant::now() + Duration::from_secs(1),
+                ToolCancellationToken::new(),
+            )
+            .expect("prepare late cancellation fixture");
+        assert_eq!(
+            execute_prepared_call(prepared, &config.context, None)
+                .failure()
+                .expect("late success must be rejected")
+                .error
+                .code,
+            "agent_tool_group_timeout"
+        );
+
+        let rollback_error = RecordingRollback
+            .recover_after_termination(
+                &cancellation_call,
+                &descriptor("cancel_after_checkpoint", ToolMutability::Mutating),
+                None,
+                &ToolExecutionError::timeout("terminated", "terminated"),
+            )
+            .expect_err("default recovery requires a checkpoint");
+        assert_eq!(
+            rollback_error.code,
+            "agent_tool_mutation_checkpoint_unavailable"
+        );
+
+        let supervisor = Arc::new(ReadOnlyWorkerSupervisor::new(1));
+        let handle = thread::spawn(|| {});
+        supervisor
+            .state
+            .lock()
+            .expect("supervisor state")
+            .workers
+            .insert(7, Some(handle));
+        supervisor.mark_completed(7);
+        supervisor.join(7);
+        supervisor.mark_completed(999);
+        drop(ReadOnlyWorkerCompletionNotifier {
+            worker_id: 999,
+            supervisor: Weak::new(),
+        });
+        assert!(supervisor
+            .state
+            .lock()
+            .expect("supervisor state after join")
+            .workers
+            .is_empty());
+
+        let mut batch_registry = ToolRegistryV2::with_read_only_worker_limit(2);
+        batch_registry
+            .register(StaticToolHandler::new(
+                descriptor("batch_failure", ToolMutability::ReadOnly),
+                |_context, _call| {
+                    Err(ToolExecutionError::retryable(
+                        "batch_fixture_failed",
+                        "batch fixture failed",
+                    ))
+                },
+            ))
+            .expect("register batch failure fixture");
+        batch_registry
+            .register(StaticToolHandler::new(
+                descriptor("batch_timeout", ToolMutability::ReadOnly),
+                |_context, _call| {
+                    thread::sleep(Duration::from_millis(60));
+                    Ok(ToolHandlerOutput::new("late", json!({})))
+                },
+            ))
+            .expect("register batch timeout fixture");
+        let batch_config = ToolDispatchConfig {
+            budget: ToolBudget {
+                max_tool_failures_per_turn: 0,
+                max_wall_clock_time_per_tool_group_ms: 10,
+                ..ToolBudget::default()
+            },
+            ..ToolDispatchConfig::default()
+        };
+        let report = batch_registry.dispatch_batch(
+            &[
+                ToolCallInput {
+                    tool_call_id: "batch-invalid".into(),
+                    tool_name: "batch_failure".into(),
+                    input: json!({}),
+                },
+                call("batch-failure", "batch_failure", "src/failure.rs"),
+                call("batch-timeout", "batch_timeout", "src/timeout.rs"),
+            ],
+            &batch_config,
+        );
+        let outcomes = &report.groups[0].outcomes;
+        assert_eq!(outcomes.len(), 3);
+        assert!(outcomes.iter().all(|outcome| {
+            outcome
+                .failure()
+                .is_some_and(|failure| failure.error.code == "agent_tool_budget_failures_exceeded")
+        }));
     }
 
     #[test]

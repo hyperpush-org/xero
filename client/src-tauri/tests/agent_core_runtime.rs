@@ -474,7 +474,11 @@ impl MockOpenAiCompatibleSseServer {
         let handle = thread::spawn(move || {
             let mut served = 0;
             for response in responses {
-                let deadline = Instant::now() + Duration::from_secs(5);
+                // Instrumented coverage builds can spend several seconds seeding the
+                // project after this listener starts. Keep the fixture alive for the
+                // same order of magnitude as the run-status wait below so coverage
+                // speed cannot masquerade as a provider outage.
+                let deadline = Instant::now() + Duration::from_secs(30);
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => {
@@ -738,7 +742,25 @@ fn wait_for_agent_run_matching(
     description: &str,
     predicate: impl Fn(&db::project_store::AgentRunSnapshotRecord) -> bool,
 ) -> db::project_store::AgentRunSnapshotRecord {
-    let deadline = Instant::now() + Duration::from_secs(90);
+    wait_for_agent_run_matching_with_timeout(
+        repo_root,
+        project_id,
+        run_id,
+        description,
+        Duration::from_secs(90),
+        predicate,
+    )
+}
+
+fn wait_for_agent_run_matching_with_timeout(
+    repo_root: &Path,
+    project_id: &str,
+    run_id: &str,
+    description: &str,
+    timeout: Duration,
+    predicate: impl Fn(&db::project_store::AgentRunSnapshotRecord) -> bool,
+) -> db::project_store::AgentRunSnapshotRecord {
+    let deadline = Instant::now() + timeout;
     loop {
         match db::project_store::load_agent_run(repo_root, project_id, run_id) {
             Ok(snapshot) if predicate(&snapshot) => return snapshot,
@@ -5350,6 +5372,7 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
         tool_call.tool_name == "read"
             && tool_call.state == db::project_store::AgentToolCallState::Succeeded
     }));
+    wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
 }
 
 #[test]
@@ -5487,6 +5510,7 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
         message.role == db::project_store::AgentMessageRole::User
             && message.content == "Thanks, summarize the result."
     }));
+    wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
 }
 
 #[test]
@@ -5674,16 +5698,18 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
     ))
     .expect("queued runtime agent switch should apply at the next prompt boundary");
 
-    let agent_run = wait_for_agent_run_matching(
+    let agent_run = wait_for_agent_run_matching_with_timeout(
         &repo_root,
         &project_id,
         &runtime_run.run_id,
         "apply the queued Engineer controls",
+        Duration::from_secs(300),
         |snapshot| {
             snapshot.run.status == db::project_store::AgentRunStatus::Completed
                 && snapshot.run.runtime_agent_id == RuntimeAgentIdDto::Engineer
         },
     );
+    wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
     assert_eq!(server.join(), 5);
     assert_eq!(agent_run.run.runtime_agent_id, RuntimeAgentIdDto::Engineer);
     assert_eq!(agent_run.run.agent_definition_id, "engineer");
@@ -5822,6 +5848,7 @@ fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() 
         applied.controls.pending.is_none(),
         "pending provider switch should be consumed after the prompt boundary"
     );
+    wait_for_agent_run_inactive(app.state::<DesktopState>().inner(), &runtime_run.run_id);
 }
 
 #[test]

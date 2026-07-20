@@ -817,6 +817,8 @@ fn contains_any(haystack: &str, needles: &[&str]) -> bool {
 mod tests {
     use super::*;
 
+    use rusqlite::{params, Connection};
+
     fn controls(plan_mode_required: bool) -> RuntimeRunControlStateDto {
         RuntimeRunControlStateDto {
             active: RuntimeRunActiveControlSnapshotDto {
@@ -872,6 +874,56 @@ mod tests {
         }
     }
 
+    fn persisted_run_fixture() -> (tempfile::TempDir, PathBuf) {
+        let fixture = tempfile::tempdir().expect("create state-machine fixture");
+        let repo_root = fixture.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create fixture repository");
+        let database_path = fixture.path().join("state.db");
+        let mut connection = Connection::open(&database_path).expect("open fixture database");
+        crate::db::configure_connection(&connection).expect("configure fixture database");
+        crate::db::migrations::migrations()
+            .to_latest(&mut connection)
+            .expect("migrate fixture database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params!["project-state-machine"],
+            )
+            .expect("seed fixture project");
+        crate::db::register_project_database_path_for_tests(&repo_root, database_path);
+        let session = project_store::create_agent_session(
+            &repo_root,
+            &project_store::AgentSessionCreateRecord {
+                project_id: "project-state-machine".into(),
+                title: "State machine fixture".into(),
+                summary: String::new(),
+                selected: true,
+                session_kind: project_store::AgentSessionKind::Standard,
+            },
+        )
+        .expect("create fixture session");
+        project_store::insert_agent_run(
+            &repo_root,
+            &project_store::NewAgentRunRecord {
+                runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                agent_definition_id: Some("engineer".into()),
+                agent_definition_version: Some(
+                    project_store::BUILTIN_AGENT_DEFINITION_VERSION,
+                ),
+                project_id: "project-state-machine".into(),
+                agent_session_id: session.agent_session_id,
+                run_id: "run-state-machine".into(),
+                provider_id: "fake".into(),
+                model_id: "fake".into(),
+                prompt: "Implement the runtime state machine.".into(),
+                system_prompt: "fixture".into(),
+                now: "2026-07-18T12:00:00Z".into(),
+            },
+        )
+        .expect("insert fixture run");
+        (fixture, repo_root)
+    }
+
     #[test]
     fn classifier_requires_plan_for_production_milestone_work() {
         let classification = classify_agent_task(
@@ -905,6 +957,172 @@ mod tests {
         );
 
         assert!(matches!(gate, ToolBatchGate::RequirePlan { .. }));
+    }
+
+    #[test]
+    fn persisted_plan_gate_fixture_records_plan_review_checkpoint_and_completion_decision() {
+        let (_fixture, repo_root) = persisted_run_fixture();
+        let classification = record_initial_state_artifacts(
+            &repo_root,
+            "project-state-machine",
+            "run-state-machine",
+            "Implement the production runtime state machine across multiple files.",
+            &controls(true),
+        )
+        .expect("record initial state transitions");
+        assert!(classification.requires_plan);
+
+        record_plan_gate_message(
+            &repo_root,
+            "project-state-machine",
+            "run-state-machine",
+            "Create the structured plan first.",
+            &classification,
+        )
+        .expect("record plan gate");
+        let approval_error = record_plan_review_action_required(
+            &repo_root,
+            "project-state-machine",
+            "run-state-machine",
+            PLAN_REVIEW_ACTION_ID,
+            "Review the fixture plan.",
+        )
+        .expect("record plan review action");
+        assert_eq!(approval_error.code, "agent_plan_mode_requires_approval");
+        assert_eq!(approval_error.class, CommandErrorClass::PolicyDenied);
+
+        let todo_result = AgentToolResult {
+            tool_call_id: "todo-plan".into(),
+            tool_name: AUTONOMOUS_TOOL_TODO.into(),
+            ok: true,
+            summary: "Updated the plan.".into(),
+            output: json!({
+                "toolName": "todo",
+                "summary": "Updated the plan.",
+                "commandResult": null,
+                "output": {
+                    "kind": "todo",
+                    "action": "upsert",
+                    "items": [
+                        {
+                            "id": "survey",
+                            "title": "Survey",
+                            "notes": null,
+                            "status": "completed",
+                            "mode": "plan",
+                            "updatedAt": "2026-07-18T12:00:01Z"
+                        },
+                        {
+                            "id": "implement",
+                            "title": "Implement",
+                            "notes": null,
+                            "status": "in_progress",
+                            "mode": "plan",
+                            "updatedAt": "2026-07-18T12:00:02Z"
+                        },
+                        {
+                            "id": "verify",
+                            "title": "Verify",
+                            "notes": null,
+                            "status": "pending",
+                            "mode": "plan",
+                            "updatedAt": "2026-07-18T12:00:03Z"
+                        }
+                    ],
+                    "changedItem": null
+                }
+            }),
+            persistence: None,
+            parent_assistant_message_id: None,
+        };
+        assert!(record_plan_artifact_from_tool_result(
+            &repo_root,
+            "project-state-machine",
+            "run-state-machine",
+            &todo_result,
+        )
+        .expect("persist structured plan"));
+        assert!(!record_plan_artifact_from_tool_result(
+            &repo_root,
+            "project-state-machine",
+            "run-state-machine",
+            &AgentToolResult {
+                tool_name: AUTONOMOUS_TOOL_READ.into(),
+                ..todo_result.clone()
+            },
+        )
+        .expect("non-todo result is ignored"));
+
+        let completion = VerificationGateDecision {
+            status: VerificationGateStatus::Required,
+            message: "Verification is still required.".into(),
+            evidence: None,
+            latest_file_change_event_id: Some(7),
+        };
+        record_completion_gate(
+            &repo_root,
+            "project-state-machine",
+            "run-state-machine",
+            &completion,
+        )
+        .expect("persist completion gate");
+
+        let snapshot = project_store::load_agent_run(
+            &repo_root,
+            "project-state-machine",
+            "run-state-machine",
+        )
+        .expect("load state-machine fixture");
+        assert!(snapshot
+            .checkpoints
+            .iter()
+            .any(|checkpoint| checkpoint.checkpoint_kind == "plan"));
+        assert!(snapshot
+            .action_requests
+            .iter()
+            .any(|action| action.action_type == "review_plan" && action.status == "pending"));
+        assert!(snapshot
+            .events
+            .iter()
+            .any(|event| event.event_kind == AgentRunEventKind::PlanUpdated));
+        assert!(snapshot.events.iter().any(|event| {
+            event.event_kind == AgentRunEventKind::VerificationGate
+                && event.payload_json.contains("completion_verification_gate")
+        }));
+
+        let stop_reason_fixtures = [
+            (
+                CommandError::retryable(AGENT_RUN_CANCELLED_CODE, "cancelled"),
+                AgentRunStopReason::Cancelled,
+            ),
+            (
+                CommandError::retryable("agent_context_budget_exceeded", "budget"),
+                AgentRunStopReason::ContextOverBudget,
+            ),
+            (
+                CommandError::retryable(AGENT_RUN_SCHEDULED_WAIT_CODE, "wait"),
+                AgentRunStopReason::ScheduledWait,
+            ),
+            (
+                CommandError::user_fixable(AGENT_RUN_USER_INPUT_REQUIRED_CODE, "input"),
+                AgentRunStopReason::WaitingForApproval,
+            ),
+            (
+                CommandError::user_fixable("agent_tool_boundary_violation", "boundary"),
+                AgentRunStopReason::Blocked,
+            ),
+            (
+                CommandError::system_fault("fixture_harness_fault", "fault"),
+                AgentRunStopReason::HarnessFault,
+            ),
+            (
+                CommandError::retryable("fixture_provider_failure", "provider"),
+                AgentRunStopReason::ProviderFailure,
+            ),
+        ];
+        for (error, expected) in stop_reason_fixtures {
+            assert_eq!(stop_reason_for_error(&error), expected);
+        }
     }
 
     #[test]

@@ -1167,6 +1167,22 @@ struct BedrockCliAdapter {
     config: BedrockProviderConfig,
 }
 
+#[cfg(test)]
+static BEDROCK_CLI_TEST_OVERRIDE: OnceLock<Mutex<Option<std::path::PathBuf>>> = OnceLock::new();
+
+fn bedrock_cli_program() -> std::path::PathBuf {
+    #[cfg(test)]
+    if let Some(program) = BEDROCK_CLI_TEST_OVERRIDE
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .ok()
+        .and_then(|program| program.clone())
+    {
+        return program;
+    }
+    std::path::PathBuf::from("aws")
+}
+
 impl BedrockCliAdapter {
     fn new(mut config: BedrockProviderConfig) -> CommandResult<Self> {
         normalize_required(&mut config.model_id, "modelId")?;
@@ -1229,7 +1245,7 @@ impl ProviderAdapter for BedrockCliAdapter {
                 format!("Xero could not open the Bedrock stderr file: {error}"),
             )
         })?;
-        let mut command = Command::new("aws");
+        let mut command = Command::new(bedrock_cli_program());
         command
             .arg("bedrock-runtime")
             .arg("invoke-model")
@@ -5700,6 +5716,19 @@ mod tests {
         }
     }
 
+    fn sse_fixture(events: &[JsonValue], include_done: bool) -> Vec<u8> {
+        let mut fixture = String::new();
+        for event in events {
+            fixture.push_str("data: ");
+            fixture.push_str(&event.to_string());
+            fixture.push_str("\n\n");
+        }
+        if include_done {
+            fixture.push_str("data: [DONE]\n\n");
+        }
+        fixture.into_bytes()
+    }
+
     fn test_provider_preflight(
         provider_id: &str,
         model_id: &str,
@@ -6025,6 +6054,633 @@ mod tests {
     }
 
     #[test]
+    fn provider_parser_fixture_openai_chat_preserves_text_reasoning_tools_and_usage() {
+        let response = sse_fixture(
+            &[
+                json!({
+                    "choices": [{
+                        "delta": {
+                            "reasoning": "inspect first",
+                            "reasoning_details": [
+                                { "type": "reasoning.text", "text": "opaque detail" },
+                                null
+                            ],
+                            "content": "hello ",
+                            "tool_calls": [{
+                                "index": 0,
+                                "id": "call-1",
+                                "function": {
+                                    "name": "read",
+                                    "arguments": "{\"path\":"
+                                }
+                            }]
+                        }
+                    }]
+                }),
+                json!({
+                    "choices": [{
+                        "finish_reason": "tool_calls",
+                        "delta": {
+                            "content": "world",
+                            "tool_calls": [{
+                                "index": 0,
+                                "function": { "arguments": "\"src/lib.rs\"}" }
+                            }]
+                        }
+                    }],
+                    "usage": {
+                        "prompt_tokens": 10,
+                        "completion_tokens": 4,
+                        "total_tokens": 14,
+                        "prompt_tokens_details": {
+                            "cached_tokens": 3,
+                            "cache_write_tokens": 1
+                        },
+                        "cost": 0.00125
+                    }
+                }),
+            ],
+            true,
+        );
+        let mut emitted = Vec::new();
+
+        let outcome = parse_openai_chat_sse(
+            OPENROUTER_PROVIDER_ID,
+            std::io::Cursor::new(response),
+            &mut |event| {
+                emitted.push(event);
+                Ok(())
+            },
+        )
+        .expect("parse OpenRouter chat fixture");
+
+        let ProviderTurnOutcome::ToolCalls {
+            message,
+            reasoning_content,
+            reasoning_details,
+            tool_calls,
+            usage,
+        } = outcome
+        else {
+            panic!("fixture should produce one tool call");
+        };
+        assert_eq!(message, "hello world");
+        assert_eq!(reasoning_content.as_deref(), Some("inspect first"));
+        assert_eq!(
+            reasoning_details,
+            Some(json!([
+                { "type": "reasoning.text", "text": "opaque detail" }
+            ]))
+        );
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].tool_call_id, "call-1");
+        assert_eq!(tool_calls[0].tool_name, "read");
+        assert_eq!(tool_calls[0].input, json!({ "path": "src/lib.rs" }));
+        assert_eq!(
+            usage,
+            Some(ProviderUsage {
+                input_tokens: 10,
+                billable_input_tokens: 6,
+                output_tokens: 4,
+                total_tokens: 14,
+                cache_read_tokens: 3,
+                cache_creation_tokens: 1,
+                reported_cost_micros: Some(1_250),
+            })
+        );
+        assert!(emitted.contains(&ProviderStreamEvent::ReasoningSummary(
+            "inspect first".into()
+        )));
+        assert!(emitted.contains(&ProviderStreamEvent::MessageDelta("hello ".into())));
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            ProviderStreamEvent::ToolDelta {
+                tool_call_id: Some(id),
+                tool_name: Some(name),
+                arguments_delta,
+            } if id == "call-1" && name == "read" && arguments_delta == "{\"path\":"
+        )));
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            ProviderStreamEvent::Usage(usage)
+                if usage.reported_cost_micros == Some(1_250)
+        )));
+    }
+
+    #[test]
+    fn provider_parser_fixture_openai_responses_preserves_reasoning_tools_text_and_usage() {
+        let reasoning_item = json!({
+            "type": "reasoning",
+            "id": "rs_fixture",
+            "encrypted_content": "encrypted-fixture-reasoning",
+            "summary": [{
+                "type": "summary_text",
+                "text": "Inspect the target before reading it."
+            }]
+        });
+        let response = sse_fixture(
+            &[
+                json!({
+                    "type": "response.reasoning_summary_text.delta",
+                    "output_index": 0,
+                    "summary_index": 0,
+                    "delta": "Inspect the target"
+                }),
+                json!({
+                    "type": "response.reasoning_summary_text.done",
+                    "output_index": 0,
+                    "summary_index": 0,
+                    "text": "Inspect the target before reading it."
+                }),
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": 0,
+                    "item": reasoning_item.clone()
+                }),
+                json!({
+                    "type": "response.output_text.delta",
+                    "delta": "I will inspect it."
+                }),
+                json!({
+                    "type": "response.output_item.added",
+                    "output_index": 1,
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call_responses_fixture",
+                        "name": "read",
+                        "arguments": ""
+                    }
+                }),
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": 1,
+                    "delta": "{\"path\":"
+                }),
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "output_index": 1,
+                    "delta": "\"src/lib.rs\"}"
+                }),
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": 1,
+                    "item": {
+                        "type": "function_call",
+                        "call_id": "call_responses_fixture",
+                        "name": "read"
+                    }
+                }),
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "output": [reasoning_item],
+                        "usage": {
+                            "input_tokens": 12,
+                            "output_tokens": 5,
+                            "total_tokens": 17,
+                            "input_tokens_details": { "cached_tokens": 4 }
+                        }
+                    }
+                }),
+            ],
+            true,
+        );
+        let mut emitted = Vec::new();
+
+        let outcome = parse_openai_responses_sse(
+            OPENAI_API_PROVIDER_ID,
+            std::io::Cursor::new(response),
+            &mut |event| {
+                emitted.push(event);
+                Ok(())
+            },
+        )
+        .expect("parse OpenAI Responses fixture");
+
+        let ProviderTurnOutcome::ToolCalls {
+            message,
+            reasoning_content,
+            reasoning_details,
+            tool_calls,
+            usage,
+        } = outcome
+        else {
+            panic!("Responses fixture should produce one tool call");
+        };
+        assert_eq!(message, "I will inspect it.");
+        assert_eq!(reasoning_content, None);
+        assert_eq!(reasoning_details, Some(json!([reasoning_item])));
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].tool_call_id, "call_responses_fixture");
+        assert_eq!(tool_calls[0].tool_name, "read");
+        assert_eq!(tool_calls[0].input, json!({"path": "src/lib.rs"}));
+        assert_eq!(
+            usage,
+            Some(ProviderUsage {
+                input_tokens: 12,
+                billable_input_tokens: 8,
+                output_tokens: 5,
+                total_tokens: 17,
+                cache_read_tokens: 4,
+                cache_creation_tokens: 0,
+                reported_cost_micros: None,
+            })
+        );
+        assert!(emitted.contains(&ProviderStreamEvent::MessageDelta(
+            "I will inspect it.".into()
+        )));
+        assert!(emitted.contains(&ProviderStreamEvent::ReasoningSummary(
+            "Inspect the target before reading it.".into()
+        )));
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            ProviderStreamEvent::ToolDelta {
+                tool_call_id: Some(id),
+                tool_name: Some(name),
+                arguments_delta,
+            } if id == "call_responses_fixture" && name == "read" && arguments_delta == "{\"path\":"
+        )));
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            ProviderStreamEvent::Usage(usage)
+                if usage.total_tokens == 17 && usage.cache_read_tokens == 4
+        )));
+    }
+
+    #[test]
+    fn provider_parser_fixture_anthropic_stream_preserves_all_block_families() {
+        let response = sse_fixture(
+            &[
+                json!({
+                    "type": "message_start",
+                    "message": {
+                        "usage": {
+                            "input_tokens": 10,
+                            "cache_read_input_tokens": 2,
+                            "cache_creation_input_tokens": 3
+                        }
+                    }
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 0,
+                    "content_block": { "type": "thinking" }
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "thinking_delta", "thinking": "inspect" }
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 0,
+                    "delta": { "type": "signature_delta", "signature": "signed" }
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 1,
+                    "content_block": { "type": "redacted_thinking", "data": "opaque" }
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 2,
+                    "delta": { "type": "text_delta", "text": "answer" }
+                }),
+                json!({
+                    "type": "content_block_start",
+                    "index": 3,
+                    "content_block": {
+                        "type": "tool_use",
+                        "id": "tool-1",
+                        "name": "read"
+                    }
+                }),
+                json!({
+                    "type": "content_block_delta",
+                    "index": 3,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": "{\"path\":\"src/lib.rs\"}"
+                    }
+                }),
+                json!({
+                    "type": "message_delta",
+                    "delta": { "stop_reason": "tool_use" },
+                    "usage": {
+                        "output_tokens": 4,
+                        "cache_read_input_tokens": 5,
+                        "cache_creation_input_tokens": 6
+                    }
+                }),
+                json!({ "type": "message_stop" }),
+                json!({ "type": "unknown_event" }),
+            ],
+            false,
+        );
+        let mut emitted = Vec::new();
+
+        let outcome = parse_anthropic_sse(
+            ANTHROPIC_PROVIDER_ID,
+            std::io::Cursor::new(response),
+            &mut |event| {
+                emitted.push(event);
+                Ok(())
+            },
+        )
+        .expect("parse Anthropic stream fixture");
+
+        let ProviderTurnOutcome::ToolCalls {
+            message,
+            reasoning_content,
+            reasoning_details,
+            tool_calls,
+            usage,
+        } = outcome
+        else {
+            panic!("fixture should produce one tool call");
+        };
+        assert_eq!(message, "answer");
+        assert_eq!(reasoning_content.as_deref(), Some("inspect"));
+        assert_eq!(
+            reasoning_details,
+            Some(json!([
+                {
+                    "type": "thinking",
+                    "thinking": "inspect",
+                    "signature": "signed"
+                },
+                { "type": "redacted_thinking", "data": "opaque" }
+            ]))
+        );
+        assert_eq!(tool_calls.len(), 1);
+        assert_eq!(tool_calls[0].tool_call_id, "tool-1");
+        assert_eq!(tool_calls[0].input, json!({ "path": "src/lib.rs" }));
+        assert_eq!(
+            usage,
+            Some(ProviderUsage {
+                input_tokens: 21,
+                billable_input_tokens: 10,
+                output_tokens: 4,
+                total_tokens: 25,
+                cache_read_tokens: 5,
+                cache_creation_tokens: 6,
+                reported_cost_micros: None,
+            })
+        );
+        assert!(emitted.contains(&ProviderStreamEvent::MessageDelta("answer".into())));
+        assert!(emitted.contains(&ProviderStreamEvent::ReasoningSummary("inspect".into())));
+        assert!(emitted.iter().any(|event| matches!(
+            event,
+            ProviderStreamEvent::ToolDelta {
+                tool_call_id: Some(id),
+                tool_name: Some(name),
+                arguments_delta,
+            } if id == "tool-1"
+                && name == "read"
+                && arguments_delta == "{\"path\":\"src/lib.rs\"}"
+        )));
+    }
+
+    #[test]
+    fn provider_parser_fixture_anthropic_json_preserves_content_thinking_and_cache_usage() {
+        let response = json!({
+            "content": [
+                { "type": "text", "text": "done" },
+                {
+                    "type": "tool_use",
+                    "id": "tool-2",
+                    "name": "write",
+                    "input": { "path": "out.txt", "content": "ok" }
+                },
+                {
+                    "type": "thinking",
+                    "thinking": "reason",
+                    "signature": "signature"
+                },
+                { "type": "redacted_thinking", "data": "redacted" },
+                { "type": "unknown", "ignored": true }
+            ],
+            "usage": {
+                "input_tokens": 8,
+                "output_tokens": 3,
+                "cache_read_input_tokens": 2,
+                "cache_creation_input_tokens": 1
+            },
+            "stop_reason": "tool_use"
+        })
+        .to_string();
+        let mut emitted = Vec::new();
+
+        let outcome = parse_anthropic_json_response(
+            BEDROCK_PROVIDER_ID,
+            &response,
+            &mut |event| {
+                emitted.push(event);
+                Ok(())
+            },
+        )
+        .expect("parse Anthropic JSON fixture");
+
+        let ProviderTurnOutcome::ToolCalls {
+            message,
+            reasoning_content,
+            reasoning_details,
+            tool_calls,
+            usage,
+        } = outcome
+        else {
+            panic!("fixture should produce one tool call");
+        };
+        assert_eq!(message, "done");
+        assert_eq!(reasoning_content.as_deref(), Some("reason"));
+        assert_eq!(
+            reasoning_details,
+            Some(json!([
+                {
+                    "type": "thinking",
+                    "thinking": "reason",
+                    "signature": "signature"
+                },
+                { "type": "redacted_thinking", "data": "redacted" }
+            ]))
+        );
+        assert_eq!(tool_calls[0].tool_call_id, "tool-2");
+        assert_eq!(tool_calls[0].tool_name, "write");
+        assert_eq!(
+            tool_calls[0].input,
+            json!({ "path": "out.txt", "content": "ok" })
+        );
+        assert_eq!(
+            usage,
+            Some(ProviderUsage {
+                input_tokens: 11,
+                billable_input_tokens: 8,
+                output_tokens: 3,
+                total_tokens: 14,
+                cache_read_tokens: 2,
+                cache_creation_tokens: 1,
+                reported_cost_micros: None,
+            })
+        );
+        assert!(emitted.contains(&ProviderStreamEvent::MessageDelta("done".into())));
+        assert!(emitted.contains(&ProviderStreamEvent::ReasoningSummary("reason".into())));
+    }
+
+    #[test]
+    fn provider_parser_fixture_failures_are_typed_and_never_accept_partial_output() {
+        let mut emit = |_| Ok(());
+        let invalid_chat = parse_openai_chat_sse(
+            OPENAI_API_PROVIDER_ID,
+            std::io::Cursor::new(b"data: not-json\n\n"),
+            &mut emit,
+        )
+        .expect_err("invalid OpenAI frame");
+        assert_eq!(invalid_chat.code, "agent_provider_stream_decode_failed");
+
+        let openai_error = parse_openai_chat_sse(
+            OPENROUTER_PROVIDER_ID,
+            std::io::Cursor::new(sse_fixture(
+                &[json!({
+                    "error": {
+                        "type": "upstream_error",
+                        "message": "try again"
+                    }
+                })],
+                false,
+            )),
+            &mut emit,
+        )
+        .expect_err("OpenAI-compatible mid-stream error");
+        assert_eq!(openai_error.code, "agent_provider_stream_error");
+
+        let truncated_chat = parse_openai_chat_sse(
+            OPENAI_API_PROVIDER_ID,
+            std::io::Cursor::new(sse_fixture(
+                &[json!({
+                    "choices": [{
+                        "finish_reason": "length",
+                        "delta": { "content": "partial" }
+                    }]
+                })],
+                true,
+            )),
+            &mut emit,
+        )
+        .expect_err("truncated OpenAI chat");
+        assert_eq!(truncated_chat.code, "agent_provider_output_truncated");
+
+        let invalid_responses = parse_openai_responses_sse(
+            OPENAI_API_PROVIDER_ID,
+            std::io::Cursor::new(b"data: not-json\n\n"),
+            &mut emit,
+        )
+        .expect_err("invalid OpenAI Responses frame");
+        assert_eq!(
+            invalid_responses.code,
+            "agent_provider_stream_decode_failed"
+        );
+
+        for event_type in ["error", "response.failed"] {
+            let responses_error = parse_openai_responses_sse(
+                OPENAI_API_PROVIDER_ID,
+                std::io::Cursor::new(sse_fixture(
+                    &[json!({
+                        "type": event_type,
+                        "error": {
+                            "type": "server_error",
+                            "code": "fixture_failed",
+                            "message": "fixture response failed"
+                        }
+                    })],
+                    false,
+                )),
+                &mut emit,
+            )
+            .expect_err("OpenAI Responses error event");
+            assert_eq!(responses_error.code, "openai_api_stream_failed");
+            assert!(responses_error.message.contains("fixture response failed"));
+        }
+
+        let incomplete_responses = parse_openai_responses_sse(
+            OPENAI_API_PROVIDER_ID,
+            std::io::Cursor::new(sse_fixture(
+                &[json!({
+                    "type": "response.incomplete",
+                    "response": {
+                        "usage": {
+                            "input_tokens": 8,
+                            "output_tokens": 2,
+                            "total_tokens": 10
+                        },
+                        "incomplete_details": { "reason": "max_output_tokens" }
+                    }
+                })],
+                false,
+            )),
+            &mut emit,
+        )
+        .expect_err("incomplete OpenAI Responses output");
+        assert_eq!(
+            incomplete_responses.code,
+            "agent_provider_output_truncated"
+        );
+
+        let anthropic_error = parse_anthropic_sse(
+            ANTHROPIC_PROVIDER_ID,
+            std::io::Cursor::new(sse_fixture(
+                &[json!({
+                    "type": "error",
+                    "error": {
+                        "type": "overloaded_error",
+                        "message": "busy"
+                    }
+                })],
+                false,
+            )),
+            &mut emit,
+        )
+        .expect_err("Anthropic mid-stream error");
+        assert_eq!(anthropic_error.code, "agent_provider_stream_error");
+
+        let truncated_anthropic = parse_anthropic_sse(
+            ANTHROPIC_PROVIDER_ID,
+            std::io::Cursor::new(sse_fixture(
+                &[json!({
+                    "type": "message_delta",
+                    "delta": { "stop_reason": "max_tokens" }
+                })],
+                false,
+            )),
+            &mut emit,
+        )
+        .expect_err("truncated Anthropic stream");
+        assert_eq!(
+            truncated_anthropic.code,
+            "agent_provider_output_truncated"
+        );
+
+        let invalid_json = parse_anthropic_json_response(
+            BEDROCK_PROVIDER_ID,
+            "{not-json",
+            &mut emit,
+        )
+        .expect_err("invalid Anthropic JSON body");
+        assert_eq!(invalid_json.code, "agent_provider_response_decode_failed");
+
+        let truncated_json = parse_anthropic_json_response(
+            BEDROCK_PROVIDER_ID,
+            &json!({
+                "content": [{ "type": "text", "text": "partial" }],
+                "stop_reason": "max_tokens"
+            })
+            .to_string(),
+            &mut emit,
+        )
+        .expect_err("truncated Anthropic JSON body");
+        assert_eq!(truncated_json.code, "agent_provider_output_truncated");
+    }
+
+    #[test]
     fn openai_compatible_body_uses_stream_options_only_for_providers_that_support_it() {
         let request = test_request();
 
@@ -6084,6 +6740,104 @@ mod tests {
             estimate.counted_shape,
             "openai_chat_completions_wire_request"
         );
+    }
+
+    fn spawn_json_fixture_server(body: &'static str) -> (String, thread::JoinHandle<()>) {
+        let (url, server) = spawn_provider_stream_server(move |mut stream| {
+            let response = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            stream
+                .write_all(response.as_bytes())
+                .expect("write JSON fixture response");
+            stream.flush().expect("flush JSON fixture response");
+        });
+        (
+            url.strip_suffix("/stream")
+                .expect("fixture URL suffix")
+                .to_owned(),
+            server,
+        )
+    }
+
+    #[test]
+    fn anthropic_count_tokens_fixture_covers_success_cache_decode_and_fallback_paths() {
+        let mut request = test_request();
+        request.output_allowance =
+            ProviderTurnOutputAllowance::split(4_096, 0, 4_096).expect("split allowance");
+        let client = provider_blocking_http_client(2_000).expect("blocking client");
+
+        let (base_url, server) = spawn_json_fixture_server(r#"{"input_tokens":123}"#);
+        let success = AnthropicProviderConfig {
+            provider_id: "anthropic-count-success".into(),
+            model_id: "claude-count-success".into(),
+            api_key: "fixture-key".into(),
+            base_url,
+            anthropic_version: ANTHROPIC_API_VERSION.into(),
+            timeout_ms: 2_000,
+        };
+        let estimate = estimate_anthropic_context_tokens(&success, &client, &request)
+            .expect("provider token count");
+        server.join().expect("success count server");
+        assert_eq!(estimate.tokens, 123);
+        assert_eq!(estimate.source, SessionContextEstimateSourceDto::ProviderCountApi);
+        assert_eq!(estimate.confidence, SessionContextEstimateConfidenceDto::High);
+        assert!(estimate.diagnostics[0].contains("messages/count_tokens"));
+        assert_eq!(
+            estimate_anthropic_context_tokens(&success, &client, &request)
+                .expect("cached provider token count"),
+            estimate
+        );
+
+        let (base_url, server) = spawn_json_fixture_server(r#"{"unexpected":true}"#);
+        let missing = AnthropicProviderConfig {
+            provider_id: "anthropic-count-missing".into(),
+            model_id: "claude-count-missing".into(),
+            base_url,
+            ..success.clone()
+        };
+        let estimate = estimate_anthropic_context_tokens(&missing, &client, &request)
+            .expect("missing input_tokens should fall back");
+        server.join().expect("missing count server");
+        assert_eq!(estimate.source, SessionContextEstimateSourceDto::Heuristic);
+        assert!(estimate
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("did not include `input_tokens`")));
+
+        let (base_url, server) = spawn_json_fixture_server("not-json");
+        let malformed = AnthropicProviderConfig {
+            provider_id: "anthropic-count-malformed".into(),
+            model_id: "claude-count-malformed".into(),
+            base_url,
+            ..success.clone()
+        };
+        let estimate = estimate_anthropic_context_tokens(&malformed, &client, &request)
+            .expect("malformed token response should fall back");
+        server.join().expect("malformed count server");
+        assert!(estimate
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("response was unavailable")));
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("reserve closed port");
+        let closed_address = listener.local_addr().expect("closed address");
+        drop(listener);
+        let unavailable = AnthropicProviderConfig {
+            provider_id: "anthropic-count-unavailable".into(),
+            model_id: "claude-count-unavailable".into(),
+            base_url: format!("http://{closed_address}"),
+            timeout_ms: 200,
+            ..success
+        };
+        let estimate = estimate_anthropic_context_tokens(&unavailable, &client, &request)
+            .expect("unavailable count endpoint should fall back");
+        assert!(estimate
+            .diagnostics
+            .iter()
+            .any(|message| message.contains("API was unavailable")));
     }
 
     #[test]
@@ -7398,6 +8152,156 @@ mod tests {
     }
 
     #[test]
+    fn openai_reasoning_state_fixture_covers_partials_extensions_flush_and_conflicts() {
+        let mut events = Vec::new();
+        let mut emit = |event| {
+            events.push(event);
+            Ok(())
+        };
+        let mut state = OpenAiResponsesReasoningSummaryState::default();
+        assert_eq!(state.replayable_reasoning_details(), None);
+
+        assert!(emit_openai_responses_reasoning_summary_event(
+            OPENAI_API_PROVIDER_ID,
+            &json!({
+                "type": "response.reasoning_summary_part.added",
+                "output_index": 2,
+                "summary_index": 3,
+                "part": {"type":"summary_text", "text":"First"}
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("part added"));
+        assert!(emit_openai_responses_reasoning_summary_event(
+            OPENAI_API_PROVIDER_ID,
+            &json!({
+                "type": "response.reasoning_summary_part.done",
+                "output_index": 2,
+                "summary_index": 3
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("part done uses pending text"));
+
+        assert!(emit_openai_responses_reasoning_summary_text(
+            OPENAI_API_PROVIDER_ID,
+            (2, 3),
+            "First extended",
+            &mut state,
+            &mut emit,
+        )
+        .expect("extended reasoning text emits only the suffix"));
+        assert!(!emit_openai_responses_reasoning_summary_text(
+            OPENAI_API_PROVIDER_ID,
+            (2, 3),
+            "First extended",
+            &mut state,
+            &mut emit,
+        )
+        .expect("duplicate reasoning text is ignored"));
+        assert!(!emit_openai_responses_reasoning_summary_text(
+            OPENAI_API_PROVIDER_ID,
+            (2, 3),
+            "Conflicting replacement",
+            &mut state,
+            &mut emit,
+        )
+        .expect("non-prefix replacement is ignored"));
+        assert!(!emit_openai_responses_reasoning_summary_text(
+            OPENAI_API_PROVIDER_ID,
+            (9, 9),
+            "",
+            &mut state,
+            &mut emit,
+        )
+        .expect("empty reasoning text is ignored"));
+
+        assert!(emit_openai_responses_reasoning_summary_event(
+            OPENAI_API_PROVIDER_ID,
+            &json!({
+                "type": "response.reasoning_summary_text.delta",
+                "output_index": 4,
+                "summary_index": 0,
+                "delta": "Pending flush"
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("pending delta"));
+        assert!(emit_openai_responses_reasoning_summary_event(
+            OPENAI_API_PROVIDER_ID,
+            &json!({
+                "type": "response.reasoning_summary_text.delta",
+                "output_index": 5,
+                "summary_index": 0,
+                "delta": ""
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("empty delta is handled"));
+        flush_openai_responses_reasoning_summary_pending(
+            OPENAI_API_PROVIDER_ID,
+            &mut state,
+            &mut emit,
+        )
+        .expect("flush pending summaries");
+        assert!(state.pending_text.is_empty());
+
+        assert!(!emit_openai_responses_reasoning_summary_event(
+            OPENAI_API_PROVIDER_ID,
+            &json!({
+                "type": "response.output_item.done",
+                "item": {"type":"message"}
+            }),
+            &mut state,
+            &mut emit,
+        )
+        .expect("non-reasoning output item is ignored"));
+
+        let item = json!({
+            "type":"reasoning",
+            "id":"reasoning-conflict",
+            "encrypted_content":"cipher-one"
+        });
+        collect_openai_responses_reasoning_item(OPENAI_API_PROVIDER_ID, &mut state, &item)
+            .expect("first replay item");
+        let error = collect_openai_responses_reasoning_item(
+            OPENAI_API_PROVIDER_ID,
+            &mut state,
+            &json!({
+                "type":"reasoning",
+                "id":"reasoning-conflict",
+                "encrypted_content":"cipher-two"
+            }),
+        )
+        .expect_err("changed encrypted content must fail closed");
+        assert_eq!(error.code, "agent_provider_reasoning_item_conflict");
+
+        let mut foreign_state = OpenAiResponsesReasoningSummaryState::default();
+        collect_openai_responses_reasoning_item(OPENROUTER_PROVIDER_ID, &mut foreign_state, &item)
+            .expect("providers without replay support ignore reasoning items");
+        assert_eq!(foreign_state.replayable_reasoning_details(), None);
+
+        let oversized = "x".repeat(MAX_PROVIDER_REASONING_BYTES + 1);
+        let error = emit_openai_responses_reasoning_summary_text(
+            OPENAI_API_PROVIDER_ID,
+            (8, 8),
+            &oversized,
+            &mut state,
+            &mut emit,
+        )
+        .expect_err("oversized reasoning summary must fail closed");
+        assert_eq!(error.code, "agent_provider_stream_limit_exceeded");
+
+        assert!(events.contains(&ProviderStreamEvent::ReasoningSummary("First".into())));
+        assert!(events.contains(&ProviderStreamEvent::ReasoningSummary(" extended".into())));
+        assert!(events.contains(&ProviderStreamEvent::ReasoningSummary("Pending flush".into())));
+    }
+
+    #[test]
     fn openai_responses_completed_event_backfills_reasoning_output_summary() {
         let mut events = Vec::new();
         let mut emit = |event| {
@@ -7894,6 +8798,330 @@ mod tests {
     fn finish_http_chunks(stream: &mut TcpStream) {
         stream.write_all(b"0\r\n\r\n").expect("finish HTTP chunks");
         stream.flush().expect("flush HTTP completion");
+    }
+
+    fn spawn_sse_fixture_server(events: Vec<JsonValue>, include_done: bool) -> (String, thread::JoinHandle<()>) {
+        let fixture = String::from_utf8(sse_fixture(&events, include_done)).expect("UTF-8 fixture");
+        let (url, server) = spawn_provider_stream_server(move |mut stream| {
+            write_provider_stream_headers(&mut stream);
+            write_http_chunk(&mut stream, &fixture);
+            finish_http_chunks(&mut stream);
+        });
+        (
+            url.strip_suffix("/stream")
+                .expect("fixture server URL suffix")
+                .to_owned(),
+            server,
+        )
+    }
+
+    fn assert_fixture_adapter_turn(
+        config: AgentProviderConfig,
+        mut request: ProviderTurnRequest,
+        expected_text: &str,
+    ) {
+        if matches!(config, AgentProviderConfig::Anthropic(_)) {
+            request.output_allowance =
+                ProviderTurnOutputAllowance::split(4_096, 0, 4_096).expect("split allowance");
+        }
+        let adapter = create_provider_adapter(config).expect("create provider fixture adapter");
+        let mut emitted = Vec::new();
+        let outcome = adapter
+            .stream_turn(
+                &request,
+                &AgentRunCancellationToken::default(),
+                &mut |event| {
+                    emitted.push(event);
+                    Ok(())
+                },
+            )
+            .expect("stream fixture provider turn");
+        let ProviderTurnOutcome::Complete { message, .. } = outcome else {
+            panic!("fixture should complete without tool calls");
+        };
+        assert_eq!(message, expected_text);
+        assert!(emitted.iter().any(
+            |event| matches!(event, ProviderStreamEvent::MessageDelta(text) if text == expected_text)
+        ));
+        let estimate = adapter
+            .estimate_context_tokens(&request)
+            .expect("estimate fixture request");
+        assert!(estimate.tokens > 0);
+    }
+
+    #[test]
+    fn provider_adapter_fixture_matrix_streams_every_http_family_and_estimates_cli_families() {
+        let responses_events = || {
+            vec![
+                json!({
+                    "type": "response.output_text.delta",
+                    "delta": "responses-ok"
+                }),
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "usage": {
+                            "input_tokens": 2,
+                            "output_tokens": 1,
+                            "total_tokens": 3
+                        }
+                    }
+                }),
+            ]
+        };
+
+        let (base_url, server) = spawn_sse_fixture_server(responses_events(), true);
+        assert_fixture_adapter_turn(
+            AgentProviderConfig::OpenAiResponses(OpenAiResponsesProviderConfig {
+                provider_id: OPENAI_API_PROVIDER_ID.into(),
+                model_id: "gpt-5.4".into(),
+                base_url,
+                api_key: "fixture-key".into(),
+                timeout_ms: 2_000,
+            }),
+            test_request(),
+            "responses-ok",
+        );
+        server.join().expect("OpenAI fixture server");
+
+        let (base_url, server) = spawn_sse_fixture_server(responses_events(), true);
+        assert_fixture_adapter_turn(
+            AgentProviderConfig::OpenAiCodexResponses(OpenAiCodexResponsesProviderConfig {
+                provider_id: OPENAI_CODEX_PROVIDER_ID.into(),
+                model_id: "gpt-5.6-sol".into(),
+                base_url,
+                access_token: "fixture-token".into(),
+                account_id: "fixture-account".into(),
+                session_id: Some(" fixture-session ".into()),
+                timeout_ms: 2_000,
+            }),
+            test_request(),
+            "responses-ok",
+        );
+        server.join().expect("Codex fixture server");
+
+        let (base_url, server) = spawn_sse_fixture_server(responses_events(), true);
+        assert_fixture_adapter_turn(
+            AgentProviderConfig::XaiResponses(XaiResponsesProviderConfig {
+                provider_id: XAI_PROVIDER_ID.into(),
+                model_id: XAI_DEFAULT_MODEL_ID.into(),
+                base_url,
+                bearer_token: "fixture-token".into(),
+                timeout_ms: 2_000,
+            }),
+            test_request(),
+            "responses-ok",
+        );
+        server.join().expect("xAI fixture server");
+
+        let chat_events = vec![
+            json!({"choices": [{"delta": {"content": "chat-ok"}}]}),
+            json!({
+                "choices": [{"delta": {}, "finish_reason": "stop"}],
+                "usage": {"prompt_tokens": 2, "completion_tokens": 1, "total_tokens": 3}
+            }),
+        ];
+        let (base_url, server) = spawn_sse_fixture_server(chat_events.clone(), true);
+        assert_fixture_adapter_turn(
+            AgentProviderConfig::OpenAiCompatible(OpenAiCompatibleProviderConfig {
+                provider_id: OPENROUTER_PROVIDER_ID.into(),
+                model_id: "openai/gpt-5.4".into(),
+                base_url,
+                api_key: Some(" fixture-key ".into()),
+                api_version: None,
+                timeout_ms: 2_000,
+            }),
+            test_request(),
+            "chat-ok",
+        );
+        server.join().expect("compatible fixture server");
+
+        let (base_url, server) = spawn_sse_fixture_server(chat_events, true);
+        assert_fixture_adapter_turn(
+            AgentProviderConfig::DeepSeek(DeepSeekProviderConfig {
+                model_id: "deepseek-v4-pro".into(),
+                base_url,
+                api_key: "fixture-key".into(),
+                timeout_ms: 2_000,
+            }),
+            test_request(),
+            "chat-ok",
+        );
+        server.join().expect("DeepSeek fixture server");
+
+        let anthropic_events = vec![
+            json!({
+                "type": "message_start",
+                "message": {"usage": {"input_tokens": 2}}
+            }),
+            json!({
+                "type": "content_block_delta",
+                "index": 0,
+                "delta": {"type": "text_delta", "text": "anthropic-ok"}
+            }),
+            json!({
+                "type": "message_delta",
+                "delta": {"stop_reason": "end_turn"},
+                "usage": {"output_tokens": 1}
+            }),
+            json!({"type": "message_stop"}),
+        ];
+        let (base_url, server) = spawn_sse_fixture_server(anthropic_events, false);
+        assert_fixture_adapter_turn(
+            AgentProviderConfig::Anthropic(AnthropicProviderConfig {
+                provider_id: ANTHROPIC_PROVIDER_ID.into(),
+                model_id: "claude-sonnet-4-5".into(),
+                api_key: "fixture-key".into(),
+                base_url,
+                anthropic_version: ANTHROPIC_API_VERSION.into(),
+                timeout_ms: 2_000,
+            }),
+            test_request(),
+            "anthropic-ok",
+        );
+        server.join().expect("Anthropic fixture server");
+
+        for config in [
+            AgentProviderConfig::Fake,
+            AgentProviderConfig::Bedrock(BedrockProviderConfig {
+                model_id: "anthropic.claude-sonnet-4-5".into(),
+                region: "us-west-2".into(),
+                timeout_ms: 2_000,
+            }),
+            AgentProviderConfig::Vertex(VertexProviderConfig {
+                model_id: "claude-sonnet-4-5@20250929".into(),
+                region: "us-central1".into(),
+                project_id: "fixture-project".into(),
+                timeout_ms: 2_000,
+            }),
+        ] {
+            let adapter = create_provider_adapter(config).expect("create non-HTTP fixture adapter");
+            let mut request = test_request();
+            if matches!(adapter.provider_id(), BEDROCK_PROVIDER_ID | VERTEX_PROVIDER_ID) {
+                request.output_allowance = ProviderTurnOutputAllowance::split(4_096, 0, 4_096)
+                    .expect("split allowance");
+            }
+            let estimate = adapter
+                .estimate_context_tokens(&request)
+                .expect("estimate non-HTTP fixture request");
+            assert!(estimate.tokens > 0);
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn bedrock_cli_fixture_streams_success_and_reports_exit_and_spawn_failures() {
+        use std::os::unix::fs::PermissionsExt;
+
+        static FIXTURE_LOCK: Mutex<()> = Mutex::new(());
+
+        struct BedrockCliOverride;
+
+        impl BedrockCliOverride {
+            fn set(program: &std::path::Path) -> Self {
+                *BEDROCK_CLI_TEST_OVERRIDE
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .expect("lock Bedrock CLI override") = Some(program.to_path_buf());
+                Self
+            }
+        }
+
+        impl Drop for BedrockCliOverride {
+            fn drop(&mut self) {
+                *BEDROCK_CLI_TEST_OVERRIDE
+                    .get_or_init(|| Mutex::new(None))
+                    .lock()
+                    .expect("clear Bedrock CLI override") = None;
+            }
+        }
+
+        let _fixture_guard = FIXTURE_LOCK.lock().expect("serialize Bedrock CLI fixture");
+        let fixture_dir = tempfile::tempdir().expect("Bedrock fixture directory");
+        let cli_path = fixture_dir.path().join("aws-fixture");
+        std::fs::write(
+            &cli_path,
+            r#"#!/bin/sh
+output_path=
+for argument in "$@"; do
+  output_path="$argument"
+done
+printf '%s' '{"content":[{"type":"text","text":"bedrock-ok"}],"stop_reason":"end_turn","usage":{"input_tokens":7,"output_tokens":3}}' > "$output_path"
+"#,
+        )
+        .expect("write successful AWS fixture");
+        let mut permissions = std::fs::metadata(&cli_path)
+            .expect("read fixture permissions")
+            .permissions();
+        permissions.set_mode(0o700);
+        std::fs::set_permissions(&cli_path, permissions).expect("make AWS fixture executable");
+        let cli_override = BedrockCliOverride::set(&cli_path);
+        let adapter = BedrockCliAdapter::new(BedrockProviderConfig {
+            model_id: "anthropic.claude-sonnet-4-5".into(),
+            region: "us-west-2".into(),
+            timeout_ms: 2_000,
+        })
+        .expect("create Bedrock fixture adapter");
+        let mut request = test_request();
+        request.output_allowance =
+            ProviderTurnOutputAllowance::split(4_096, 0, 4_096).expect("Bedrock allowance");
+        let mut emitted = Vec::new();
+
+        let outcome = adapter
+            .stream_turn(
+                &request,
+                &AgentRunCancellationToken::default(),
+                &mut |event| {
+                    emitted.push(event);
+                    Ok(())
+                },
+            )
+            .expect("invoke successful AWS fixture");
+        assert!(matches!(
+            outcome,
+            ProviderTurnOutcome::Complete {
+                ref message,
+                usage: Some(ref usage),
+                ..
+            }
+                if message == "bedrock-ok"
+                    && usage.input_tokens == 7
+                    && usage.output_tokens == 3
+        ));
+        assert!(emitted.iter().any(
+            |event| matches!(event, ProviderStreamEvent::MessageDelta(text) if text == "bedrock-ok")
+        ));
+
+        std::fs::write(
+            &cli_path,
+            "#!/bin/sh\nprintf '%s' 'fixture access denied' >&2\nexit 23\n",
+        )
+        .expect("write failing AWS fixture");
+        let error = adapter
+            .stream_turn(
+                &request,
+                &AgentRunCancellationToken::default(),
+                &mut |_| Ok(()),
+            )
+            .expect_err("nonzero AWS fixture exit is typed");
+        assert_eq!(error.code, "bedrock_provider_unavailable");
+        assert!(error.message.contains("status 23"));
+        assert!(error.message.contains("fixture access denied"));
+
+        drop(cli_override);
+        let missing_path = fixture_dir.path().join("missing-aws-fixture");
+        let _missing_override = BedrockCliOverride::set(&missing_path);
+        assert_eq!(
+            adapter
+                .stream_turn(
+                    &request,
+                    &AgentRunCancellationToken::default(),
+                    &mut |_| Ok(()),
+                )
+                .expect_err("missing AWS fixture is typed")
+                .code,
+            "bedrock_aws_cli_missing"
+        );
     }
 
     fn test_provider_stream_reader(

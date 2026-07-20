@@ -68,6 +68,7 @@ export const runtimeProtocolEventKindSchema = z.enum([
   'policy_decision',
   'state_transition',
   'plan_updated',
+  'route_requested',
   'verification_gate',
   'context_manifest_recorded',
   'retrieval_performed',

@@ -162,6 +162,7 @@ async function main() {
     ...rootEnv,
     TAURI_SIGNING_IDENTITY: rootEnv.TAURI_SIGNING_IDENTITY ?? '-',
     CARGO_BUILD_JOBS: rootEnv.CARGO_BUILD_JOBS ?? '4',
+    CARGO_INCREMENTAL: '0',
   }
 
   if (releaseDesktopSidecarIsFresh()) {

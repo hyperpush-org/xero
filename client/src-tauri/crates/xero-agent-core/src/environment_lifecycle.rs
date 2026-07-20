@@ -1543,6 +1543,372 @@ mod tests {
     }
 
     #[test]
+    fn lifecycle_value_contracts_cover_every_wire_state_and_approval_boundary() {
+        let lifecycle_states = [
+            (EnvironmentLifecycleState::Created, "created", false, false),
+            (
+                EnvironmentLifecycleState::WaitingForSandbox,
+                "waiting_for_sandbox",
+                false,
+                false,
+            ),
+            (
+                EnvironmentLifecycleState::PreparingRepository,
+                "preparing_repository",
+                false,
+                false,
+            ),
+            (
+                EnvironmentLifecycleState::LoadingProjectInstructions,
+                "loading_project_instructions",
+                false,
+                false,
+            ),
+            (
+                EnvironmentLifecycleState::RunningSetupScripts,
+                "running_setup_scripts",
+                false,
+                false,
+            ),
+            (
+                EnvironmentLifecycleState::SettingUpHooks,
+                "setting_up_hooks",
+                false,
+                false,
+            ),
+            (
+                EnvironmentLifecycleState::SettingUpSkillsPlugins,
+                "setting_up_skills_plugins",
+                false,
+                false,
+            ),
+            (
+                EnvironmentLifecycleState::IndexingWorkspace,
+                "indexing_workspace",
+                false,
+                false,
+            ),
+            (
+                EnvironmentLifecycleState::StartingConversation,
+                "starting_conversation",
+                false,
+                false,
+            ),
+            (EnvironmentLifecycleState::Ready, "ready", true, true),
+            (EnvironmentLifecycleState::Failed, "failed", false, true),
+            (EnvironmentLifecycleState::Paused, "paused", false, false),
+            (
+                EnvironmentLifecycleState::Archived,
+                "archived",
+                false,
+                true,
+            ),
+        ];
+        for (state, wire, ready, terminal) in lifecycle_states {
+            assert_eq!(state.as_str(), wire);
+            assert_eq!(EnvironmentLifecycleState::from_wire(wire), Some(state));
+            assert_eq!(state.is_ready(), ready);
+            assert_eq!(state.is_terminal(), terminal);
+        }
+        assert_eq!(EnvironmentLifecycleState::from_wire("future_state"), None);
+
+        for (policy, wire) in [
+            (SandboxGroupingPolicy::None, "none"),
+            (SandboxGroupingPolicy::ReuseNewest, "reuse_newest"),
+            (SandboxGroupingPolicy::ReuseLeastBusy, "reuse_least_busy"),
+            (SandboxGroupingPolicy::ReuseByProject, "reuse_by_project"),
+            (
+                SandboxGroupingPolicy::DedicatedPerSession,
+                "dedicated_per_session",
+            ),
+        ] {
+            assert_eq!(policy.as_str(), wire);
+            assert_eq!(SandboxGroupingPolicy::from_wire(wire), Some(policy));
+        }
+        assert_eq!(SandboxGroupingPolicy::from_wire("shared_forever"), None);
+
+        for (kind, wire) in [
+            (
+                EnvironmentHealthCheckKind::FilesystemAccessible,
+                "filesystem_accessible",
+            ),
+            (
+                EnvironmentHealthCheckKind::GitStateAvailable,
+                "git_state_available",
+            ),
+            (
+                EnvironmentHealthCheckKind::RequiredBinariesAvailable,
+                "required_binaries_available",
+            ),
+            (
+                EnvironmentHealthCheckKind::ProviderCredentialsValid,
+                "provider_credentials_valid",
+            ),
+            (
+                EnvironmentHealthCheckKind::ToolPacksAvailable,
+                "tool_packs_available",
+            ),
+            (
+                EnvironmentHealthCheckKind::SemanticIndexStatus,
+                "semantic_index_status",
+            ),
+        ] {
+            assert_eq!(kind.as_str(), wire);
+        }
+
+        for (state, wire, ready) in [
+            (EnvironmentSemanticIndexState::Ready, "ready", true),
+            (EnvironmentSemanticIndexState::Indexing, "indexing", false),
+            (EnvironmentSemanticIndexState::Stale, "stale", false),
+            (EnvironmentSemanticIndexState::Empty, "empty", false),
+            (EnvironmentSemanticIndexState::Failed, "failed", false),
+            (
+                EnvironmentSemanticIndexState::Unavailable,
+                "unavailable",
+                false,
+            ),
+        ] {
+            assert_eq!(state.as_str(), wire);
+            assert_eq!(EnvironmentSemanticIndexState::from_wire(wire), Some(state));
+            assert_eq!(state.is_ready(), ready);
+        }
+        assert_eq!(EnvironmentSemanticIndexState::from_wire("unknown"), None);
+        assert_eq!(
+            EnvironmentSemanticIndexState::default(),
+            EnvironmentSemanticIndexState::Empty
+        );
+
+        assert!(EnvironmentConfigTrust::TrustedProject.is_trusted());
+        assert!(EnvironmentConfigTrust::TrustedApp.is_trusted());
+        assert!(!EnvironmentConfigTrust::UntrustedProject.is_trusted());
+        assert!(EnvironmentActionApproval::not_required().is_satisfied());
+        assert!(!EnvironmentActionApproval::pending().is_satisfied());
+        assert!(EnvironmentActionApproval::approved().is_satisfied());
+        assert_eq!(
+            EnvironmentActionApproval::default(),
+            EnvironmentActionApproval::not_required()
+        );
+    }
+
+    #[test]
+    fn lifecycle_health_and_prompt_fixtures_cover_every_diagnostic_class() {
+        let reasons = semantic_workspace_prompt_requirement_reasons(
+            "Use TOOL:WORKSPACE_QUERY for related tests and change impact semantic search.",
+        );
+        assert_eq!(
+            reasons,
+            vec![
+                "prompt invoked the workspace-index tool",
+                "prompt requested change-impact workspace retrieval",
+                "prompt requested related-tests workspace retrieval",
+                "prompt requested semantic workspace search",
+            ]
+        );
+        assert!(semantic_workspace_prompt_requirement_reasons("answer from context").is_empty());
+
+        let mut config = EnvironmentLifecycleConfig::default();
+        config.workspace_root = ".".into();
+        config.required_binaries = vec!["definitely-missing-xero-test-binary".into()];
+        config.provider_credentials_required = true;
+        config.provider_credentials_valid = false;
+        config.tool_packs.clear();
+        config.semantic_index_required = true;
+        config.semantic_index_state = EnvironmentSemanticIndexState::Indexing;
+        let checks = collect_health_checks(&config);
+        assert_eq!(checks.len(), 6);
+        assert_eq!(
+            first_failed_health_diagnostic(&checks)
+                .expect("first failure")
+                .code,
+            "agent_environment_required_binary_missing"
+        );
+
+        config.required_binaries.clear();
+        config.provider_credentials_valid = true;
+        config.tool_packs.push("owned_agent_core".into());
+        config.semantic_index_available = true;
+        assert!(provider_credentials_health(&config).diagnostic.is_none());
+        assert_eq!(
+            tool_packs_health(&config).status,
+            EnvironmentHealthStatus::Passed
+        );
+        assert_eq!(
+            semantic_index_health(&config).status,
+            EnvironmentHealthStatus::Passed
+        );
+
+        for (state, expected_code) in [
+            (
+                EnvironmentSemanticIndexState::Ready,
+                "agent_environment_workspace_index_ready",
+            ),
+            (
+                EnvironmentSemanticIndexState::Indexing,
+                "agent_environment_workspace_index_indexing",
+            ),
+            (
+                EnvironmentSemanticIndexState::Stale,
+                "agent_environment_workspace_index_stale",
+            ),
+            (
+                EnvironmentSemanticIndexState::Empty,
+                "agent_environment_workspace_index_empty",
+            ),
+            (
+                EnvironmentSemanticIndexState::Failed,
+                "agent_environment_workspace_index_failed",
+            ),
+            (
+                EnvironmentSemanticIndexState::Unavailable,
+                "agent_environment_workspace_index_unavailable",
+            ),
+        ] {
+            assert_eq!(semantic_index_diagnostic(state).code, expected_code);
+            assert!(!semantic_index_not_ready_phrase(state).is_empty());
+        }
+    }
+
+    #[test]
+    fn recording_executor_and_ready_message_delivery_cover_success_and_rejection_paths() {
+        let executor = RecordingEnvironmentLifecycleExecutor;
+        let config = EnvironmentLifecycleConfig::local("project-1", "run-1");
+        let empty_script = EnvironmentSetupScript {
+            script_id: "empty".into(),
+            label: "Empty".into(),
+            command: Vec::new(),
+            cwd: None,
+            config_trust: EnvironmentConfigTrust::TrustedProject,
+            approval: EnvironmentActionApproval::approved(),
+            required: true,
+        };
+        assert_eq!(
+            executor
+                .run_setup_script(&empty_script, &config)
+                .expect_err("empty command")
+                .code,
+            "agent_environment_setup_script_empty"
+        );
+        let mut script = empty_script;
+        script.command = vec!["cargo".into(), "test".into()];
+        assert!(executor
+            .run_setup_script(&script, &config)
+            .expect("script")
+            .summary
+            .contains("approved"));
+        let hook = EnvironmentGitHookSetup {
+            hook_name: "pre-commit".into(),
+            script_path: ".git/hooks/pre-commit".into(),
+            config_trust: EnvironmentConfigTrust::TrustedApp,
+            approval: EnvironmentActionApproval::approved(),
+            required: true,
+        };
+        assert!(executor
+            .setup_git_hook(&hook, &config)
+            .expect("hook")
+            .summary
+            .contains("pre-commit"));
+        assert!(executor
+            .setup_skills_plugins(&config)
+            .expect("skills")
+            .summary
+            .contains("descriptors"));
+        assert!(executor
+            .index_workspace(&config)
+            .expect("index")
+            .summary
+            .contains("index"));
+
+        let store = crate::InMemoryAgentCoreStore::default();
+        insert_run(&store, "project-1", "run-1");
+        let service = EnvironmentLifecycleService::new(store.clone());
+        assert_eq!(
+            service
+                .queue_user_message("project-1", "run-1", " ")
+                .expect_err("blank message")
+                .code,
+            "agent_environment_pending_message_empty"
+        );
+        assert_eq!(
+            service
+                .queue_user_message("project-1", "missing", "hello")
+                .expect_err("missing environment")
+                .code,
+            "agent_environment_not_found"
+        );
+
+        let mut ready = EnvironmentLifecycleSnapshot::new(&config);
+        ready.state = EnvironmentLifecycleState::Ready;
+        service.save_snapshot(ready).expect("ready snapshot");
+        let snapshot = service
+            .queue_user_message("project-1", "run-1", "deliver immediately")
+            .expect("ready message");
+        assert!(snapshot.pending_messages.is_empty());
+        let run = store.load_run("project-1", "run-1").expect("load run");
+        assert!(run
+            .messages
+            .iter()
+            .any(|message| message.content == "deliver immediately"));
+    }
+
+    #[test]
+    fn lifecycle_config_validation_and_trusted_setup_cover_all_startup_boundaries() {
+        for field in [
+            "environment_id",
+            "project_id",
+            "run_id",
+            "workspace_root",
+        ] {
+            let mut config = EnvironmentLifecycleConfig::local("project-1", "run-1");
+            match field {
+                "environment_id" => config.environment_id = " ".into(),
+                "project_id" => config.project_id.clear(),
+                "run_id" => config.run_id.clear(),
+                "workspace_root" => config.workspace_root.clear(),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_environment_config(&config)
+                    .expect_err("missing field")
+                    .code,
+                "agent_environment_required_field_missing"
+            );
+        }
+
+        let store = crate::InMemoryAgentCoreStore::default();
+        insert_run(&store, "project-1", "run-1");
+        let service = EnvironmentLifecycleService::new(store);
+        let mut config = EnvironmentLifecycleConfig::local("project-1", "run-1");
+        config.setup_scripts.push(EnvironmentSetupScript {
+            script_id: "setup".into(),
+            label: "Setup".into(),
+            command: vec!["cargo".into(), "test".into()],
+            cwd: None,
+            config_trust: EnvironmentConfigTrust::TrustedProject,
+            approval: EnvironmentActionApproval::approved(),
+            required: true,
+        });
+        config.git_hooks.push(EnvironmentGitHookSetup {
+            hook_name: "pre-commit".into(),
+            script_path: ".git/hooks/pre-commit".into(),
+            config_trust: EnvironmentConfigTrust::TrustedApp,
+            approval: EnvironmentActionApproval::approved(),
+            required: true,
+        });
+        let snapshot = service
+            .start_environment(config)
+            .expect("trusted setup completes");
+        assert_eq!(snapshot.state, EnvironmentLifecycleState::Ready);
+        assert!(snapshot
+            .setup_steps
+            .iter()
+            .any(|step| step.step_id == "setup"));
+        assert!(snapshot
+            .setup_steps
+            .iter()
+            .any(|step| step.step_id == "pre-commit"));
+    }
+
+    #[test]
     fn lifecycle_queues_pending_messages_until_ready() {
         let store = crate::InMemoryAgentCoreStore::default();
         insert_run(&store, "project-1", "run-1");

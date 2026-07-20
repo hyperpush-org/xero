@@ -368,27 +368,8 @@ fn run_needs_driver(status: WorkflowRunStatusDto) -> bool {
 
 /// Compact change detector so the driver only emits when the run advanced.
 fn run_fingerprint(run: &WorkflowRunDto) -> String {
-    use std::fmt::Write as _;
-
-    let mut fingerprint = format!(
-        "{:?}|{:?}|{}|{}|{}|{}|{}|{}",
-        run.status,
-        run.terminal_status,
-        run.updated_at,
-        run.edge_decisions.len(),
-        run.artifacts.len(),
-        run.gate_decisions.len(),
-        run.loop_attempts.len(),
-        run.events.len(),
-    );
-    for node in &run.nodes {
-        let _ = write!(
-            fingerprint,
-            "|{}:{:?}:{}",
-            node.id, node.status, node.attempt_number
-        );
-    }
-    fingerprint
+    serde_json::to_string(run)
+        .unwrap_or_else(|error| format!("{run:?}|serialization-error:{error}"))
 }
 
 fn node_needs_driver_failure(status: WorkflowNodeRunStatusDto) -> bool {
@@ -643,6 +624,13 @@ fn drive_workflow_run<R: Runtime + 'static>(app: &AppHandle<R>, project_id: &str
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::contracts::workflows::{
+        WorkflowDefinitionDto, WorkflowEventDto, WorkflowNodeDto, WorkflowRunNodeDto,
+        WorkflowRunPolicyDto,
+    };
+    use rusqlite::{params, Connection};
+    use std::fs;
+    use tauri::Manager;
 
     #[test]
     fn driver_registry_deduplicates_by_project_and_run() {
@@ -772,6 +760,288 @@ mod tests {
             WorkflowNodeRunStatusDto::Cancelled,
         ] {
             assert!(!node_needs_driver_failure(status));
+        }
+    }
+
+    #[test]
+    fn run_fingerprint_detects_same_status_node_and_event_content_changes() {
+        let run = workflow_run_fixture();
+        let baseline = run_fingerprint(&run);
+
+        let mut linked = run.clone();
+        linked.nodes[0].runtime_run_id = Some("runtime-run-1".into());
+        assert_ne!(run_fingerprint(&linked), baseline);
+
+        let mut event_changed = run;
+        event_changed.events[0].event = json!({"progress": 2});
+        assert_ne!(run_fingerprint(&event_changed), baseline);
+    }
+
+    #[test]
+    fn driver_identities_and_lease_liveness_bind_to_the_owner_process() {
+        let identity = unique_workflow_driver_identity("fixture");
+        assert!(identity.starts_with(&format!("workflow-driver-fixture-{}-", process::id())));
+        assert_eq!(
+            workflow_driver_owner_instance_id(),
+            workflow_driver_owner_instance_id()
+        );
+
+        let process_birth =
+            process_birth_identity(process::id()).expect("current process identity");
+        let mut lease = project_store::WorkflowDriverLeaseRecord {
+            project_id: "project-1".into(),
+            workflow_run_id: "run-1".into(),
+            owner_instance_id: "owner-1".into(),
+            owner_process_id: process::id(),
+            owner_process_birth_identity: process_birth,
+            lease_token: "lease-1".into(),
+            acquired_at: "2026-07-18T12:00:00Z".into(),
+            heartbeat_at: "2026-07-18T12:00:00Z".into(),
+        };
+        assert!(workflow_driver_lease_is_live(&lease));
+
+        lease.owner_process_id = u32::MAX;
+        lease.owner_process_birth_identity = "missing-process".into();
+        assert!(!workflow_driver_lease_is_live(&lease));
+    }
+
+    #[test]
+    fn driver_error_counter_saturates_without_reopening_the_retry_budget() {
+        let mut policy = DriverErrorPolicy {
+            consecutive_errors: u32::MAX,
+        };
+
+        assert_eq!(
+            policy.record_error(),
+            DriverErrorDisposition::PersistFailure
+        );
+        assert_eq!(policy.consecutive_errors, u32::MAX);
+    }
+
+    #[test]
+    fn driver_failure_fixture_commits_once_and_rejects_lost_or_terminal_leases() {
+        let fixture = tempfile::tempdir().expect("driver failure fixture");
+        let fixture_root = fs::canonicalize(fixture.path()).expect("canonical fixture root");
+        let repo_root = fixture_root.join("repo");
+        fs::create_dir_all(&repo_root).expect("create fixture repository");
+        let repo_root = fs::canonicalize(repo_root).expect("canonical fixture repository");
+        let project_id = "project-driver-failure";
+        let database_path = fixture_root
+            .join("app-data/projects")
+            .join(project_id)
+            .join("state.db");
+        fs::create_dir_all(database_path.parent().expect("project database parent"))
+            .expect("create project database directory");
+        crate::db::register_project_database_path_for_tests(&repo_root, database_path.clone());
+        let mut connection = Connection::open(&database_path).expect("open project database");
+        crate::db::configure_connection(&connection).expect("configure project database");
+        crate::db::migrations::migrations()
+            .to_latest(&mut connection)
+            .expect("migrate project database");
+        connection
+            .execute(
+                "INSERT INTO projects (id, name, description, milestone) VALUES (?1, 'Project', '', '')",
+                params![project_id],
+            )
+            .expect("insert project");
+        connection
+            .execute(
+                r#"
+                INSERT INTO repositories (id, project_id, root_path, display_name, branch, head_sha, is_git_repo)
+                VALUES ('repo-1', ?1, ?2, 'Project', 'main', 'abc123', 1)
+                "#,
+                params![project_id, repo_root.to_string_lossy().as_ref()],
+            )
+            .expect("insert repository");
+
+        let global_db_path = fixture_root.join("app-data/global.db");
+        crate::registry::upsert_project(
+            &global_db_path,
+            crate::registry::RegistryProjectRecord {
+                project_id: project_id.into(),
+                repository_id: "repo-1".into(),
+                root_path: repo_root.to_string_lossy().into_owned(),
+                is_git_repo: true,
+            },
+            &crate::state::ImportFailpoints::default(),
+        )
+        .expect("register fixture project");
+        let app = crate::configure_builder_with_state(
+            tauri::test::mock_builder(),
+            DesktopState::default().with_global_db_path_override(global_db_path),
+        )
+        .build(tauri::test::mock_context(tauri::test::noop_assets()))
+        .expect("build driver fixture app");
+
+        let definition = project_store::create_workflow_definition(
+            &repo_root,
+            &WorkflowDefinitionDto {
+                schema: "xero.workflow_definition.v1".into(),
+                id: "workflow-driver-failure".into(),
+                project_id: project_id.into(),
+                name: "Driver failure fixture".into(),
+                description: String::new(),
+                version: 1,
+                start_node_id: "done".into(),
+                nodes: vec![WorkflowNodeDto::Terminal {
+                    id: "done".into(),
+                    title: "Done".into(),
+                    description: String::new(),
+                    position: Default::default(),
+                    terminal_status: WorkflowTerminalStatusDto::Success,
+                }],
+                edges: Vec::new(),
+                subgraphs: Vec::new(),
+                artifact_contracts: Vec::new(),
+                run_policy: WorkflowRunPolicyDto::default(),
+                created_at: None,
+                updated_at: None,
+            },
+        )
+        .expect("create fixture workflow");
+        let run = project_store::create_workflow_run(
+            &repo_root,
+            project_id,
+            &definition.id,
+            Some(json!({"fixture": true})),
+        )
+        .expect("create queued workflow run");
+        project_store::insert_workflow_run_node(
+            &repo_root,
+            project_id,
+            &run.id,
+            "done",
+            "terminal",
+            0,
+            WorkflowNodeRunStatusDto::Eligible,
+            "driver-failure-terminal-attempt",
+        )
+        .expect("insert eligible fixture node");
+        let lease = WorkflowDriverLeaseGuard::try_acquire(&repo_root, project_id, &run.id)
+            .expect("acquire driver lease")
+            .expect("fixture owns driver lease");
+        let incident = DriverFailureIncident {
+            id: "driver-incident-1".into(),
+            error_code: "workflow_reconcile_fixture_failed".into(),
+            error_message: "fixture reconcile failure".into(),
+            consecutive_errors: DRIVER_MAX_CONSECUTIVE_ERRORS,
+        };
+
+        let persisted = persist_driver_failure(
+            app.handle(),
+            app.state::<DesktopState>().inner(),
+            project_id,
+            &run.id,
+            &incident,
+            &lease,
+        )
+        .expect("persist driver failure");
+        let DriverFailurePersistence::Failed(failed) = persisted else {
+            panic!("owned active lease should commit the driver failure");
+        };
+        assert_eq!(failed.status, WorkflowRunStatusDto::Failed);
+        assert_eq!(
+            failed.terminal_status,
+            Some(WorkflowTerminalStatusDto::Failure)
+        );
+        assert_eq!(
+            failed
+                .events
+                .iter()
+                .filter(|event| is_driver_failure_event(
+                    &event.event_type,
+                    &event.event,
+                    &incident.id
+                ))
+                .count(),
+            1
+        );
+
+        assert!(matches!(
+            persist_driver_failure(
+                app.handle(),
+                app.state::<DesktopState>().inner(),
+                project_id,
+                &run.id,
+                &incident,
+                &lease,
+            )
+            .expect("terminal replay is superseded"),
+            DriverFailurePersistence::Superseded(run) if run.status == WorkflowRunStatusDto::Failed
+        ));
+
+        lease.lost.store(true, Ordering::Release);
+        assert!(matches!(
+            persist_driver_failure(
+                app.handle(),
+                app.state::<DesktopState>().inner(),
+                project_id,
+                &run.id,
+                &incident,
+                &lease,
+            )
+            .expect("lost lease cannot mutate the run"),
+            DriverFailurePersistence::Superseded(run) if run.status == WorkflowRunStatusDto::Failed
+        ));
+    }
+
+    fn workflow_run_fixture() -> WorkflowRunDto {
+        WorkflowRunDto {
+            id: "run-1".into(),
+            project_id: "project-1".into(),
+            workflow_version_id: "workflow-version-1".into(),
+            workflow_id: "workflow-1".into(),
+            workflow_version_number: 1,
+            status: WorkflowRunStatusDto::Running,
+            terminal_status: None,
+            definition_snapshot: WorkflowDefinitionDto {
+                schema: "xero.workflow_definition.v1".into(),
+                id: "workflow-1".into(),
+                project_id: "project-1".into(),
+                name: "Fixture workflow".into(),
+                description: String::new(),
+                version: 1,
+                start_node_id: "agent-1".into(),
+                nodes: Vec::new(),
+                edges: Vec::new(),
+                subgraphs: Vec::new(),
+                artifact_contracts: Vec::new(),
+                run_policy: WorkflowRunPolicyDto::default(),
+                created_at: None,
+                updated_at: None,
+            },
+            initial_input: Some(json!({"goal": "verify"})),
+            started_at: "2026-07-18T12:00:00Z".into(),
+            updated_at: "2026-07-18T12:00:01Z".into(),
+            completed_at: None,
+            cancellation_reason: None,
+            nodes: vec![WorkflowRunNodeDto {
+                id: "node-run-1".into(),
+                workflow_run_id: "run-1".into(),
+                node_id: "agent-1".into(),
+                node_type: "agent".into(),
+                status: WorkflowNodeRunStatusDto::Starting,
+                attempt_number: 1,
+                runtime_run_id: None,
+                agent_session_id: Some("session-1".into()),
+                failure_class: None,
+                started_at: Some("2026-07-18T12:00:01Z".into()),
+                updated_at: "2026-07-18T12:00:01Z".into(),
+                completed_at: None,
+                idempotency_key: "node-run-1:1".into(),
+            }],
+            edge_decisions: Vec::new(),
+            artifacts: Vec::new(),
+            gate_decisions: Vec::new(),
+            loop_attempts: Vec::new(),
+            events: vec![WorkflowEventDto {
+                id: "event-1".into(),
+                workflow_run_id: "run-1".into(),
+                node_run_id: Some("node-run-1".into()),
+                event_type: "workflow_node_progress".into(),
+                event: json!({"progress": 1}),
+                created_at: "2026-07-18T12:00:01Z".into(),
+            }],
         }
     }
 }

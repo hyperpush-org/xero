@@ -1818,7 +1818,9 @@ fn command_input_has_network_intent(input: &JsonValue) -> bool {
         .map(str::to_owned)
         .collect::<Vec<_>>();
     if argv.is_empty() {
-        return false;
+        return string_values(input)
+            .iter()
+            .any(|value| looks_like_network(value));
     }
     let program = Path::new(&argv[0])
         .file_name()
@@ -1958,6 +1960,493 @@ mod tests {
         );
         assert!(SandboxPermissionProfile::WorkspaceWrite.allows_workspace_write());
         assert!(SandboxPermissionProfile::FullLocalWithApproval.requires_approval());
+    }
+
+    #[test]
+    fn network_intent_detection_fails_closed_for_empty_or_malformed_argv() {
+        for input in [
+            json!({ "argv": [], "url": "https://example.com" }),
+            json!({ "argv": [null, 42], "endpoint": "ssh://example.com" }),
+        ] {
+            assert!(command_input_has_network_intent(&input));
+        }
+    }
+
+    #[test]
+    fn sandbox_value_contracts_cover_profiles_defaults_overrides_and_platform_plans() {
+        let descriptors = [
+            (
+                descriptor(
+                    "none-read",
+                    ToolEffectClass::Observe,
+                    ToolMutability::ReadOnly,
+                    ToolSandboxRequirement::None,
+                ),
+                SandboxPermissionProfile::ReadOnly,
+            ),
+            (
+                descriptor(
+                    "none-write",
+                    ToolEffectClass::WorkspaceMutation,
+                    ToolMutability::Mutating,
+                    ToolSandboxRequirement::None,
+                ),
+                SandboxPermissionProfile::FullLocalWithApproval,
+            ),
+            (
+                descriptor(
+                    "read",
+                    ToolEffectClass::Observe,
+                    ToolMutability::ReadOnly,
+                    ToolSandboxRequirement::ReadOnly,
+                ),
+                SandboxPermissionProfile::ReadOnly,
+            ),
+            (
+                descriptor(
+                    "write",
+                    ToolEffectClass::WorkspaceMutation,
+                    ToolMutability::Mutating,
+                    ToolSandboxRequirement::WorkspaceWrite,
+                ),
+                SandboxPermissionProfile::WorkspaceWrite,
+            ),
+            (
+                descriptor(
+                    "network",
+                    ToolEffectClass::ExternalService,
+                    ToolMutability::Mutating,
+                    ToolSandboxRequirement::Network,
+                ),
+                SandboxPermissionProfile::WorkspaceWriteNetworkAllowed,
+            ),
+            (
+                descriptor(
+                    "local",
+                    ToolEffectClass::CommandExecution,
+                    ToolMutability::Mutating,
+                    ToolSandboxRequirement::FullLocal,
+                ),
+                SandboxPermissionProfile::FullLocalWithApproval,
+            ),
+        ];
+        for (descriptor, expected) in &descriptors {
+            assert_eq!(
+                SandboxPermissionProfile::for_descriptor(descriptor),
+                *expected
+            );
+        }
+
+        for (profile, network, writes, trust, approval) in [
+            (
+                SandboxPermissionProfile::ReadOnly,
+                SandboxNetworkMode::Denied,
+                false,
+                false,
+                false,
+            ),
+            (
+                SandboxPermissionProfile::WorkspaceWrite,
+                SandboxNetworkMode::Denied,
+                true,
+                true,
+                false,
+            ),
+            (
+                SandboxPermissionProfile::WorkspaceWriteNetworkDenied,
+                SandboxNetworkMode::Denied,
+                true,
+                true,
+                false,
+            ),
+            (
+                SandboxPermissionProfile::WorkspaceWriteNetworkAllowed,
+                SandboxNetworkMode::Allowed,
+                true,
+                true,
+                false,
+            ),
+            (
+                SandboxPermissionProfile::FullLocalWithApproval,
+                SandboxNetworkMode::Allowed,
+                true,
+                true,
+                true,
+            ),
+            (
+                SandboxPermissionProfile::DangerousUnrestricted,
+                SandboxNetworkMode::Allowed,
+                true,
+                false,
+                false,
+            ),
+        ] {
+            assert_eq!(profile.network_mode(), network);
+            assert_eq!(profile.allows_workspace_write(), writes);
+            assert_eq!(profile.requires_project_trust(), trust);
+            assert_eq!(profile.requires_approval(), approval);
+        }
+
+        assert!(ProjectTrustState::Trusted.allows_privileged_tools());
+        assert!(ProjectTrustState::UserApproved.allows_privileged_tools());
+        assert!(!ProjectTrustState::ApprovalRequired.allows_privileged_tools());
+        assert!(!ProjectTrustState::Untrusted.allows_privileged_tools());
+        assert!(!ProjectTrustState::Blocked.allows_privileged_tools());
+        assert!(!SandboxApprovalSource::None.satisfies_full_local());
+        assert!(SandboxApprovalSource::Policy.satisfies_full_local());
+        assert!(SandboxApprovalSource::Operator.satisfies_full_local());
+        assert!(SandboxApprovalSource::DangerousUnrestricted.satisfies_full_local());
+
+        let unrestricted = SandboxExecutionMetadata::unrestricted();
+        assert_eq!(
+            unrestricted.platform_plan.strategy,
+            SandboxPlatformStrategy::DangerousUnrestricted
+        );
+        assert!(unrestricted.internal_state.git_mutation_allowed);
+        assert!(!unrestricted.internal_state.app_data_state_protected);
+        assert!(SandboxEnvironmentRedactionSummary::default().sanitized_environment);
+        assert!(SandboxInternalStateProtection::default().app_data_state_protected);
+
+        let noop = NoopToolSandbox.evaluate(
+            &descriptors[0].0,
+            &call(json!({})),
+            &ToolExecutionContext::default(),
+        );
+        assert_eq!(
+            noop.expect("noop sandbox").profile,
+            SandboxPermissionProfile::DangerousUnrestricted
+        );
+
+        let request = SandboxedProcessRequest::new(
+            vec!["true".into()],
+            SandboxExecutionMetadata::unrestricted(),
+        );
+        assert_eq!(request.timeout_ms, Some(DEFAULT_SANDBOX_RUNNER_TIMEOUT_MS));
+        assert_eq!(request.stdout_limit_bytes, DEFAULT_SANDBOX_OUTPUT_LIMIT_BYTES);
+        let spawn = SandboxedProcessSpawnRequest::new(
+            vec!["true".into()],
+            SandboxExecutionMetadata::unrestricted(),
+        );
+        assert_eq!(spawn.stdin, SandboxedProcessStdin::Null);
+
+        for (platform, strategy) in [
+            (SandboxPlatform::Linux, SandboxPlatformStrategy::LinuxBubblewrap),
+            (
+                SandboxPlatform::Windows,
+                SandboxPlatformStrategy::WindowsRestrictedToken,
+            ),
+            (
+                SandboxPlatform::Unsupported,
+                SandboxPlatformStrategy::PortablePreflightOnly,
+            ),
+        ] {
+            let context = SandboxExecutionContext {
+                platform,
+                ..SandboxExecutionContext::default()
+            };
+            assert_eq!(
+                platform_plan(SandboxPermissionProfile::WorkspaceWrite, &context).strategy,
+                strategy
+            );
+        }
+
+        let context = SandboxExecutionContext {
+            workspace_root: "/repo with \"quotes\"".into(),
+            app_data_roots: vec!["/secret\\state".into()],
+            platform: SandboxPlatform::Macos,
+            legacy_xero_migration_allowed: true,
+            ..SandboxExecutionContext::default()
+        };
+        let macos = platform_plan(SandboxPermissionProfile::ReadOnly, &context);
+        assert!(macos.profile_text.expect("macOS profile").contains("deny file-write"));
+        assert_eq!(
+            platform_plan(SandboxPermissionProfile::DangerousUnrestricted, &context).strategy,
+            SandboxPlatformStrategy::DangerousUnrestricted
+        );
+
+        let overridden = PermissionProfileSandbox::new(context)
+            .with_profile_override("none-read", SandboxPermissionProfile::DangerousUnrestricted);
+        assert_eq!(overridden.context().workspace_root, "/repo with \"quotes\"");
+        assert_eq!(
+            overridden
+                .evaluate(
+                    &descriptors[0].0,
+                    &call(json!({})),
+                    &ToolExecutionContext::default(),
+                )
+                .expect("profile override")
+                .profile,
+            SandboxPermissionProfile::DangerousUnrestricted
+        );
+    }
+
+    #[test]
+    fn sandbox_process_preflight_and_spawn_errors_are_typed_for_every_strategy() {
+        for argv in [Vec::new(), vec![" ".into()], vec!["bad\0argv".into()]] {
+            let error = match prepare_sandboxed_spawn(
+                    argv,
+                    None,
+                    SandboxedProcessStdin::Null,
+                    SandboxExecutionMetadata::unrestricted(),
+                ) {
+                Err(error) => error,
+                Ok(_) => panic!("invalid argv must be rejected"),
+            };
+            assert_eq!(error.code, "sandboxed_process_invalid_argv");
+        }
+
+        for (strategy, code) in [
+            (
+                SandboxPlatformStrategy::LinuxBubblewrap,
+                "sandboxed_process_linux_unavailable",
+            ),
+            (
+                SandboxPlatformStrategy::WindowsRestrictedToken,
+                "sandboxed_process_windows_unavailable",
+            ),
+            (
+                SandboxPlatformStrategy::PortablePreflightOnly,
+                "sandboxed_process_platform_unavailable",
+            ),
+        ] {
+            let mut metadata = SandboxExecutionMetadata::unrestricted();
+            metadata.platform_plan.strategy = strategy;
+            let error = match prepare_sandboxed_spawn(
+                vec!["true".into()],
+                None,
+                SandboxedProcessStdin::Null,
+                metadata,
+            ) {
+                Err(error) => error,
+                Ok(_) => panic!("unsupported strategy must be rejected"),
+            };
+            assert_eq!(error.code, code);
+            assert_eq!(
+                error.metadata.exit_classification,
+                SandboxExitClassification::DeniedBySandbox
+            );
+        }
+
+        for (kind, code, retryable, classification) in [
+            (
+                io::ErrorKind::NotFound,
+                "sandboxed_process_not_found",
+                false,
+                SandboxExitClassification::NotRun,
+            ),
+            (
+                io::ErrorKind::PermissionDenied,
+                "sandboxed_process_spawn_denied",
+                false,
+                SandboxExitClassification::DeniedBySandbox,
+            ),
+            (
+                io::ErrorKind::Other,
+                "sandboxed_process_spawn_failed",
+                true,
+                SandboxExitClassification::Unknown,
+            ),
+        ] {
+            let error = sandbox_spawn_error(
+                &["fixture-command".into()],
+                io::Error::new(kind, "fixture failure"),
+                SandboxExecutionMetadata::unrestricted(),
+            );
+            assert_eq!(error.code, code);
+            assert_eq!(error.retryable, retryable);
+            assert_eq!(error.metadata.exit_classification, classification);
+            assert!(error.to_string().contains(code));
+        }
+
+        let actual = SandboxedProcessRunner::new()
+            .spawn(SandboxedProcessSpawnRequest::new(
+                vec!["xero-command-that-does-not-exist".into()],
+                SandboxExecutionMetadata::unrestricted(),
+            ))
+            .expect_err("missing executable");
+        assert_eq!(actual.code, "sandboxed_process_not_found");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn sandbox_runner_classifies_success_failure_cancellation_and_truncation() {
+        let runner = SandboxedProcessRunner::new();
+        let output = runner
+            .run(
+                SandboxedProcessRequest {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf abcdef; printf warning >&2".into(),
+                    ],
+                    cwd: None,
+                    timeout_ms: Some(1_000),
+                    stdout_limit_bytes: 3,
+                    stderr_limit_bytes: 4,
+                    metadata: SandboxExecutionMetadata::unrestricted(),
+                },
+                || false,
+            )
+            .expect("bounded output");
+        assert_eq!(output.stdout.as_deref(), Some("abc"));
+        assert_eq!(output.stderr.as_deref(), Some("warn"));
+        assert!(output.stdout_truncated);
+        assert!(output.stderr_truncated);
+        assert_eq!(
+            output.metadata.exit_classification,
+            SandboxExitClassification::Success
+        );
+
+        let failed = runner
+            .run(
+                SandboxedProcessRequest {
+                    argv: vec![
+                        "/bin/sh".into(),
+                        "-c".into(),
+                        "printf sandbox-deny >&2; exit 9".into(),
+                    ],
+                    cwd: None,
+                    timeout_ms: Some(1_000),
+                    stdout_limit_bytes: 128,
+                    stderr_limit_bytes: 128,
+                    metadata: SandboxExecutionMetadata::unrestricted(),
+                },
+                || false,
+            )
+            .expect("failed process is an observed output");
+        assert_eq!(failed.exit_code, Some(9));
+        assert_eq!(
+            failed.metadata.exit_classification,
+            SandboxExitClassification::DeniedBySandbox
+        );
+
+        let cancelled = runner
+            .run(
+                SandboxedProcessRequest {
+                    argv: vec!["/bin/sh".into(), "-c".into(), "sleep 5".into()],
+                    cwd: None,
+                    timeout_ms: Some(1_000),
+                    stdout_limit_bytes: 128,
+                    stderr_limit_bytes: 128,
+                    metadata: SandboxExecutionMetadata::unrestricted(),
+                },
+                || true,
+            )
+            .expect_err("cancelled process");
+        assert_eq!(cancelled.code, "sandboxed_process_cancelled");
+        assert_eq!(
+            cancelled.metadata.exit_classification,
+            SandboxExitClassification::Cancelled
+        );
+    }
+
+    #[test]
+    fn sandbox_path_network_and_policy_helpers_cover_nested_inputs_and_opt_ins() {
+        assert!(normalize_user_path("").is_err());
+        assert!(normalize_user_path("../escape").is_err());
+        assert_eq!(
+            normalize_user_path("./src\\lib.rs")
+                .expect("relative path")
+                .rendered,
+            "src/lib.rs"
+        );
+        assert!(normalize_user_path("C:\\repo\\file.txt")
+            .expect("Windows path")
+            .is_absolute);
+
+        let nested = json!({
+            "path": "a",
+            "nested": {
+                "fromPath": ["b", "c"],
+                "absolute_path": "d",
+                "ignored": "e"
+            }
+        });
+        let mut extracted_paths = extract_path_values(&nested);
+        extracted_paths.sort();
+        assert_eq!(extracted_paths, vec!["a", "b", "c", "d"]);
+        for key in [
+            "path",
+            "cwd",
+            "fromPath",
+            "toPath",
+            "from_path",
+            "to_path",
+            "absolutePath",
+            "absolute_path",
+        ] {
+            assert!(is_path_field_name(key));
+        }
+        assert!(!is_path_field_name("url"));
+
+        for program in [
+            "curl", "wget", "nc", "netcat", "ssh", "scp", "sftp", "ftp", "ping", "dig",
+            "nslookup",
+        ] {
+            assert!(command_input_has_network_intent(
+                &json!({ "argv": [program] })
+            ));
+        }
+        assert!(command_input_has_network_intent(
+            &json!({ "note": "run curl https://example.com" })
+        ));
+        assert!(!command_input_has_network_intent(
+            &json!({ "argv": ["echo", "local"] })
+        ));
+        assert_eq!(string_values(&json!(["a", true, 1, null, { "x": "b" }])), vec!["a", "b"]);
+        assert_eq!(dedupe(vec!["b".into(), "a".into(), "b".into()]), vec!["b", "a"]);
+        assert_eq!(normalize_absolute(" C:\\repo\\ "), "C:/repo");
+        assert!(path_starts_with("/repo/src", "/repo"));
+        assert!(!path_starts_with("/repository", "/repo"));
+        assert_eq!(escape_sandbox_string("a\\b\"c"), "a\\\\b\\\"c");
+
+        let permissive = SandboxExecutionContext {
+            workspace_root: "/repo".into(),
+            explicit_git_mutation_allowed: true,
+            legacy_xero_migration_allowed: true,
+            ..SandboxExecutionContext::default()
+        };
+        validate_write_path("/repo/.git/config", &permissive).expect("explicit git opt-in");
+        validate_write_path("/repo/.XERO/state", &permissive).expect("migration opt-in");
+        validate_write_path("/repo/src/lib.rs", &permissive).expect("workspace write");
+
+        let full_local = descriptor(
+            "full-local",
+            ToolEffectClass::CommandExecution,
+            ToolMutability::Mutating,
+            ToolSandboxRequirement::FullLocal,
+        );
+        let approval_denied = PermissionProfileSandbox::new(SandboxExecutionContext {
+            workspace_root: "/repo".into(),
+            approval_source: SandboxApprovalSource::None,
+            ..SandboxExecutionContext::default()
+        })
+        .evaluate(
+            &full_local,
+            &call(json!({ "argv": ["echo", "local"] })),
+            &ToolExecutionContext::default(),
+        )
+        .expect_err("full-local requires approval");
+        assert_eq!(approval_denied.error.code, "agent_sandbox_approval_required");
+
+        let write_descriptor = descriptor(
+            "write",
+            ToolEffectClass::WorkspaceMutation,
+            ToolMutability::Mutating,
+            ToolSandboxRequirement::WorkspaceWrite,
+        );
+        let write_denied = PermissionProfileSandbox::new(SandboxExecutionContext {
+            workspace_root: "/repo".into(),
+            ..SandboxExecutionContext::default()
+        })
+        .with_profile_override("write", SandboxPermissionProfile::ReadOnly)
+        .evaluate(
+            &write_descriptor,
+            &call(json!({ "path": "src/lib.rs" })),
+            &ToolExecutionContext::default(),
+        )
+        .expect_err("read-only override denies mutation");
+        assert_eq!(write_denied.error.code, "agent_sandbox_write_denied");
     }
 
     #[test]
@@ -2246,6 +2735,52 @@ mod tests {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner()) = true;
         wake.notify_all();
+    }
+
+    #[test]
+    fn sandbox_capture_reports_wait_read_and_reader_panic_failures() {
+        #[derive(Clone, Copy)]
+        enum FailureMode {
+            Wait,
+            Read,
+            Panic,
+        }
+
+        struct FailingReader(FailureMode);
+
+        impl Read for FailingReader {
+            fn read(&mut self, _buffer: &mut [u8]) -> io::Result<usize> {
+                match self.0 {
+                    FailureMode::Read => Err(io::Error::other("fixture read failed")),
+                    FailureMode::Wait => unreachable!("wait failure must prevent reads"),
+                    FailureMode::Panic => unreachable!("reader panic must happen while polling"),
+                }
+            }
+        }
+
+        impl PollableSandboxStream for FailingReader {
+            fn wait_until_readable(&self, _timeout: Duration) -> io::Result<bool> {
+                match self.0 {
+                    FailureMode::Wait => Err(io::Error::other("fixture wait failed")),
+                    FailureMode::Read => Ok(true),
+                    FailureMode::Panic => panic!("fixture reader panic"),
+                }
+            }
+        }
+
+        for (mode, expected_error, reader_panicked) in [
+            (FailureMode::Wait, "fixture wait failed", false),
+            (FailureMode::Read, "fixture read failed", false),
+            (FailureMode::Panic, "sandbox output reader panicked", true),
+        ] {
+            let capture = finish_sandbox_capture(
+                spawn_sandbox_capture(FailingReader(mode), 32),
+                Instant::now() + Duration::from_millis(100),
+            );
+            assert_eq!(capture.read_error.as_deref(), Some(expected_error));
+            assert_eq!(capture.drain_incomplete, reader_panicked);
+            assert_eq!(capture.truncated, reader_panicked);
+        }
     }
 
     #[cfg(unix)]

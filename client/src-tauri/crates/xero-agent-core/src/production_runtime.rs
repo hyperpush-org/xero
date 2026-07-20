@@ -338,6 +338,203 @@ mod tests {
         ProviderSelection, StartRunRequest,
     };
 
+    fn valid_real_contract() -> ProductionRuntimeContract {
+        ProductionRuntimeContract::real_provider(
+            "desktop_start",
+            "project-1",
+            "openai_api",
+            "test-model",
+            RuntimeStoreDescriptor::app_data_project_state(
+                "project-1",
+                "/tmp/xero/projects/project-1/state.db",
+            ),
+        )
+    }
+
+    #[test]
+    fn production_contract_value_descriptors_and_metadata_are_canonical() {
+        assert_eq!(
+            RuntimeExecutionMode::ProductionRealProvider.as_str(),
+            "production_real_provider"
+        );
+        assert_eq!(
+            RuntimeExecutionMode::HarnessFakeProvider.as_str(),
+            "harness_fake_provider"
+        );
+        assert_eq!(RuntimeExecutionMode::ExternalAgent.as_str(), "external_agent");
+        assert_eq!(
+            RuntimeStoreKind::AppDataProjectState.as_str(),
+            "app_data_project_state"
+        );
+        assert_eq!(
+            RuntimeStoreKind::FileBackedHeadlessJson.as_str(),
+            "file_backed_headless_json"
+        );
+        assert_eq!(
+            RuntimeStoreKind::InMemoryHarness.as_str(),
+            "in_memory_harness"
+        );
+
+        let app_data = RuntimeStoreDescriptor::app_data_project_state(
+            "project-1",
+            "/tmp/xero/projects/project-1/state.db",
+        );
+        assert_eq!(app_data.root_path.as_deref(), Some("/tmp/xero/projects/project-1"));
+        assert_eq!(app_data.state_file_name.as_deref(), Some("state.db"));
+        let headless = RuntimeStoreDescriptor::file_backed_headless_json(
+            "project-1",
+            "/tmp/xero/headless/agent-core-runs.json",
+        );
+        assert_eq!(headless.root_path.as_deref(), Some("/tmp/xero/headless"));
+        assert_eq!(
+            headless.state_file_name.as_deref(),
+            Some(HEADLESS_JSON_STATE_FILE)
+        );
+        let memory = RuntimeStoreDescriptor::in_memory_harness("project-1");
+        assert_eq!(memory.kind, RuntimeStoreKind::InMemoryHarness);
+        assert!(memory.root_path.is_none());
+
+        let real = valid_real_contract();
+        assert_eq!(
+            real.service_boundaries,
+            production_runtime_boundaries()
+        );
+        let metadata = production_runtime_trace_metadata(&real);
+        assert_eq!(metadata["serviceId"], PRODUCTION_RUNTIME_SERVICE_ID);
+        assert_eq!(metadata["store"]["kind"], "app_data_project_state");
+
+        let fake = ProductionRuntimeContract::fake_provider_harness(
+            "cli_agent_exec",
+            "project-1",
+            "fake-model",
+            memory,
+        );
+        assert_eq!(fake.provider_id, FAKE_PROVIDER_ID);
+        assert_eq!(fake.service_boundaries, harness_runtime_boundaries());
+        validate_production_runtime_contract(&fake).expect("in-memory harness");
+    }
+
+    #[test]
+    fn production_contract_validation_rejects_every_cross_surface_mismatch() {
+        for (label, mutate, expected_code) in [
+            (
+                "surface",
+                0_u8,
+                "agent_core_production_contract_missing_field",
+            ),
+            (
+                "project",
+                1,
+                "agent_core_production_contract_missing_field",
+            ),
+            (
+                "provider",
+                2,
+                "agent_core_production_contract_missing_field",
+            ),
+            (
+                "model",
+                3,
+                "agent_core_production_contract_missing_field",
+            ),
+            (
+                "store project",
+                4,
+                "agent_core_production_contract_missing_field",
+            ),
+        ] {
+            let mut contract = valid_real_contract();
+            match mutate {
+                0 => contract.surface = " ".into(),
+                1 => contract.project_id.clear(),
+                2 => contract.provider_id.clear(),
+                3 => contract.model_id.clear(),
+                4 => contract.store.project_id.clear(),
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_production_runtime_contract(&contract)
+                    .expect_err(label)
+                    .code,
+                expected_code
+            );
+        }
+
+        let cases = [
+            (
+                "version",
+                0_u8,
+                "agent_core_production_contract_version_unsupported",
+            ),
+            (
+                "project mismatch",
+                1,
+                "agent_core_production_project_store_mismatch",
+            ),
+            (
+                "fake provider",
+                2,
+                "agent_core_fake_provider_not_production",
+            ),
+            (
+                "external provider",
+                3,
+                "agent_core_external_provider_not_owned_runtime",
+            ),
+            (
+                "missing database",
+                4,
+                "agent_core_production_store_database_missing",
+            ),
+            (
+                "wrong database",
+                5,
+                "agent_core_production_store_database_invalid",
+            ),
+            (
+                "headless name",
+                6,
+                "agent_core_headless_store_rejected",
+            ),
+        ];
+        for (label, mutate, expected_code) in cases {
+            let mut contract = valid_real_contract();
+            match mutate {
+                0 => contract.contract_version += 1,
+                1 => contract.store.project_id = "other-project".into(),
+                2 => contract.provider_id = FAKE_PROVIDER_ID.into(),
+                3 => contract.provider_id = "external_cursor".into(),
+                4 => contract.store.database_path = None,
+                5 => contract.store.database_path = Some("/tmp/legacy.sqlite".into()),
+                6 => {
+                    contract.store.state_file_name = Some(HEADLESS_JSON_STATE_FILE.into());
+                }
+                _ => unreachable!(),
+            }
+            assert_eq!(
+                validate_production_runtime_contract(&contract)
+                    .expect_err(label)
+                    .code,
+                expected_code
+            );
+        }
+
+        let mut fake_with_production_store = valid_real_contract();
+        fake_with_production_store.execution_mode = RuntimeExecutionMode::HarnessFakeProvider;
+        fake_with_production_store.provider_id = FAKE_PROVIDER_ID.into();
+        assert_eq!(
+            validate_production_runtime_contract(&fake_with_production_store)
+                .expect_err("production store cannot become a harness store")
+                .code,
+            "agent_core_harness_store_invalid"
+        );
+
+        let mut external = valid_real_contract();
+        external.execution_mode = RuntimeExecutionMode::ExternalAgent;
+        external.provider_id = "external_cursor".into();
+        validate_production_runtime_contract(&external).expect("explicit external contract");
+    }
+
     #[test]
     fn real_provider_contract_rejects_headless_json_store() {
         let contract = ProductionRuntimeContract::real_provider(

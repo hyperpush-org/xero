@@ -184,7 +184,9 @@ fn terminate_unix_process_group(child: &mut Child) -> io::Result<std::process::E
         child.kill()?;
         return child.wait();
     }
-    signal_process_group_id(child_id, libc::SIGTERM)?;
+    if let Err(error) = signal_process_group_id(child_id, libc::SIGTERM) {
+        return recover_group_signal_race_after_root_exit(child, &mut root_status, error);
+    }
     let deadline = Instant::now() + GRACEFUL_TERMINATION_TIMEOUT;
     while process_group_exists(child_id) && Instant::now() < deadline {
         if root_status.is_none() {
@@ -194,9 +196,30 @@ fn terminate_unix_process_group(child: &mut Child) -> io::Result<std::process::E
     }
 
     if process_group_exists(child_id) {
-        signal_process_group_id(child_id, libc::SIGKILL)?;
+        if let Err(error) = signal_process_group_id(child_id, libc::SIGKILL) {
+            return recover_group_signal_race_after_root_exit(child, &mut root_status, error);
+        }
     }
     root_status.map_or_else(|| child.wait(), Ok)
+}
+
+#[cfg(unix)]
+fn recover_group_signal_race_after_root_exit(
+    child: &mut Child,
+    root_status: &mut Option<std::process::ExitStatus>,
+    signal_error: io::Error,
+) -> io::Result<std::process::ExitStatus> {
+    // A short-lived root can exit after `try_wait`/group discovery but before
+    // the signal. On macOS that race may report EPERM for the now-stale group
+    // instead of ESRCH. Only suppress it when the owned root is provably
+    // reaped; a live root with an actual permission failure must still fail.
+    if signal_error.raw_os_error() != Some(libc::EPERM) {
+        return Err(signal_error);
+    }
+    if root_status.is_none() {
+        *root_status = child.try_wait()?;
+    }
+    root_status.take().ok_or(signal_error)
 }
 
 #[cfg(windows)]
@@ -536,6 +559,36 @@ mod tests {
             process_id,
             "different-process-lifetime"
         ));
+    }
+
+    #[test]
+    fn group_signal_permission_error_recovers_only_after_the_owned_root_exits() {
+        let mut exited = Command::new("/bin/sh")
+            .args(["-c", "exit 7"])
+            .spawn()
+            .expect("spawn exited root");
+        let expected = exited.wait().expect("wait for exited root");
+        let recovered = recover_group_signal_race_after_root_exit(
+            &mut exited,
+            &mut Some(expected),
+            io::Error::from_raw_os_error(libc::EPERM),
+        )
+        .expect("an already-reaped root makes the stale group race harmless");
+        assert_eq!(recovered.code(), Some(7));
+
+        let mut live = Command::new("/bin/sh")
+            .args(["-c", "sleep 30"])
+            .spawn()
+            .expect("spawn live root");
+        let error = recover_group_signal_race_after_root_exit(
+            &mut live,
+            &mut None,
+            io::Error::from_raw_os_error(libc::EPERM),
+        )
+        .expect_err("a live root must retain the permission failure");
+        assert_eq!(error.raw_os_error(), Some(libc::EPERM));
+        live.kill().expect("kill live fixture");
+        live.wait().expect("reap live fixture");
     }
 
     #[test]

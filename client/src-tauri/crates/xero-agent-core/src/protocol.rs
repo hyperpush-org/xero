@@ -3502,6 +3502,434 @@ mod tests {
         preflight
     }
 
+    fn protocol_event_fixture(
+        id: i64,
+        event_kind: RuntimeEventKind,
+        payload: JsonValue,
+    ) -> RuntimeEvent {
+        let trace_id = runtime_trace_id_for_run("project-protocol", "run-protocol");
+        RuntimeEvent {
+            id,
+            project_id: "project-protocol".into(),
+            run_id: "run-protocol".into(),
+            trace: RuntimeTraceContext::for_event(
+                &trace_id,
+                "run-protocol",
+                id,
+                &event_kind,
+            ),
+            event_kind,
+            payload,
+            created_at: format!("2026-05-03T12:00:{id:02}Z"),
+        }
+    }
+
+    #[test]
+    fn protocol_event_matrix_preserves_typed_payloads_and_replay_output() {
+        let fixtures = vec![
+            (
+                RuntimeEventKind::RunStarted,
+                json!({
+                    "status": "starting",
+                    "providerId": "openai_api",
+                    "modelId": "gpt-5.6"
+                }),
+                "run_started",
+                "Run started",
+                None,
+            ),
+            (
+                RuntimeEventKind::AssistantCandidate,
+                json!({
+                    "candidateId": "candidate-1",
+                    "turnIndex": 4,
+                    "state": "accepted",
+                    "textDelta": "answer ",
+                    "text": "answer complete",
+                    "disposition": "selected",
+                    "reasoningContent": "reasoning",
+                    "reasoningDetails": { "effort": "high" }
+                }),
+                "assistant_candidate",
+                "Assistant candidate: accepted",
+                Some("answer complete"),
+            ),
+            (
+                RuntimeEventKind::MessageDelta,
+                json!({ "role": "user", "delta": "hello" }),
+                "message_delta",
+                "User message delta",
+                Some("hello"),
+            ),
+            (
+                RuntimeEventKind::ReasoningSummary,
+                json!({ "text": "checked invariants" }),
+                "reasoning_summary",
+                "Reasoning summary",
+                Some("checked invariants"),
+            ),
+            (
+                RuntimeEventKind::ToolStarted,
+                json!({ "tool_call_id": "call-1", "tool_name": "read_file" }),
+                "tool_started",
+                "Tool started: read_file",
+                None,
+            ),
+            (
+                RuntimeEventKind::ToolDelta,
+                json!({ "toolCallId": "call-1", "text": "partial" }),
+                "tool_delta",
+                "Tool delta",
+                Some("partial"),
+            ),
+            (
+                RuntimeEventKind::ToolCompleted,
+                json!({ "tool_call_id": "call-1", "status": "succeeded" }),
+                "tool_completed",
+                "Tool completed",
+                None,
+            ),
+            (
+                RuntimeEventKind::FileChanged,
+                json!({ "path": "src/lib.rs", "operation": "created" }),
+                "file_changed",
+                "File created: src/lib.rs",
+                None,
+            ),
+            (
+                RuntimeEventKind::CommandOutput,
+                json!({
+                    "tool_call_id": "call-2",
+                    "stream": "stderr",
+                    "text": "warning"
+                }),
+                "command_output",
+                "Command output: stderr",
+                Some("warning"),
+            ),
+            (
+                RuntimeEventKind::ValidationStarted,
+                json!({ "label": "cargo test" }),
+                "validation_started",
+                "Validation started: cargo test",
+                None,
+            ),
+            (
+                RuntimeEventKind::ValidationCompleted,
+                json!({ "label": "cargo test", "outcome": "passed" }),
+                "validation_completed",
+                "Validation completed: cargo test passed",
+                None,
+            ),
+            (
+                RuntimeEventKind::ToolRegistrySnapshot,
+                json!({ "tool_names": ["read_file", "write_file"] }),
+                "tool_registry_snapshot",
+                "Tool registry snapshot: 2 tools",
+                None,
+            ),
+            (
+                RuntimeEventKind::PolicyDecision,
+                json!({
+                    "kind": "sandbox",
+                    "decision": "allow",
+                    "reason": "workspace path"
+                }),
+                "policy_decision",
+                "Policy decision: allow",
+                None,
+            ),
+            (
+                RuntimeEventKind::StateTransition,
+                json!({ "from": "running", "to": "paused", "reason": "approval" }),
+                "state_transition",
+                "State changed to paused",
+                None,
+            ),
+            (
+                RuntimeEventKind::PlanUpdated,
+                json!({
+                    "summary": "two steps",
+                    "items": [
+                        { "id": "inspect", "text": "Inspect", "status": "completed" },
+                        { "text": "Verify" }
+                    ]
+                }),
+                "plan_updated",
+                "Plan updated",
+                None,
+            ),
+            (
+                RuntimeEventKind::VerificationGate,
+                json!({ "status": "passed", "summary": "all checks passed" }),
+                "verification_gate",
+                "Verification gate: passed",
+                Some("all checks passed"),
+            ),
+            (
+                RuntimeEventKind::ContextManifestRecorded,
+                json!({
+                    "manifest_id": "manifest-1",
+                    "context_hash": "hash-1",
+                    "turn_index": 3
+                }),
+                "context_manifest_recorded",
+                "Context manifest recorded: manifest-1",
+                None,
+            ),
+            (
+                RuntimeEventKind::RetrievalPerformed,
+                json!({ "query": "runtime", "result_count": 2, "source": "memory" }),
+                "retrieval_performed",
+                "Retrieval performed: 2 results",
+                None,
+            ),
+            (
+                RuntimeEventKind::MemoryCandidateCaptured,
+                json!({
+                    "candidate_id": "memory-1",
+                    "candidate_kind": "preference",
+                    "confidence": 120
+                }),
+                "memory_candidate_captured",
+                "Memory candidate captured: preference",
+                None,
+            ),
+            (
+                RuntimeEventKind::EnvironmentLifecycleUpdate,
+                json!({
+                    "environment_id": "environment-1",
+                    "state": "ready",
+                    "previous_state": "starting_conversation",
+                    "sandbox_id": "sandbox-1",
+                    "sandbox_grouping_policy": "reuse_by_project",
+                    "pending_message_count": 2,
+                    "health_checks": [{
+                        "kind": "filesystem_accessible",
+                        "status": "passed",
+                        "summary": "workspace readable",
+                        "checkedAt": "2026-05-03T12:00:00Z"
+                    }],
+                    "setup_steps": [{
+                        "stepId": "setup-1",
+                        "label": "Setup",
+                        "state": "succeeded"
+                    }],
+                    "detail": "environment ready",
+                    "diagnostic": {
+                        "code": "environment_ready",
+                        "message": "ready",
+                        "nextAction": "continue"
+                    }
+                }),
+                "environment_lifecycle_update",
+                "Environment lifecycle: ready",
+                Some("environment ready"),
+            ),
+            (
+                RuntimeEventKind::SandboxLifecycleUpdate,
+                json!({
+                    "sandbox_id": "sandbox-1",
+                    "phase": "created",
+                    "detail": "isolated"
+                }),
+                "sandbox_lifecycle_update",
+                "Sandbox lifecycle: created",
+                None,
+            ),
+            (
+                RuntimeEventKind::ActionRequired,
+                json!({
+                    "action_id": "action-1",
+                    "boundary_id": "boundary-1",
+                    "action_type": "filesystem_write",
+                    "title": "Approve write",
+                    "detail": "write src/lib.rs"
+                }),
+                "approval_required",
+                "Approve write",
+                Some("write src/lib.rs"),
+            ),
+            (
+                RuntimeEventKind::RouteRequested,
+                json!({ "route": "reviewer" }),
+                "untyped",
+                "Untyped event: RouteRequested",
+                None,
+            ),
+            (
+                RuntimeEventKind::ApprovalRequired,
+                json!({
+                    "actionId": "action-2",
+                    "actionType": "command",
+                    "title": "Approve command",
+                    "detail": "cargo test"
+                }),
+                "approval_required",
+                "Approve command",
+                Some("cargo test"),
+            ),
+            (
+                RuntimeEventKind::ToolPermissionGrant,
+                json!({ "grant_id": "grant-1", "tool_name": "read_file" }),
+                "tool_permission_grant",
+                "Tool permission granted: read_file",
+                None,
+            ),
+            (
+                RuntimeEventKind::ProviderModelChanged,
+                json!({ "provider_id": "xai", "model_id": "grok-4" }),
+                "provider_model_changed",
+                "Provider model changed: xai/grok-4",
+                None,
+            ),
+            (
+                RuntimeEventKind::RuntimeSettingsChanged,
+                json!({ "summary": "effort set to high" }),
+                "runtime_settings_changed",
+                "Runtime settings changed",
+                Some("effort set to high"),
+            ),
+            (
+                RuntimeEventKind::RunPaused,
+                json!({ "reason": "waiting for approval" }),
+                "run_paused",
+                "Run paused",
+                None,
+            ),
+            (
+                RuntimeEventKind::RunCompleted,
+                json!({ "summary": "done", "state": "complete" }),
+                "run_completed",
+                "Run completed",
+                Some("done"),
+            ),
+            (
+                RuntimeEventKind::RunFailed,
+                json!({
+                    "code": "provider_failed",
+                    "message": "provider unavailable",
+                    "retryable": true
+                }),
+                "run_failed",
+                "Run failed",
+                Some("provider unavailable"),
+            ),
+            (
+                RuntimeEventKind::SubagentLifecycle,
+                json!({ "subagentId": "reviewer-1", "state": "completed" }),
+                "untyped",
+                "Untyped event: SubagentLifecycle",
+                None,
+            ),
+        ];
+
+        let runtime_events = fixtures
+            .iter()
+            .enumerate()
+            .map(|(index, (kind, payload, ..))| {
+                protocol_event_fixture(index as i64 + 1, kind.clone(), payload.clone())
+            })
+            .collect::<Vec<_>>();
+        let protocol_events = runtime_events
+            .iter()
+            .map(RuntimeEvent::to_protocol_event)
+            .collect::<CoreResult<Vec<_>>>()
+            .expect("protocol fixtures");
+
+        for (event, (_, _, expected_kind, _, _)) in protocol_events.iter().zip(&fixtures) {
+            assert_eq!(
+                serde_json::to_value(&event.payload).expect("payload json")["kind"],
+                *expected_kind
+            );
+        }
+
+        let trace_id = runtime_trace_id_for_run("project-protocol", "run-protocol");
+        let trace = RuntimeTrace {
+            protocol_version: CORE_PROTOCOL_VERSION,
+            trace_id: trace_id.clone(),
+            snapshot: RunSnapshot {
+                trace_id,
+                runtime_agent_id: "engineer".into(),
+                agent_definition_id: "engineer".into(),
+                agent_definition_version: 1,
+                system_prompt: "system".into(),
+                project_id: "project-protocol".into(),
+                agent_session_id: "session-protocol".into(),
+                run_id: "run-protocol".into(),
+                provider_id: "openai_api".into(),
+                model_id: "gpt-5.6".into(),
+                status: RunStatus::Starting,
+                prompt: "test protocol".into(),
+                messages: Vec::new(),
+                events: runtime_events,
+                context_manifests: Vec::new(),
+            },
+            events: protocol_events,
+        };
+
+        let replay = trace.replay_timeline().expect("replay timeline");
+        assert_eq!(replay.status, RunStatus::Failed);
+        assert!(replay.corrupt_segments.is_empty());
+        assert_eq!(replay.items.len(), fixtures.len());
+        for (item, (_, _, _, expected_label, expected_text)) in
+            replay.items.iter().zip(&fixtures)
+        {
+            assert_eq!(&item.label, expected_label);
+            assert_eq!(item.text.as_deref(), *expected_text);
+        }
+    }
+
+    #[test]
+    fn protocol_run_status_and_trace_admission_cover_every_boundary() {
+        for (wire, expected) in [
+            ("starting", RunStatus::Starting),
+            ("running", RunStatus::Running),
+            ("paused", RunStatus::Paused),
+            ("cancelling", RunStatus::Cancelling),
+            ("cancelled", RunStatus::Cancelled),
+            ("handed_off", RunStatus::HandedOff),
+            ("completed", RunStatus::Completed),
+            ("failed", RunStatus::Failed),
+        ] {
+            let event = protocol_event_fixture(
+                1,
+                RuntimeEventKind::RunStarted,
+                json!({ "status": wire }),
+            );
+            assert!(matches!(
+                event.to_protocol_event().expect("known run status").payload,
+                RuntimeProtocolEventPayload::RunStarted { status, .. } if status == expected
+            ));
+        }
+
+        let unknown = protocol_event_fixture(
+            1,
+            RuntimeEventKind::RunStarted,
+            json!({ "status": "future_status" }),
+        )
+        .to_protocol_event()
+        .expect("unknown status falls back safely");
+        assert!(matches!(
+            unknown.payload,
+            RuntimeProtocolEventPayload::RunStarted {
+                status: RunStatus::Running,
+                ..
+            }
+        ));
+
+        let mut invalid = protocol_event_fixture(
+            1,
+            RuntimeEventKind::RunStarted,
+            json!({ "status": "running" }),
+        );
+        invalid.trace.span_id = "NOT-A-SPAN".into();
+        let error = invalid
+            .to_protocol_event()
+            .expect_err("invalid trace must fail closed");
+        assert_eq!(error.code, "agent_protocol_trace_invalid");
+    }
+
     fn focused_test_matrix(
         status: ProductionReadinessFocusedTestStatus,
     ) -> Vec<ProductionReadinessFocusedTestResult> {

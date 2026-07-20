@@ -510,12 +510,6 @@ fn support_deferred_ui_surfaces() -> JsonValue {
                 "delete_project_context_record",
                 "supersede_project_context_record"
             ]
-        },
-        {
-            "surface": "representative_dogfood",
-            "slices": ["S70"],
-            "status": "blocked_until_ui_or_backend_only_acceptance",
-            "backendEvidence": ["docs/agent-system-dogfood-notes.md"]
         }
     ])
 }
@@ -1032,6 +1026,14 @@ mod tests {
                     .as_array()
                     .expect("backend evidence")
                     .contains(&json!("get_agent_support_diagnostics_bundle"))));
+        assert_eq!(
+            bundle["ui"]["deferredSurfaces"]
+                .as_array()
+                .expect("deferred UI surfaces")
+                .len(),
+            3,
+            "support diagnostics must not expose retired plan slices or deleted evidence docs"
+        );
         assert_eq!(bundle["redactionState"], json!("redacted"));
         assert_eq!(bundle["capabilityRevocations"]["activeCount"], json!(1));
         assert_eq!(

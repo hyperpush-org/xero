@@ -5143,6 +5143,192 @@ mod tests {
     }
 
     #[test]
+    fn attachable_skill_availability_fixture_covers_every_source_trust_and_pin_boundary() {
+        let fixtures = [
+            (
+                SkillSourceStateDto::Disabled,
+                SkillTrustStateDto::Trusted,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                Some("enable_source"),
+            ),
+            (
+                SkillSourceStateDto::Installed,
+                SkillTrustStateDto::Trusted,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                Some("enable_source"),
+            ),
+            (
+                SkillSourceStateDto::Stale,
+                SkillTrustStateDto::Trusted,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Stale,
+                Some("refresh_pin"),
+            ),
+            (
+                SkillSourceStateDto::Failed,
+                SkillTrustStateDto::Trusted,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                Some("refresh_pin"),
+            ),
+            (
+                SkillSourceStateDto::Blocked,
+                SkillTrustStateDto::Trusted,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Blocked,
+                Some("remove_attachment"),
+            ),
+            (
+                SkillSourceStateDto::Discoverable,
+                SkillTrustStateDto::Trusted,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Blocked,
+                Some("remove_attachment"),
+            ),
+            (
+                SkillSourceStateDto::Enabled,
+                SkillTrustStateDto::ApprovalRequired,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                Some("approve_source"),
+            ),
+            (
+                SkillSourceStateDto::Enabled,
+                SkillTrustStateDto::Untrusted,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                Some("approve_source"),
+            ),
+            (
+                SkillSourceStateDto::Enabled,
+                SkillTrustStateDto::Blocked,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Blocked,
+                Some("remove_attachment"),
+            ),
+            (
+                SkillSourceStateDto::Enabled,
+                SkillTrustStateDto::Trusted,
+                None,
+                AgentAttachedSkillAvailabilityStatusDto::Unavailable,
+                Some("refresh_pin"),
+            ),
+            (
+                SkillSourceStateDto::Enabled,
+                SkillTrustStateDto::UserApproved,
+                Some("hash"),
+                AgentAttachedSkillAvailabilityStatusDto::Available,
+                None,
+            ),
+        ];
+
+        for (index, (source_state, trust_state, version_hash, status, repair_hint)) in
+            fixtures.into_iter().enumerate()
+        {
+            let entry = registry_skill(
+                &format!("fixture-source-{index}"),
+                source_state,
+                trust_state,
+                version_hash,
+            );
+            let availability = availability_for_registry_entry(&entry);
+            assert_eq!(availability.status, status, "fixture {index}");
+            assert_eq!(
+                availability.repair_hint.as_deref(),
+                repair_hint,
+                "fixture {index}"
+            );
+            assert_eq!(availability.unavailable_code.is_none(), repair_hint.is_none());
+        }
+    }
+
+    #[test]
+    fn authoring_catalog_integrity_fixture_reports_every_cross_reference_family() {
+        let mut second_skill = registry_skill(
+            "fixture-source-2",
+            SkillSourceStateDto::Enabled,
+            SkillTrustStateDto::Trusted,
+            Some("hash-2"),
+        );
+        second_skill.skill_id = "second-skill".into();
+        let mut catalog = agent_authoring_catalog_with_skills(vec![
+            registry_skill(
+                "fixture-source-1",
+                SkillSourceStateDto::Enabled,
+                SkillTrustStateDto::Trusted,
+                Some("hash-1"),
+            ),
+            second_skill,
+        ]);
+
+        catalog.tools.push(catalog.tools[0].clone());
+        catalog.tool_categories.push(catalog.tool_categories[0].clone());
+        let duplicate_category_tool = catalog.tool_categories[0].tools[0].clone();
+        catalog.tool_categories[0]
+            .tools
+            .push(duplicate_category_tool);
+        catalog.db_tables.push(catalog.db_tables[0].clone());
+        catalog
+            .upstream_artifacts
+            .push(catalog.upstream_artifacts[0].clone());
+
+        let duplicate_skill = catalog.attachable_skills[0].clone();
+        catalog.attachable_skills.push(duplicate_skill);
+        catalog.attachable_skills[0].availability_status =
+            AgentAttachedSkillAvailabilityStatusDto::Unavailable;
+        catalog.attachable_skills[0].attachment["sourceId"] = json!("wrong-source");
+        catalog.attachable_skills[0].attachment["skillId"] = json!("wrong-skill");
+        catalog.attachable_skills[0].attachment["versionHash"] = json!("wrong-hash");
+
+        catalog.policy_controls.push(catalog.policy_controls[0].clone());
+        catalog.templates.push(catalog.templates[0].clone());
+        catalog.creation_flows.push(catalog.creation_flows[0].clone());
+        catalog.creation_flows[0].template_ids.clear();
+        catalog.creation_flows[1].template_ids = vec![catalog.templates[0].id.clone()];
+        catalog.creation_flows[1].task_kind = "incompatible-fixture-task".into();
+        catalog
+            .profile_availability
+            .push(catalog.profile_availability[0].clone());
+        catalog
+            .constraint_explanations
+            .push(catalog.constraint_explanations[0].clone());
+        catalog.constraint_explanations[0].status =
+            AgentAuthoringAvailabilityStatusDto::Unavailable;
+        catalog.constraint_explanations[0].required_profile = None;
+
+        let codes = validate_agent_authoring_catalog(&catalog)
+            .into_iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<BTreeSet<_>>();
+        for code in [
+            "authoring_catalog_duplicate_tool_name",
+            "authoring_catalog_duplicate_tool_category_id",
+            "authoring_catalog_duplicate_category_tool_name",
+            "authoring_catalog_duplicate_database_table",
+            "authoring_catalog_duplicate_upstream_artifact",
+            "authoring_catalog_duplicate_attachable_skill_source",
+            "authoring_catalog_duplicate_attachable_skill_attachment_id",
+            "authoring_catalog_attachable_skill_unavailable_entry",
+            "authoring_catalog_attachable_skill_attachment_mismatch",
+            "authoring_catalog_duplicate_policy_control_id",
+            "authoring_catalog_duplicate_policy_control_snapshot_path",
+            "authoring_catalog_duplicate_template_id",
+            "authoring_catalog_duplicate_creation_flow_id",
+            "authoring_catalog_empty_creation_flow_templates",
+            "authoring_catalog_incompatible_creation_flow_template",
+            "authoring_catalog_duplicate_profile_availability",
+            "authoring_catalog_duplicate_constraint_explanation_id",
+            "authoring_catalog_duplicate_constraint_explanation_subject",
+            "authoring_catalog_constraint_status_mismatch",
+            "authoring_catalog_constraint_required_profile_mismatch",
+        ] {
+            assert!(codes.contains(code), "missing diagnostic `{code}`: {codes:?}");
+        }
+    }
+
+    #[test]
     fn s62_authoring_constraint_explanations_are_specific_and_actionable() {
         let availability = vec![
             AgentAuthoringProfileAvailabilityDto {

@@ -34,6 +34,7 @@ export function buildTauriDevEnv(rootEnv, { devAppDataDir, runner, sidecarPath }
   return {
     ...rootEnv,
     CARGO_BUILD_JOBS: rootEnv.CARGO_BUILD_JOBS ?? '4',
+    CARGO_INCREMENTAL: '0',
     CARGO_TARGET_AARCH64_APPLE_DARWIN_RUNNER: runner,
     CARGO_TARGET_X86_64_APPLE_DARWIN_RUNNER: runner,
     XERO_APP_DATA_DIR: rootEnv.XERO_APP_DATA_DIR ?? devAppDataDir,

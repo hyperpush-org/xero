@@ -2975,10 +2975,9 @@ fn resolve_input_bindings_payload(
                 path,
                 ..
             } => {
-                let value = artifact_index.get(artifact_ref).and_then(|artifact| {
-                    path.as_deref()
-                        .and_then(|path| json_path_lookup(artifact, path).cloned())
-                        .or_else(|| Some((*artifact).clone()))
+                let value = artifact_index.get(artifact_ref).and_then(|artifact| match path {
+                    Some(path) => json_path_lookup(artifact, path).cloned(),
+                    None => Some((*artifact).clone()),
                 });
                 (name, *required, value)
             }
@@ -3175,6 +3174,7 @@ fn resolve_template_string_with_context(
     if let Some(expression) = trimmed
         .strip_prefix("{{")
         .and_then(|value| value.strip_suffix("}}"))
+        .filter(|value| !value.contains("{{") && !value.contains("}}"))
     {
         return resolve_template_expression_with_context(expression.trim(), run, context);
     }
@@ -3738,20 +3738,29 @@ fn control_values_equal(left: &JsonValue, right: &JsonValue) -> bool {
     if left == right {
         return true;
     }
-    left.as_str().map(str::trim) == right.as_str().map(str::trim)
-        || left
-            .as_f64()
-            .zip(right.as_f64())
+    left.as_str()
+        .zip(right.as_str())
+        .is_some_and(|(left, right)| left.trim() == right.trim())
+        || control_number(left)
+            .zip(control_number(right))
             .is_some_and(|(left, right)| (left - right).abs() < f64::EPSILON)
 }
 
 fn compare_control_values(left: &JsonValue, right: &JsonValue) -> std::cmp::Ordering {
-    match (left.as_f64(), right.as_f64()) {
+    match (control_number(left), control_number(right)) {
         (Some(left), Some(right)) => left
             .partial_cmp(&right)
             .unwrap_or(std::cmp::Ordering::Equal),
         _ => template_value_to_string(left).cmp(&template_value_to_string(right)),
     }
+}
+
+fn control_number(value: &JsonValue) -> Option<f64> {
+    value.as_f64().or_else(|| {
+        value
+            .as_str()
+            .and_then(|value| value.trim().parse::<f64>().ok())
+    })
 }
 
 fn resolve_workflow_command_working_directory(
@@ -6075,21 +6084,27 @@ fn is_failed_status(status: WorkflowNodeRunStatusDto) -> bool {
 
 #[cfg(test)]
 mod tests {
+    use std::fs;
+
     use super::*;
     use crate::{
         commands::contracts::{
             runtime::RuntimeAgentIdDto,
             workflows::{
                 WorkflowArtifactRecordDto, WorkflowCollectionLoopControlsDto, WorkflowConditionDto,
-                WorkflowEventDto, WorkflowFailureClassificationPolicyDto, WorkflowLoopPolicyDto,
+                WorkflowDeliveryStateEntityTypeDto, WorkflowEventDto,
+                WorkflowFailureClassificationPolicyDto, WorkflowLoopPolicyDto,
+                WorkflowNumberCompareOperatorDto,
                 WorkflowResourceConflictModeDto, WorkflowResourceConflictPolicyDto,
-                WorkflowRunPolicyDto, WorkflowStallDetectorDto,
+                WorkflowRunPolicyDto, WorkflowStallDetectorDto, WorkflowStateWriteActionDto,
             },
         },
         db::{
             configure_connection, migrations::migrations, project_store,
             register_project_database_path_for_tests,
         },
+        git::repository::CanonicalRepository,
+        state::DesktopState,
     };
     use rusqlite::Connection;
     use tempfile::TempDir;
@@ -6324,6 +6339,364 @@ mod tests {
         .expect("resolve input bindings");
 
         assert_eq!(payload, json!({ "goal": "Ship it" }));
+    }
+
+    #[test]
+    fn input_binding_fixtures_resolve_each_source_and_fail_closed_on_missing_paths() {
+        let producer = node_run("producer", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let mut run = run_with_nodes(Vec::new(), vec![producer.clone()]);
+        run.initial_input = Some(json!({ "goal": "Ship it", "nested": { "value": 7 } }));
+        run.artifacts.push(artifact_for_node_run(
+            &producer.id,
+            json!({ "count": 3, "summary": "ready" }),
+        ));
+
+        assert_eq!(
+            resolve_input_bindings_payload(&run, &[]).expect("default run input"),
+            run.initial_input.clone().expect("fixture input")
+        );
+
+        let fixtures = vec![
+            WorkflowInputBindingDto::RunInput {
+                name: "goal".into(),
+                required: true,
+                path: None,
+                prompt_label: None,
+            },
+            WorkflowInputBindingDto::Artifact {
+                name: "count".into(),
+                required: true,
+                artifact_ref: "producer.review_findings".into(),
+                path: Some("$.count".into()),
+                prompt_label: None,
+            },
+            WorkflowInputBindingDto::State {
+                name: "state".into(),
+                required: true,
+                state_ref: "producer.review_findings".into(),
+                path: None,
+                prompt_label: None,
+            },
+            WorkflowInputBindingDto::Artifact {
+                name: "optional".into(),
+                required: false,
+                artifact_ref: "missing.review_findings".into(),
+                path: None,
+                prompt_label: None,
+            },
+        ];
+        assert_eq!(
+            resolve_input_bindings_payload(&run, &fixtures).expect("bound fixture payload"),
+            json!({
+                "goal": "Ship it",
+                "count": 3,
+                "state": { "count": 3, "summary": "ready" },
+            })
+        );
+
+        for required in [false, true] {
+            let result = resolve_input_bindings_payload(
+                &run,
+                &[WorkflowInputBindingDto::Artifact {
+                    name: "missing_path".into(),
+                    required,
+                    artifact_ref: "producer.review_findings".into(),
+                    path: Some("$.does_not_exist".into()),
+                    prompt_label: None,
+                }],
+            );
+            if required {
+                assert_eq!(
+                    result.expect_err("required missing path must fail").code,
+                    "workflow_required_input_missing"
+                );
+            } else {
+                assert_eq!(result.expect("optional missing path"), json!({}));
+            }
+        }
+    }
+
+    #[test]
+    fn template_resolution_fixtures_cover_context_input_artifacts_and_errors() {
+        let producer = node_run("producer", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let mut run = run_with_nodes(Vec::new(), vec![producer.clone()]);
+        run.initial_input = Some(json!({ "goal": "Ship", "nested": { "value": 7 } }));
+        run.artifacts.push(artifact_for_node_run(
+            &producer.id,
+            json!({ "count": 3, "summary": "ready" }),
+        ));
+        let decision = json!({ "choice": "approve", "nested": { "id": 9 } });
+
+        let fixtures = [
+            ("{{ decision }}", decision.clone()),
+            ("{{ decision.choice }}", json!("approve")),
+            ("{{ decision:$.nested.id }}", json!(9)),
+            ("{{ input }}", run.initial_input.clone().expect("input")),
+            ("{{ input.goal }}", json!("Ship")),
+            ("{{ input:$.nested.value }}", json!(7)),
+            ("{{ run.id }}", json!("run-1")),
+            ("{{ workflow.id }}", json!("workflow-1")),
+            (
+                "{{ artifact.producer.review_findings.count }}",
+                json!(3),
+            ),
+            (
+                "{{ artifact:producer.review_findings $.summary }}",
+                json!("ready"),
+            ),
+            ("{{ state.producer.review_findings }}", json!({
+                "count": 3,
+                "summary": "ready",
+            })),
+        ];
+        for (template, expected) in fixtures {
+            assert_eq!(
+                resolve_template_string_with_context(template, &run, Some(&decision))
+                    .unwrap_or_else(|error| panic!("resolve {template}: {error:?}")),
+                expected,
+                "template fixture {template}"
+            );
+        }
+
+        assert_eq!(
+            resolve_template_string("run={{ run.id }} goal={{ input.goal }}", &run)
+                .expect("interpolated template"),
+            json!("run=run-1 goal=Ship")
+        );
+        assert_eq!(
+            resolve_template_string("prefix {{ input.goal", &run).expect("unterminated template"),
+            json!("prefix {{ input.goal")
+        );
+        assert_eq!(template_value_to_string(&JsonValue::Null), "");
+        assert_eq!(template_value_to_string(&json!([1, 2])), "[1,2]");
+
+        let nested = resolve_template_object_with_context(
+            &json!({
+                "array": ["{{ input.nested.value }}", true],
+                "decision": "{{ decision.choice }}",
+                "literal": 4,
+            }),
+            &run,
+            Some(&decision),
+        )
+        .expect("nested object template");
+        assert_eq!(
+            nested,
+            json!({ "array": [7, true], "decision": "approve", "literal": 4 })
+        );
+
+        let operation = WorkflowStateWriteOperationDto {
+            entity_type: WorkflowDeliveryStateEntityTypeDto::Milestone,
+            action: WorkflowStateWriteActionDto::Patch,
+            idempotency_key: Some("{{ run.id }}:{{ decision.choice }}".into()),
+            target_id: Some("{{ input.goal }}".into()),
+            payload: json!({
+                "count": "{{ artifact.producer.review_findings.count }}",
+                "choice": "{{ decision.choice }}",
+            })
+            .as_object()
+            .cloned()
+            .expect("object fixture"),
+            output_artifact_type: "write_result".into(),
+        };
+        let resolved = resolve_state_write_operation(&operation, &run, Some(&decision))
+            .expect("state write operation");
+        assert_eq!(resolved.idempotency_key.as_deref(), Some("run-1:approve"));
+        assert_eq!(resolved.target_id.as_deref(), Some("Ship"));
+        assert_eq!(
+            JsonValue::Object(resolved.payload),
+            json!({ "count": 3, "choice": "approve" })
+        );
+
+        let error_fixtures = [
+            ("{{ decision }}", None, "workflow_template_context_missing"),
+            (
+                "{{ decision.missing }}",
+                Some(&decision),
+                "workflow_template_context_missing",
+            ),
+            (
+                "{{ input.missing }}",
+                Some(&decision),
+                "workflow_template_input_missing",
+            ),
+            (
+                "{{ artifact.missing.output }}",
+                Some(&decision),
+                "workflow_template_artifact_missing",
+            ),
+            (
+                "{{ artifact.producer.review_findings.missing }}",
+                Some(&decision),
+                "workflow_template_artifact_path_missing",
+            ),
+            (
+                "{{ unsupported.value }}",
+                Some(&decision),
+                "workflow_template_expression_unknown",
+            ),
+        ];
+        for (template, context, expected_code) in error_fixtures {
+            assert_eq!(
+                resolve_template_string_with_context(template, &run, context)
+                    .expect_err("invalid template fixture")
+                    .code,
+                expected_code,
+                "error fixture {template}"
+            );
+        }
+
+        let mut no_input = run.clone();
+        no_input.initial_input = None;
+        assert_eq!(
+            resolve_template_string("{{ input }}", &no_input)
+                .expect_err("missing input")
+                .code,
+            "workflow_template_input_missing"
+        );
+    }
+
+    #[test]
+    fn subgraph_runtime_fixtures_namespace_bindings_templates_and_state_writes() {
+        let definition = definition_with_subgraph(Vec::new());
+        let subgraph = &definition.subgraphs[0];
+        let parent_binding = subgraph_input_binding_for_parent(
+            "invoke",
+            &WorkflowInputBindingDto::State {
+                name: "goal".into(),
+                required: true,
+                state_ref: "external.state".into(),
+                path: Some("$.goal".into()),
+                prompt_label: Some("Goal".into()),
+            },
+        );
+        assert_eq!(
+            parent_binding,
+            WorkflowInputBindingDto::Artifact {
+                name: "goal".into(),
+                required: true,
+                artifact_ref: "invoke.subgraph_input".into(),
+                path: Some("$.goal".into()),
+                prompt_label: Some("Goal".into()),
+            }
+        );
+
+        let local_bindings = vec![
+            WorkflowInputBindingDto::Artifact {
+                name: "local".into(),
+                required: true,
+                artifact_ref: "producer.review_findings".into(),
+                path: None,
+                prompt_label: None,
+            },
+            WorkflowInputBindingDto::State {
+                name: "external".into(),
+                required: false,
+                state_ref: "outside.state".into(),
+                path: Some("$.value".into()),
+                prompt_label: None,
+            },
+            WorkflowInputBindingDto::RunInput {
+                name: "goal".into(),
+                required: true,
+                path: Some("$.goal".into()),
+                prompt_label: None,
+            },
+        ];
+        assert_eq!(
+            runtime_input_bindings_for_node(&definition, "done", &local_bindings),
+            local_bindings
+        );
+        let runtime_bindings =
+            runtime_input_bindings_for_node(&definition, "invoke::producer", &local_bindings);
+        assert_eq!(runtime_bindings.len(), 4);
+        assert!(runtime_bindings.iter().any(|binding| matches!(
+            binding,
+            WorkflowInputBindingDto::Artifact { artifact_ref, .. }
+                if artifact_ref == "invoke::producer.review_findings"
+        )));
+        assert!(runtime_bindings.iter().any(|binding| matches!(
+            binding,
+            WorkflowInputBindingDto::State { state_ref, .. } if state_ref == "outside.state"
+        )));
+
+        let template = "{{ artifact.producer.review_findings.count }} / {{ state:outside.state }}";
+        assert_eq!(
+            runtime_template_string_for_node(&definition, "done", template),
+            template
+        );
+        assert_eq!(
+            runtime_template_strings_for_node(
+                &definition,
+                "invoke::producer",
+                &[template.into(), "unterminated {{ artifact.producer".into()],
+            ),
+            vec![
+                "{{artifact:invoke::producer.review_findings $.count}} / {{state:outside.state}}",
+                "unterminated {{ artifact.producer",
+            ]
+        );
+
+        assert_eq!(
+            namespace_template_value(
+                &json!({
+                    "nested": ["{{ artifact:producer.review_findings }}", 4, false],
+                }),
+                "invoke",
+                subgraph,
+            ),
+            json!({
+                "nested": ["{{artifact:invoke::producer.review_findings}}", 4, false],
+            })
+        );
+        assert_eq!(
+            namespace_artifact_ref("invoke", subgraph, "malformed"),
+            "malformed"
+        );
+        assert_eq!(
+            namespace_artifact_ref("invoke", subgraph, "outside.state"),
+            "outside.state"
+        );
+        assert_eq!(
+            namespace_node_ref("invoke", subgraph, "producer"),
+            "invoke::producer"
+        );
+        assert_eq!(namespace_node_ref("invoke", subgraph, "outside"), "outside");
+        assert_eq!(namespace_loop_key("invoke", "retry"), "invoke::retry");
+        assert_eq!(namespace_loop_key("invoke", "other::retry"), "other::retry");
+
+        let operation = WorkflowStateWriteOperationDto {
+            entity_type: WorkflowDeliveryStateEntityTypeDto::Milestone,
+            action: WorkflowStateWriteActionDto::Update,
+            idempotency_key: Some("{{ artifact.producer.review_findings.id }}".into()),
+            target_id: Some("{{ state:producer.review_findings $.id }}".into()),
+            payload: json!({ "value": "{{ artifact:producer.review_findings }}" })
+                .as_object()
+                .cloned()
+                .expect("object fixture"),
+            output_artifact_type: "result".into(),
+        };
+        assert_eq!(
+            runtime_state_write_operation_for_node(&definition, "done", &operation),
+            operation
+        );
+        let runtime_operation = runtime_state_write_operation_for_node(
+            &definition,
+            "invoke::producer",
+            &operation,
+        );
+        assert_eq!(
+            runtime_operation.idempotency_key.as_deref(),
+            Some("{{artifact:invoke::producer.review_findings $.id}}")
+        );
+        assert_eq!(
+            runtime_operation.target_id.as_deref(),
+            Some("{{state:invoke::producer.review_findings $.id}}")
+        );
+        assert_eq!(
+            JsonValue::Object(runtime_operation.payload),
+            json!({ "value": "{{artifact:invoke::producer.review_findings}}" })
+        );
     }
 
     #[test]
@@ -6877,6 +7250,35 @@ mod tests {
             ),
             Some("finding_count_not_decreasing")
         );
+        assert_eq!(finding_count_in_value(&json!([{"gapCount": 4}])), Some(4.0));
+        assert_eq!(finding_count_in_value(&json!("none")), None);
+
+        let timeout = WorkflowRunNodeDto {
+            failure_class: Some(RUNTIME_ACTIVITY_TIMEOUT_FAILURE_CLASS.into()),
+            ..node_run("source-a", WorkflowNodeRunStatusDto::Stalled, 2)
+        };
+        assert_eq!(
+            stall_failure_class_for_detector(
+                &run,
+                &timeout,
+                WorkflowStallDetectorDto::RuntimeActivityTimeout,
+            ),
+            Some(RUNTIME_ACTIVITY_TIMEOUT_FAILURE_CLASS)
+        );
+        let retries = WorkflowRunNodeDto {
+            failure_class: Some("retry_limit_exceeded".into()),
+            ..node_run("source-a", WorkflowNodeRunStatusDto::Stalled, 3)
+        };
+        assert_eq!(
+            stall_failure_class_for_detector(
+                &run,
+                &retries,
+                WorkflowStallDetectorDto::RetryLimitExceeded,
+            ),
+            Some("retry_limit_exceeded")
+        );
+        let no_failure = node_run("source-a", WorkflowNodeRunStatusDto::Failed, 4);
+        assert!(!same_failure_class_repeated(&run, &no_failure));
     }
 
     fn agent_run_record(
@@ -7251,6 +7653,83 @@ mod tests {
     }
 
     #[test]
+    fn namespace_condition_fixture_covers_every_condition_variant_recursively() {
+        let definition = definition_with_subgraph(Vec::new());
+        let subgraph = &definition.subgraphs[0];
+        let condition = WorkflowConditionDto::All {
+            conditions: vec![
+                WorkflowConditionDto::Always,
+                WorkflowConditionDto::Any {
+                    conditions: vec![WorkflowConditionDto::Not {
+                        condition: Box::new(WorkflowConditionDto::NodeStatus {
+                            node_id: "producer".into(),
+                            status: WorkflowNodeRunStatusDto::Succeeded,
+                        }),
+                    }],
+                },
+                WorkflowConditionDto::ArtifactExists {
+                    artifact_ref: "producer.report".into(),
+                },
+                WorkflowConditionDto::ArtifactFieldEquals {
+                    artifact_ref: "producer.report".into(),
+                    path: "$.state".into(),
+                    value: json!("ready"),
+                },
+                WorkflowConditionDto::ArtifactFieldIn {
+                    artifact_ref: "producer.report".into(),
+                    path: "$.state".into(),
+                    values: vec![json!("ready"), json!("done")],
+                },
+                WorkflowConditionDto::ArtifactFieldNumberCompare {
+                    artifact_ref: "producer.report".into(),
+                    path: "$.count".into(),
+                    operator: WorkflowNumberCompareOperatorDto::Gte,
+                    value: 2.0,
+                },
+                WorkflowConditionDto::FailureClassIs {
+                    node_id: Some("producer".into()),
+                    failure_class: "fixture".into(),
+                },
+                WorkflowConditionDto::FailureClassIs {
+                    node_id: None,
+                    failure_class: "latest".into(),
+                },
+                WorkflowConditionDto::LoopAttemptLt {
+                    loop_key: "retry".into(),
+                    value: 3,
+                },
+                WorkflowConditionDto::LoopAttemptGte {
+                    loop_key: "retry".into(),
+                    value: 1,
+                },
+                WorkflowConditionDto::HumanDecisionIs {
+                    checkpoint_node_id: "producer".into(),
+                    decision: "approve".into(),
+                },
+                WorkflowConditionDto::StateFieldEquals {
+                    state_ref: "producer.state".into(),
+                    path: "$.enabled".into(),
+                    value: json!(true),
+                },
+                WorkflowConditionDto::StateCollectionCountCompare {
+                    state_ref: "producer.items".into(),
+                    operator: WorkflowNumberCompareOperatorDto::Lt,
+                    value: 10.0,
+                },
+            ],
+        };
+
+        let namespaced = namespace_condition(&condition, "invoke", subgraph);
+        let encoded = serde_json::to_string(&namespaced).expect("encode namespaced condition");
+
+        assert!(encoded.contains("invoke::producer"));
+        assert!(encoded.contains("invoke::producer.report"));
+        assert!(encoded.contains("invoke::producer.state"));
+        assert!(encoded.contains("invoke::retry"));
+        assert!(encoded.contains("\"failureClass\":\"latest\""));
+    }
+
+    #[test]
     fn collection_control_selection_marks_partial_phase_runs() {
         let controls = WorkflowCollectionLoopControlsDto {
             from_input_path: Some("$.from".into()),
@@ -7274,6 +7753,104 @@ mod tests {
 
         let unselected = collection_control_selection(Some(&json!({ "goal": "ship" })), &controls);
         assert!(!unselected.has_selection);
+    }
+
+    #[test]
+    fn collection_control_fixtures_filter_bounds_and_normalize_values() {
+        let records = vec![
+            json!({ "phaseKey": 1, "id": "first" }),
+            json!({ "phase_key": 2 }),
+            json!({ "id": 3 }),
+            json!({ "sortOrder": 4 }),
+            json!({ "sort_order": 5 }),
+            json!({ "name": "unkeyed" }),
+        ];
+        let controls = WorkflowCollectionLoopControlsDto {
+            from_input_path: Some("$.from".into()),
+            to_input_path: Some("$.to".into()),
+            only_input_path: Some("$.only".into()),
+        };
+        assert_eq!(
+            apply_collection_controls(
+                records.clone(),
+                Some(&json!({ "from": [2], "to": 4, "only": "2, 3, 4" })),
+                &controls,
+            ),
+            vec![
+                json!({ "phase_key": 2 }),
+                json!({ "id": 3 }),
+                json!({ "sortOrder": 4 }),
+            ]
+        );
+        assert_eq!(
+            apply_collection_controls(
+                records.clone(),
+                None,
+                &WorkflowCollectionLoopControlsDto::default(),
+            ),
+            records
+        );
+
+        assert_eq!(collection_record_key(&json!({ "phaseKey": "a" })), Some(json!("a")));
+        assert_eq!(collection_record_key(&json!({ "phase_key": "b" })), Some(json!("b")));
+        assert_eq!(collection_record_key(&json!({ "id": "c" })), Some(json!("c")));
+        assert_eq!(collection_record_key(&json!({ "sortOrder": 4 })), Some(json!(4)));
+        assert_eq!(collection_record_key(&json!({ "sort_order": 5 })), Some(json!(5)));
+        assert_eq!(collection_record_key(&json!({})), None);
+
+        assert_eq!(control_values(&json!([1, 2])), vec![json!(1), json!(2)]);
+        assert_eq!(
+            control_values(&json!(" one, , two ")),
+            vec![json!("one"), json!("two")]
+        );
+        assert_eq!(control_values(&json!(true)), vec![json!(true)]);
+        assert_eq!(control_scalar(&json!([3, 4])), Some(json!(3)));
+        assert_eq!(control_scalar(&json!([])), None);
+        assert_eq!(control_scalar(&JsonValue::Null), None);
+        assert_eq!(control_scalar(&json!(false)), Some(json!(false)));
+        assert!(control_values_equal(&json!(" same "), &json!("same")));
+        assert!(control_values_equal(&json!(2.0), &json!(2)));
+        assert!(!control_values_equal(&json!(true), &json!(false)));
+        assert_eq!(
+            compare_control_values(&json!(2), &json!(3)),
+            std::cmp::Ordering::Less
+        );
+        assert_eq!(
+            compare_control_values(&json!("b"), &json!("a")),
+            std::cmp::Ordering::Greater
+        );
+
+        let empty_selection = collection_control_selection(
+            Some(&json!({ "only": [] })),
+            &WorkflowCollectionLoopControlsDto {
+                only_input_path: Some("$.only".into()),
+                ..Default::default()
+            },
+        );
+        assert!(!empty_selection.has_selection);
+        assert_eq!(empty_selection.only_values, None);
+    }
+
+    #[test]
+    fn processed_collection_item_ids_only_include_successful_nonempty_items() {
+        let succeeded = node_run("loop", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let failed = node_run("loop", WorkflowNodeRunStatusDto::Failed, 1);
+        let other = node_run("other", WorkflowNodeRunStatusDto::Succeeded, 0);
+        let mut run = run_with_nodes(
+            Vec::new(),
+            vec![succeeded.clone(), failed.clone(), other.clone()],
+        );
+        run.artifacts = vec![
+            artifact_for_node_run(&succeeded.id, json!({ "itemId": "kept" })),
+            artifact_for_node_run(&succeeded.id, json!({ "itemId": "" })),
+            artifact_for_node_run(&failed.id, json!({ "itemId": "failed" })),
+            artifact_for_node_run(&other.id, json!({ "itemId": "other" })),
+        ];
+
+        assert_eq!(
+            processed_collection_item_ids(&run, "loop"),
+            BTreeSet::from(["kept".to_string()])
+        );
     }
 
     fn repo_with_database() -> TempDir {
@@ -7306,6 +7883,286 @@ mod tests {
             )
             .expect("seed project");
         temp
+    }
+
+    fn leased_command_node_fixture(
+        repo_root: &Path,
+        run: &WorkflowRunDto,
+        suffix: &str,
+    ) -> (WorkflowRunNodeDto, RunningCommandRegistration) {
+        let node = project_store::insert_workflow_run_node(
+            repo_root,
+            "project-1",
+            &run.id,
+            &format!("command-{suffix}"),
+            "command",
+            0,
+            WorkflowNodeRunStatusDto::Eligible,
+            &format!("{}:command:{suffix}:0", run.id),
+        )
+        .expect("insert command fixture node");
+        let mut registration =
+            register_running_workflow_command("project-1", &run.id, &node.id)
+                .expect("register command fixture");
+        assert!(project_store::claim_workflow_command_node_starting(
+            repo_root,
+            "project-1",
+            &run.id,
+            &node.id,
+            &registration.owner_instance_id,
+            registration.owner_process_id,
+            &registration.owner_process_birth_identity,
+            &registration.lease_token,
+            &crate::auth::now_timestamp(),
+        )
+        .expect("claim command fixture lease"));
+        registration
+            .activate_persisted_lease(repo_root)
+            .expect("activate command fixture heartbeat");
+        (node, registration)
+    }
+
+    fn command_fixture_node_after(
+        repo_root: &Path,
+        run_id: &str,
+        node_run_id: &str,
+    ) -> WorkflowRunNodeDto {
+        project_store::get_workflow_run(repo_root, "project-1", run_id)
+            .expect("load command fixture run")
+            .expect("command fixture run exists")
+            .nodes
+            .into_iter()
+            .find(|node| node.id == node_run_id)
+            .expect("command fixture node exists")
+    }
+
+    fn imported_repo_with_database() -> (TempDir, PathBuf) {
+        let temp = TempDir::new().expect("create imported temp repo");
+        let repo_root = temp.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create imported repo");
+        let repo_root = fs::canonicalize(repo_root).expect("canonical imported repo");
+        crate::db::configure_project_database_paths(&temp.path().join("app-data/global.db"));
+        crate::db::import_project(
+            &CanonicalRepository {
+                project_id: "project-1".into(),
+                repository_id: "repository-workflow-agent-reconcile".into(),
+                root_path: repo_root.clone(),
+                root_path_string: repo_root.to_string_lossy().into_owned(),
+                common_git_dir: repo_root.join(".git"),
+                display_name: "Workflow agent reconciliation fixture".into(),
+                branch_name: Some("main".into()),
+                head_sha: Some("abc123".into()),
+                branch: None,
+                last_commit: None,
+                status_entries: Vec::new(),
+                has_staged_changes: false,
+                has_unstaged_changes: false,
+                has_untracked_changes: false,
+                additions: 0,
+                deletions: 0,
+            },
+            DesktopState::default().import_failpoints(),
+        )
+        .expect("import workflow agent fixture");
+        (temp, repo_root)
+    }
+
+    #[test]
+    fn running_agent_reconciliation_fixture_maps_resume_pause_complete_failure_and_cancel() {
+        let (_temp, repo_root) = imported_repo_with_database();
+        let agent_ids = ["resume", "pause", "complete", "fail", "cancel"];
+        let mut definition = WorkflowDefinitionDto {
+            schema: "xero.workflow_definition.v1".into(),
+            id: "workflow-agent-reconcile".into(),
+            project_id: "project-1".into(),
+            name: "Agent reconciliation".into(),
+            description: String::new(),
+            version: 1,
+            start_node_id: agent_ids[0].into(),
+            nodes: agent_ids
+                .iter()
+                .map(|node_id| agent_node(node_id, Vec::new()))
+                .collect(),
+            edges: agent_ids
+                .windows(2)
+                .enumerate()
+                .map(|(index, pair)| {
+                    edge(
+                        &format!("agent-edge-{index}"),
+                        pair[0],
+                        pair[1],
+                        WorkflowEdgeTypeDto::Success,
+                    )
+                })
+                .collect(),
+            subgraphs: Vec::new(),
+            artifact_contracts: Vec::new(),
+            run_policy: WorkflowRunPolicyDto::default(),
+            created_at: None,
+            updated_at: None,
+        };
+        definition.nodes.push(terminal_node("done"));
+        definition.edges.push(edge(
+            "agent-edge-done",
+            "cancel",
+            "done",
+            WorkflowEdgeTypeDto::Success,
+        ));
+        let created = project_store::create_workflow_definition(&repo_root, &definition)
+            .expect("create reconciliation workflow");
+        let workflow_run = project_store::create_workflow_run(
+            &repo_root,
+            "project-1",
+            &created.id,
+            Some(json!({"fixture": true})),
+        )
+        .expect("create reconciliation run");
+        project_store::update_workflow_run_status(
+            &repo_root,
+            "project-1",
+            &workflow_run.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start reconciliation run");
+
+        let cases = [
+            (
+                "resume",
+                WorkflowNodeRunStatusDto::WaitingOnGate,
+                AgentRunStatus::Running,
+                None,
+            ),
+            (
+                "pause",
+                WorkflowNodeRunStatusDto::Running,
+                AgentRunStatus::Paused,
+                None,
+            ),
+            (
+                "complete",
+                WorkflowNodeRunStatusDto::Running,
+                AgentRunStatus::Completed,
+                None,
+            ),
+            (
+                "fail",
+                WorkflowNodeRunStatusDto::Running,
+                AgentRunStatus::Failed,
+                Some(project_store::AgentRunDiagnosticRecord {
+                    code: "fixture_agent_failure".into(),
+                    message: "fixture failure".into(),
+                }),
+            ),
+            (
+                "cancel",
+                WorkflowNodeRunStatusDto::Running,
+                AgentRunStatus::Cancelled,
+                None,
+            ),
+        ];
+        for (node_id, node_status, runtime_status, diagnostic) in cases {
+            let node_run = project_store::insert_workflow_run_node(
+                &repo_root,
+                "project-1",
+                &workflow_run.id,
+                node_id,
+                "agent",
+                0,
+                node_status,
+                &format!("agent-reconcile:{node_id}"),
+            )
+            .expect("insert workflow agent node");
+            let runtime_run_id = format!("runtime-{node_id}");
+            project_store::insert_agent_run(
+                &repo_root,
+                &project_store::NewAgentRunRecord {
+                    runtime_agent_id: RuntimeAgentIdDto::Engineer,
+                    agent_definition_id: None,
+                    agent_definition_version: None,
+                    project_id: "project-1".into(),
+                    agent_session_id: project_store::DEFAULT_AGENT_SESSION_ID.into(),
+                    run_id: runtime_run_id.clone(),
+                    provider_id: "fake_provider".into(),
+                    model_id: "fake-model".into(),
+                    prompt: format!("Reconcile {node_id}."),
+                    system_prompt: "workflow reconciliation fixture".into(),
+                    now: NOW.into(),
+                },
+            )
+            .expect("insert owned-agent run");
+            if runtime_status == AgentRunStatus::Completed {
+                project_store::append_agent_message(
+                    &repo_root,
+                    &project_store::NewAgentMessageRecord {
+                        project_id: "project-1".into(),
+                        run_id: runtime_run_id.clone(),
+                        role: project_store::AgentMessageRole::Assistant,
+                        content: "Completed fixture output.".into(),
+                        provider_metadata_json: None,
+                        created_at: NOW.into(),
+                        attachments: Vec::new(),
+                    },
+                )
+                .expect("append completed runtime output");
+            }
+            project_store::update_agent_run_status(
+                &repo_root,
+                "project-1",
+                &runtime_run_id,
+                runtime_status,
+                diagnostic,
+                NOW,
+            )
+            .expect("set owned-agent runtime status");
+            assert!(project_store::compare_and_set_workflow_run_node(
+                &repo_root,
+                "project-1",
+                &node_run.id,
+                &[node_status],
+                node_status,
+                Some(&runtime_run_id),
+                Some(project_store::DEFAULT_AGENT_SESSION_ID),
+                None,
+            )
+            .expect("attach runtime identity"));
+        }
+
+        let before = project_store::get_workflow_run(&repo_root, "project-1", &workflow_run.id)
+            .expect("load reconciliation run")
+            .expect("reconciliation run exists");
+        assert!(reconcile_running_agent_nodes(
+            &DesktopState::default(),
+            &repo_root,
+            "project-1",
+            &before,
+        )
+        .expect("reconcile owned-agent statuses"));
+
+        let after = project_store::get_workflow_run(&repo_root, "project-1", &workflow_run.id)
+            .expect("reload reconciliation run")
+            .expect("reconciliation run exists");
+        let status = |node_id: &str| {
+            after
+                .nodes
+                .iter()
+                .find(|node| node.node_id == node_id)
+                .expect("reconciled node")
+                .status
+        };
+        assert_eq!(status("resume"), WorkflowNodeRunStatusDto::Running);
+        assert_eq!(status("pause"), WorkflowNodeRunStatusDto::WaitingOnGate);
+        assert_eq!(status("complete"), WorkflowNodeRunStatusDto::Succeeded);
+        assert_eq!(status("fail"), WorkflowNodeRunStatusDto::Failed);
+        assert_eq!(status("cancel"), WorkflowNodeRunStatusDto::Cancelled);
+        assert!(after.artifacts.iter().any(|artifact| {
+            artifact.artifact_type == "text_output"
+                && artifact
+                    .payload
+                    .to_string()
+                    .contains("Completed fixture output.")
+        }));
     }
 
     #[test]
@@ -7696,6 +8553,158 @@ mod tests {
         assert!(status.success());
         assert!(!registration.control.has_child());
         drop(registration);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn command_node_fixture_covers_validation_timeout_exit_and_parser_boundaries() {
+        let temp = repo_with_database();
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(Vec::new()),
+        )
+        .expect("create command fixture workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create command fixture run");
+        project_store::update_workflow_run_status(
+            temp.path(),
+            "project-1",
+            &run.id,
+            WorkflowRunStatusDto::Running,
+            None,
+            None,
+        )
+        .expect("start command fixture run");
+        let run = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load command fixture run")
+            .expect("command fixture run exists");
+        let default_contract = WorkflowOutputContractDto::default();
+
+        let cases = [
+            (
+                "empty-allowlist",
+                "/bin/sh",
+                vec!["-c".into(), "exit 0".into()],
+                Vec::<String>::new(),
+                None,
+                "workflow_command_allowlist_empty",
+            ),
+            (
+                "not-allowlisted",
+                "/bin/sh",
+                vec!["-c".into(), "exit 0".into()],
+                vec!["git".into()],
+                None,
+                "workflow_command_not_allowed",
+            ),
+            (
+                "app-policy",
+                "not-approved",
+                Vec::new(),
+                vec!["not-approved".into()],
+                None,
+                "workflow_command_not_allowed_by_app_policy",
+            ),
+            (
+                "bad-working-directory",
+                "/bin/sh",
+                vec!["-c".into(), "exit 0".into()],
+                vec!["/bin/sh".into()],
+                Some("../outside"),
+                "workflow_command_working_directory_outside_project",
+            ),
+        ];
+        for (suffix, command, args, allowlist, working_directory, expected_failure) in cases {
+            let (node, registration) = leased_command_node_fixture(temp.path(), &run, suffix);
+            run_command_node(
+                temp.path(),
+                "project-1",
+                &run,
+                &node,
+                command,
+                &args,
+                &allowlist,
+                working_directory,
+                1,
+                &[0],
+                &default_contract,
+                WorkflowOutputExtractionDto::GenericText,
+                None,
+                registration,
+            )
+            .expect("validation failure is persisted on the node");
+            let node = command_fixture_node_after(temp.path(), &run.id, &node.id);
+            assert_eq!(node.status, WorkflowNodeRunStatusDto::Failed, "{suffix}");
+            assert_eq!(node.failure_class.as_deref(), Some(expected_failure), "{suffix}");
+        }
+
+        let execution_cases = [
+            (
+                "nonzero-exit",
+                "printf 'failure' >&2; exit 7",
+                2,
+                WorkflowOutputExtractionDto::GenericText,
+                WorkflowNodeRunStatusDto::Failed,
+                Some("workflow_command_failed"),
+            ),
+            (
+                "timeout",
+                "sleep 2",
+                0,
+                WorkflowOutputExtractionDto::GenericText,
+                WorkflowNodeRunStatusDto::Failed,
+                Some("workflow_command_timeout"),
+            ),
+            (
+                "malformed-json",
+                "printf 'not-json'",
+                2,
+                WorkflowOutputExtractionDto::JsonObject,
+                WorkflowNodeRunStatusDto::Failed,
+                Some("workflow_command_failed"),
+            ),
+            (
+                "wrong-json-shape",
+                "printf '[1,2,3]'",
+                2,
+                WorkflowOutputExtractionDto::JsonObject,
+                WorkflowNodeRunStatusDto::Failed,
+                Some("workflow_command_failed"),
+            ),
+            (
+                "json-success",
+                "printf '{\"value\":\"ok\"}'",
+                2,
+                WorkflowOutputExtractionDto::JsonObject,
+                WorkflowNodeRunStatusDto::Succeeded,
+                None,
+            ),
+        ];
+        for (suffix, shell_script, timeout, extraction, expected_status, expected_failure) in
+            execution_cases
+        {
+            let (node, registration) = leased_command_node_fixture(temp.path(), &run, suffix);
+            run_command_node(
+                temp.path(),
+                "project-1",
+                &run,
+                &node,
+                "/bin/sh",
+                &["-c".into(), shell_script.into()],
+                &["/bin/sh".into()],
+                None,
+                timeout,
+                &[0],
+                &default_contract,
+                extraction,
+                Some("$.parsed.value"),
+                registration,
+            )
+            .expect("command fixture completes durably");
+            let node = command_fixture_node_after(temp.path(), &run.id, &node.id);
+            assert_eq!(node.status, expected_status, "{suffix}");
+            assert_eq!(node.failure_class.as_deref(), expected_failure, "{suffix}");
+        }
     }
 
     #[cfg(unix)]
@@ -8358,5 +9367,115 @@ mod tests {
         assert!(retry_attempt.exhausted);
         let replay = replay_workflow_events(&reloaded_run);
         assert_eq!(replay.loop_exhaustions, 1);
+    }
+
+    #[test]
+    fn loop_target_fixture_covers_plain_stalled_and_replayed_edges() {
+        let temp = repo_with_database();
+        let plain_edge = edge(
+            "plain-edge",
+            "source-a",
+            "source-b",
+            WorkflowEdgeTypeDto::Success,
+        );
+        let created = project_store::create_workflow_definition(
+            temp.path(),
+            &definition_with_edges(vec![plain_edge.clone()]),
+        )
+        .expect("create plain loop fixture workflow");
+        let run = project_store::create_workflow_run(temp.path(), "project-1", &created.id, None)
+            .expect("create plain loop fixture run");
+        let mut source_node_run = project_store::insert_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &run.id,
+            "source-a",
+            "terminal",
+            0,
+            WorkflowNodeRunStatusDto::Running,
+            "loop-target-fixture:source-a:0",
+        )
+        .expect("insert stalled loop source");
+        source_node_run.failure_class = Some("retry_limit_exceeded".into());
+        project_store::update_workflow_run_node(
+            temp.path(),
+            "project-1",
+            &source_node_run.id,
+            WorkflowNodeRunStatusDto::Failed,
+            None,
+            None,
+            Some("retry_limit_exceeded"),
+        )
+        .expect("persist stalled loop failure class");
+        let loaded = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("load plain loop fixture")
+            .expect("plain loop fixture exists");
+        let source_node_run = loaded
+            .nodes
+            .iter()
+            .find(|node| node.id == source_node_run.id)
+            .expect("load source node")
+            .clone();
+        let plain = loop_target_for_edge(
+            temp.path(),
+            "project-1",
+            &loaded,
+            &source_node_run,
+            &plain_edge,
+        )
+        .expect("resolve non-loop edge");
+        assert_eq!(plain.target_node_id, "source-b");
+        assert_eq!(plain.source_status, WorkflowNodeRunStatusDto::Failed);
+
+        let mut stalled_edge = edge(
+            "stalled-edge",
+            "source-a",
+            "source-b",
+            WorkflowEdgeTypeDto::Loop,
+        );
+        stalled_edge.loop_policy = Some(WorkflowLoopPolicyDto {
+            loop_key: "stalled-retry".into(),
+            max_attempts: 3,
+            attempt_scope: Default::default(),
+            carryover_policy: Default::default(),
+            selected_artifact_refs: Vec::new(),
+            reset_policy: Default::default(),
+            stall_detector: Some(WorkflowStallDetectorDto::RetryLimitExceeded),
+            on_exhausted: "done".into(),
+        });
+        let stalled = loop_target_for_edge(
+            temp.path(),
+            "project-1",
+            &loaded,
+            &source_node_run,
+            &stalled_edge,
+        )
+        .expect("resolve stalled loop edge");
+        assert_eq!(stalled.target_node_id, "done");
+        assert_eq!(stalled.source_status, WorkflowNodeRunStatusDto::Stalled);
+
+        let after_stall = project_store::get_workflow_run(temp.path(), "project-1", &run.id)
+            .expect("reload stalled loop fixture")
+            .expect("stalled loop fixture exists");
+        let stalled_node = after_stall
+            .nodes
+            .iter()
+            .find(|node| node.id == source_node_run.id)
+            .expect("stalled source node");
+        assert_eq!(stalled_node.status, WorkflowNodeRunStatusDto::Stalled);
+        assert!(after_stall.events.iter().any(|event| {
+            event.event_type == "workflow_node_stalled"
+                && event.event["failureClass"] == json!("retry_limit_exceeded")
+        }));
+        let replayed = loop_target_for_edge(
+            temp.path(),
+            "project-1",
+            &after_stall,
+            stalled_node,
+            &stalled_edge,
+        )
+        .expect("replay stalled loop edge");
+        assert_eq!(replayed.target_node_id, "done");
+        assert_eq!(replayed.source_status, WorkflowNodeRunStatusDto::Stalled);
     }
 }

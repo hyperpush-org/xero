@@ -4810,6 +4810,140 @@ mod tests {
             .with_runtime_run_controls(controls)
     }
 
+    #[test]
+    fn default_tool_policy_fixture_covers_every_capability_profile() {
+        for profile in [
+            "engineering",
+            "debugging",
+            "agent_builder",
+            "planning",
+            "computer_use",
+            "repository_recon",
+            "observe_only",
+            "unknown_profile",
+        ] {
+            let policy = default_tool_policy(profile);
+            let object = policy.as_object().expect("default policy object");
+            assert!(object["allowedEffectClasses"].is_array());
+            assert!(object["allowedToolGroups"].is_array());
+            assert!(object["allowedTools"].is_array());
+            assert!(object["deniedTools"].is_array());
+            assert!(object["deniedToolPacks"].is_array());
+            assert!(object["commandAllowed"].is_boolean());
+            assert!(object["destructiveWriteAllowed"].is_boolean());
+        }
+        assert_eq!(default_tool_policy("engineering")["commandAllowed"], json!(true));
+        assert_eq!(default_tool_policy("debugging")["destructiveWriteAllowed"], json!(true));
+        assert!(default_tool_policy("agent_builder")["allowedTools"]
+            .as_array()
+            .expect("agent-builder tools")
+            .contains(&json!(AUTONOMOUS_TOOL_AGENT_DEFINITION)));
+        assert!(default_tool_policy("planning")["allowedTools"]
+            .as_array()
+            .expect("planning tools")
+            .contains(&json!(AUTONOMOUS_TOOL_TODO)));
+        assert_eq!(default_tool_policy("computer_use")["browserControlAllowed"], json!(true));
+        assert!(default_tool_policy("repository_recon")["allowedTools"]
+            .as_array()
+            .expect("recon tools")
+            .contains(&json!(AUTONOMOUS_TOOL_COMMAND_PROBE)));
+        assert_eq!(default_tool_policy("unknown_profile")["commandAllowed"], json!(false));
+    }
+
+    #[test]
+    fn handoff_policy_fixture_reports_every_target_and_field_boundary() {
+        let mut diagnostics = Vec::new();
+        validate_handoff_policy(None, &mut diagnostics);
+        assert_eq!(diagnostics[0].code, "agent_definition_handoff_policy_invalid");
+
+        diagnostics.clear();
+        validate_handoff_policy(Some(&json!({})), &mut diagnostics);
+        assert!(diagnostics
+            .iter()
+            .filter(|diagnostic| diagnostic.code
+                == "agent_definition_handoff_policy_field_invalid")
+            .count()
+            >= 6);
+
+        diagnostics.clear();
+        validate_handoff_policy(
+            Some(&json!({
+                "enabled": true,
+                "preserveDefinitionVersion": true,
+                "carrySummary": true,
+                "includeDurableContext": true,
+                "routingMode": "suggest",
+                "allowedTargets": []
+            })),
+            &mut diagnostics,
+        );
+        assert_eq!(
+            diagnostics[0].code,
+            "agent_definition_handoff_policy_target_required"
+        );
+
+        diagnostics.clear();
+        validate_handoff_policy(
+            Some(&json!({
+                "enabled": true,
+                "preserveDefinitionVersion": true,
+                "carrySummary": true,
+                "includeDurableContext": true,
+                "routingMode": "suggest",
+                "allowedTargets": [
+                    "not-an-object",
+                    {"kind": "built_in", "runtimeAgentId": "unknown"},
+                    {"kind": "built_in", "runtimeAgentId": "plan"},
+                    {"kind": "built_in", "runtimeAgentId": "engineer"},
+                    {"kind": "built_in", "runtimeAgentId": "engineer"},
+                    {"kind": "custom", "definitionId": ""},
+                    {"kind": "custom", "definitionId": "reviewer", "version": 0},
+                    {"kind": "custom", "definitionId": "reviewer", "version": 2},
+                    {"kind": "custom", "definitionId": "reviewer", "version": 2},
+                    {"kind": "other"}
+                ]
+            })),
+            &mut diagnostics,
+        );
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<Vec<_>>();
+        assert!(codes.contains(&"agent_definition_handoff_policy_target_invalid"));
+        assert!(codes.contains(&"agent_definition_handoff_policy_target_forbidden"));
+        assert!(codes.contains(&"agent_definition_handoff_policy_target_duplicate"));
+
+        for (value, expected) in [
+            ("ask", Some(RuntimeAgentIdDto::Ask)),
+            ("computer_use", Some(RuntimeAgentIdDto::ComputerUse)),
+            ("plan", Some(RuntimeAgentIdDto::Plan)),
+            ("engineer", Some(RuntimeAgentIdDto::Engineer)),
+            ("debug", Some(RuntimeAgentIdDto::Debug)),
+            ("crawl", Some(RuntimeAgentIdDto::Crawl)),
+            ("agent_create", Some(RuntimeAgentIdDto::AgentCreate)),
+            ("generalist", Some(RuntimeAgentIdDto::Generalist)),
+            ("missing", None),
+        ] {
+            assert_eq!(parse_handoff_runtime_agent_id(value), expected);
+        }
+        for allowed in [
+            RuntimeAgentIdDto::Ask,
+            RuntimeAgentIdDto::Engineer,
+            RuntimeAgentIdDto::Debug,
+            RuntimeAgentIdDto::Generalist,
+        ] {
+            assert!(custom_agent_builtin_handoff_target_allowed(allowed));
+        }
+        for forbidden in [
+            RuntimeAgentIdDto::ComputerUse,
+            RuntimeAgentIdDto::Plan,
+            RuntimeAgentIdDto::Crawl,
+            RuntimeAgentIdDto::AgentCreate,
+        ] {
+            assert!(!custom_agent_builtin_handoff_target_allowed(forbidden));
+        }
+    }
+
     fn valid_observe_only_definition() -> JsonValue {
         json!({
             "schema": AGENT_DEFINITION_SCHEMA,
@@ -5388,6 +5522,189 @@ mod tests {
                 .expect("load clone target")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn agent_definition_lifecycle_fixture_covers_draft_list_clone_and_archive_commits() {
+        let tempdir = tempfile::tempdir().expect("temp dir");
+        let repo_root = tempdir.path().join("repo");
+        fs::create_dir_all(&repo_root).expect("create repo");
+        create_project_database(&repo_root, "project-agent-lifecycle-matrix");
+        let runtime = agent_create_runtime(&repo_root);
+
+        let drafted = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Draft,
+                definition_id: None,
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(valid_observe_only_definition()),
+            })
+            .expect("draft definition");
+        let AutonomousToolOutput::AgentDefinition(drafted) = drafted.output else {
+            panic!("expected drafted agent definition output");
+        };
+        assert!(!drafted.applied);
+        assert!(!drafted.approval_required);
+        assert_eq!(
+            drafted
+                .definition
+                .as_ref()
+                .map(|definition| definition.definition_id.as_str()),
+            Some("release_notes_helper"),
+        );
+        assert_eq!(
+            drafted
+                .validation_report
+                .as_ref()
+                .map(|report| &report.status),
+            Some(&AutonomousAgentDefinitionValidationStatus::Valid),
+        );
+
+        let empty_list = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::List,
+                definition_id: None,
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: None,
+            })
+            .expect("list empty custom definitions");
+        let AutonomousToolOutput::AgentDefinition(empty_list) = empty_list.output else {
+            panic!("expected listed agent definition output");
+        };
+        assert!(empty_list
+            .definitions
+            .iter()
+            .all(|definition| definition.definition_id != "release_notes_helper"));
+
+        let saved = runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Save,
+                definition_id: None,
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: Some(valid_observe_only_definition()),
+            })
+            .expect("save lifecycle source");
+        let AutonomousToolOutput::AgentDefinition(saved) = saved.output else {
+            panic!("expected saved agent definition output");
+        };
+        assert!(saved.applied);
+
+        let cloned = runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Clone,
+                definition_id: Some("release_notes_clone".into()),
+                source_definition_id: Some("release_notes_helper".into()),
+                expected_current_version: None,
+                source_version: Some(1),
+                include_archived: false,
+                definition: Some(json!({
+                    "id": "release_notes_clone",
+                    "displayName": "Release Notes Clone",
+                    "shortLabel": "Clone",
+                    "description": "A committed clone fixture."
+                })),
+            })
+            .expect("commit definition clone");
+        let AutonomousToolOutput::AgentDefinition(cloned) = cloned.output else {
+            panic!("expected cloned agent definition output");
+        };
+        assert!(cloned.applied);
+        assert_eq!(
+            cloned
+                .definition
+                .as_ref()
+                .map(|definition| definition.definition_id.as_str()),
+            Some("release_notes_clone"),
+        );
+
+        let active_list = runtime
+            .agent_definition(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::List,
+                definition_id: None,
+                source_definition_id: None,
+                expected_current_version: None,
+                source_version: None,
+                include_archived: false,
+                definition: None,
+            })
+            .expect("list active custom definitions");
+        let AutonomousToolOutput::AgentDefinition(active_list) = active_list.output else {
+            panic!("expected active definition list");
+        };
+        let mut active_fixture_ids = active_list
+            .definitions
+            .iter()
+            .filter(|definition| definition.definition_id.starts_with("release_notes_"))
+            .map(|definition| definition.definition_id.as_str())
+            .collect::<Vec<_>>();
+        active_fixture_ids.sort_unstable();
+        assert_eq!(
+            active_fixture_ids,
+            vec!["release_notes_clone", "release_notes_helper"]
+        );
+
+        let archived = runtime
+            .agent_definition_with_operator_approval(AutonomousAgentDefinitionRequest {
+                action: AutonomousAgentDefinitionAction::Archive,
+                definition_id: Some("release_notes_clone".into()),
+                source_definition_id: None,
+                expected_current_version: Some(1),
+                source_version: None,
+                include_archived: false,
+                definition: None,
+            })
+            .expect("archive committed clone");
+        let AutonomousToolOutput::AgentDefinition(archived) = archived.output else {
+            panic!("expected archived agent definition output");
+        };
+        assert!(archived.applied);
+        assert_eq!(
+            archived
+                .definition
+                .as_ref()
+                .map(|definition| definition.lifecycle_state.as_str()),
+            Some("archived"),
+        );
+
+        for (include_archived, expected_ids) in [
+            (false, vec!["release_notes_helper"]),
+            (
+                true,
+                vec!["release_notes_clone", "release_notes_helper"],
+            ),
+        ] {
+            let listed = runtime
+                .agent_definition(AutonomousAgentDefinitionRequest {
+                    action: AutonomousAgentDefinitionAction::List,
+                    definition_id: None,
+                    source_definition_id: None,
+                    expected_current_version: None,
+                    source_version: None,
+                    include_archived,
+                    definition: None,
+                })
+                .expect("list definitions by lifecycle state");
+            let AutonomousToolOutput::AgentDefinition(listed) = listed.output else {
+                panic!("expected agent definition list output");
+            };
+            let mut ids = listed
+                .definitions
+                .iter()
+                .filter(|definition| definition.definition_id.starts_with("release_notes_"))
+                .map(|definition| definition.definition_id.as_str())
+                .collect::<Vec<_>>();
+            ids.sort_unstable();
+            assert_eq!(ids, expected_ids);
+        }
     }
 
     #[test]
@@ -7059,5 +7376,192 @@ mod tests {
             .diagnostics
             .iter()
             .any(|diagnostic| diagnostic.code == "agent_definition_subagent_role_conflict"));
+    }
+
+    #[test]
+    fn tool_policy_validator_fixture_reports_profile_group_pack_mcp_and_role_boundaries() {
+        let mut diagnostics = Vec::new();
+        validate_tool_policy(None, "observe_only", None, &mut diagnostics);
+        validate_tool_policy(Some(&json!(42)), "observe_only", None, &mut diagnostics);
+        validate_tool_policy(
+            Some(&json!("engineering")),
+            "observe_only",
+            None,
+            &mut diagnostics,
+        );
+        validate_tool_policy(
+            Some(&json!("observe_only")),
+            "observe_only",
+            None,
+            &mut diagnostics,
+        );
+        validate_tool_policy(
+            Some(&json!({
+                "allowedEffectClasses": ["write", "unknown_effect"],
+                "allowedToolGroups": ["unknown_group", "mutation"],
+                "allowedToolPacks": ["unknown_pack", "browser"],
+                "deniedToolPacks": ["also_unknown"],
+                "allowedTools": ["write", "harness_runner"],
+                "externalServiceAllowed": true,
+                "browserControlAllowed": true,
+                "skillRuntimeAllowed": true,
+                "subagentAllowed": true,
+                "commandAllowed": true,
+                "destructiveWriteAllowed": true,
+                "allowedSubagentRoles": ["reviewer", "unknown_role"],
+                "deniedSubagentRoles": ["reviewer", "also_unknown"],
+                "allowedMcpServers": ["shared-server"],
+                "deniedMcpServers": ["shared-server"],
+                "allowedDynamicTools": ["bad-tool", "mcp__shared"],
+                "deniedDynamicTools": ["also-bad", "mcp__shared"]
+            })),
+            "observe_only",
+            None,
+            &mut diagnostics,
+        );
+
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "agent_definition_tool_policy_required",
+            "agent_definition_tool_policy_invalid",
+            "agent_definition_tool_policy_exceeds_profile",
+            "agent_definition_effect_class_exceeds_profile",
+            "agent_definition_tool_group_unknown",
+            "agent_definition_tool_group_exceeds_profile",
+            "agent_definition_tool_pack_unknown",
+            "agent_definition_tool_exceeds_profile",
+            "agent_definition_tool_policy_flag_exceeds_profile",
+            "agent_definition_subagent_role_unknown",
+            "agent_definition_subagent_role_conflict",
+            "agent_definition_mcp_server_policy_conflict",
+            "agent_definition_dynamic_tool_policy_conflict",
+            "agent_definition_dynamic_tool_name_invalid",
+        ] {
+            assert!(codes.contains(expected), "missing diagnostic `{expected}`: {diagnostics:#?}");
+        }
+    }
+
+    #[test]
+    fn attached_skill_shape_fixture_rejects_every_noncanonical_field_boundary() {
+        let invalid = AutonomousAgentAttachedSkillDefinition {
+            id: " ".into(),
+            source_id: String::new(),
+            skill_id: String::new(),
+            name: String::new(),
+            description: String::new(),
+            source_kind: "unknown".into(),
+            scope: "workspace".into(),
+            version_hash: String::new(),
+            include_supporting_assets: false,
+            required: false,
+        };
+        let mut diagnostics = Vec::new();
+        validate_attached_skill_shape(&invalid, 3, &mut diagnostics);
+        assert_eq!(
+            diagnostics
+                .iter()
+                .filter(|diagnostic| diagnostic.code
+                    == "agent_definition_attached_skill_text_required")
+                .count(),
+            5
+        );
+        for expected in [
+            "agent_definition_attached_skill_source_kind_invalid",
+            "agent_definition_attached_skill_scope_invalid",
+            "agent_definition_attached_skill_required_flag_invalid",
+        ] {
+            assert!(diagnostics.iter().any(|diagnostic| diagnostic.code == expected));
+        }
+
+        for source_kind in ["bundled", "local", "project", "github", "dynamic", "mcp", "plugin"] {
+            let mut valid = invalid.clone();
+            valid.id = format!("attachment-{source_kind}");
+            valid.source_id = format!("source-{source_kind}");
+            valid.skill_id = format!("skill-{source_kind}");
+            valid.name = source_kind.into();
+            valid.version_hash = "hash".into();
+            valid.source_kind = source_kind.into();
+            valid.scope = if source_kind == "project" { "project" } else { "global" }.into();
+            valid.required = true;
+            let mut valid_diagnostics = Vec::new();
+            validate_attached_skill_shape(&valid, 0, &mut valid_diagnostics);
+            assert!(valid_diagnostics.is_empty(), "{source_kind}: {valid_diagnostics:#?}");
+        }
+    }
+
+    #[test]
+    fn stage_structure_validator_fixture_reports_every_malformed_nested_surface() {
+        let mut diagnostics = Vec::new();
+        validate_workflow_structure(None, &mut diagnostics);
+        assert!(diagnostics.is_empty());
+        validate_workflow_structure(Some(&json!("not-an-object")), &mut diagnostics);
+        validate_workflow_structure(Some(&json!({})), &mut diagnostics);
+        validate_workflow_structure(Some(&json!({"phases": []})), &mut diagnostics);
+        validate_workflow_structure(
+            Some(&json!({
+                "startPhaseId": "missing-start",
+                "phases": [
+                    "not-an-object",
+                    {
+                        "id": "duplicate",
+                        "title": " ",
+                        "allowedTools": "read",
+                        "requiredChecks": [
+                            "not-an-object",
+                            {"kind":"todo_completed"},
+                            {"kind":"tool_succeeded"},
+                            {"kind":"tool_succeeded", "toolNames":"read", "minCount":0},
+                            {"kind":"tool_succeeded", "toolNames":[]},
+                            {"kind":"tool_succeeded", "toolNames":["", 7, "unknown_tool"]},
+                            {"kind":"always"}
+                        ],
+                        "retryLimit": "once",
+                        "branches": [
+                            "not-an-object",
+                            {},
+                            {"targetPhaseId":"unknown-target"},
+                            {"targetPhaseId":"duplicate", "condition":{"kind":"always"}}
+                        ]
+                    },
+                    {
+                        "id": "duplicate",
+                        "title": "Second",
+                        "allowedTools": ["", 7, "unknown_tool", "read"],
+                        "requiredChecks": {"kind":"todo_completed"}
+                    }
+                ]
+            })),
+            &mut diagnostics,
+        );
+
+        let codes = diagnostics
+            .iter()
+            .map(|diagnostic| diagnostic.code.as_str())
+            .collect::<BTreeSet<_>>();
+        for expected in [
+            "agent_definition_workflow_structure_invalid",
+            "agent_definition_workflow_phases_required",
+            "agent_definition_workflow_phase_invalid",
+            "agent_definition_workflow_text_required",
+            "agent_definition_workflow_allowed_tools_invalid",
+            "agent_definition_workflow_check_invalid",
+            "agent_definition_workflow_tool_names_invalid",
+            "agent_definition_workflow_min_count_invalid",
+            "agent_definition_workflow_check_kind_invalid",
+            "agent_definition_workflow_retry_limit_invalid",
+            "agent_definition_workflow_phase_duplicate",
+            "agent_definition_workflow_start_phase_unknown",
+            "agent_definition_workflow_branch_invalid",
+            "agent_definition_workflow_branch_target_unknown",
+            "agent_definition_workflow_branch_condition_invalid",
+            "agent_definition_workflow_tool_invalid",
+            "agent_definition_workflow_tool_unknown",
+            "agent_definition_workflow_required_checks_invalid",
+        ] {
+            assert!(codes.contains(expected), "missing diagnostic `{expected}`: {diagnostics:#?}");
+        }
     }
 }

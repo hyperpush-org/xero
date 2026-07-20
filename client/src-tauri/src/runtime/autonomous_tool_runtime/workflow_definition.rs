@@ -714,6 +714,13 @@ mod tests {
         }
     }
 
+    fn workflow_output(result: AutonomousToolResult) -> AutonomousWorkflowDefinitionOutput {
+        let AutonomousToolOutput::WorkflowDefinition(output) = result.output else {
+            panic!("unexpected autonomous tool output")
+        };
+        output
+    }
+
     #[test]
     fn workflow_definition_tool_is_only_registered_for_agent_create() {
         for agent_id in [
@@ -823,6 +830,284 @@ mod tests {
         assert_eq!(
             output.validation_report.expect("validation report").status,
             WorkflowValidationStatusDto::Invalid
+        );
+    }
+
+    #[test]
+    fn workflow_definition_request_fixtures_cover_draft_list_get_and_validation_errors() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        let runtime = runtime(&repo_root);
+        let mut definition_without_project = json!(valid_definition());
+        definition_without_project
+            .as_object_mut()
+            .expect("definition object")
+            .remove("projectId");
+
+        let draft = workflow_output(
+            runtime
+                .workflow_definition(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Draft,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: Some(definition_without_project),
+                })
+                .expect("draft with contextual project"),
+        );
+        assert!(!draft.applied);
+        assert!(!draft.approval_required);
+        let draft_summary = draft.definition.expect("draft summary");
+        assert_eq!(draft_summary.project_id, "project-1");
+        assert_eq!(draft_summary.node_count, 3);
+        assert_eq!(draft_summary.edge_count, 2);
+        assert!(draft_summary.snapshot.is_some());
+
+        let listed = workflow_output(
+            runtime
+                .workflow_definition(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::List,
+                    project_id: Some("  project-1  ".into()),
+                    workflow_id: None,
+                    definition: None,
+                })
+                .expect("empty list"),
+        );
+        assert!(listed.definitions.is_empty());
+        assert!(listed.message.contains("0 Workflow definition(s)"));
+
+        let error_fixtures = [
+            (
+                AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Draft,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: None,
+                },
+                "workflow_definition_required",
+            ),
+            (
+                AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Draft,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: Some(json!({ "not": "a definition" })),
+                },
+                "workflow_definition_decode_failed",
+            ),
+            (
+                AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Draft,
+                    project_id: Some("other-project".into()),
+                    workflow_id: None,
+                    definition: Some(json!(valid_definition())),
+                },
+                "workflow_definition_project_mismatch",
+            ),
+            (
+                AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Get,
+                    project_id: None,
+                    workflow_id: Some(" ".into()),
+                    definition: None,
+                },
+                "workflow_definition_request_invalid",
+            ),
+            (
+                AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Get,
+                    project_id: None,
+                    workflow_id: Some("missing".into()),
+                    definition: None,
+                },
+                "workflow_definition_not_found",
+            ),
+        ];
+        for (request, expected_code) in error_fixtures {
+            assert_eq!(
+                runtime
+                    .workflow_definition(request)
+                    .expect_err("invalid request fixture")
+                    .code,
+                expected_code
+            );
+        }
+
+        let context_free = AutonomousToolRuntime::new(&repo_root).expect("context-free runtime");
+        assert_eq!(
+            context_free
+                .workflow_definition(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::List,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: None,
+                })
+                .expect_err("project is required without context")
+                .code,
+            "workflow_definition_project_required"
+        );
+    }
+
+    #[test]
+    fn workflow_definition_save_fixtures_reject_invalid_and_duplicate_definitions() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        let runtime = runtime(&repo_root);
+        let mut invalid = valid_definition();
+        invalid.start_node_id = "missing".into();
+        let invalid_output = workflow_output(
+            runtime
+                .workflow_definition_with_operator_approval(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Save,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: Some(json!(invalid)),
+                })
+                .expect("invalid save response"),
+        );
+        assert!(!invalid_output.applied);
+        assert!(!invalid_output.approval_required);
+        assert_eq!(
+            invalid_output
+                .validation_report
+                .expect("validation report")
+                .status,
+            WorkflowValidationStatusDto::Invalid
+        );
+
+        let request = AutonomousWorkflowDefinitionRequest {
+            action: AutonomousWorkflowDefinitionAction::Save,
+            project_id: Some("project-1".into()),
+            workflow_id: None,
+            definition: Some(json!(valid_definition())),
+        };
+        workflow_output(
+            runtime
+                .workflow_definition_with_operator_approval(request.clone())
+                .expect("initial save"),
+        );
+        assert_eq!(
+            runtime
+                .workflow_definition_with_operator_approval(request)
+                .expect_err("duplicate save")
+                .code,
+            "workflow_definition_already_exists"
+        );
+    }
+
+    #[test]
+    fn workflow_definition_update_fixtures_cover_review_apply_get_and_failure_paths() {
+        let (_tempdir, repo_root) = repo_with_database("project-1");
+        let runtime = runtime(&repo_root);
+        workflow_output(
+            runtime
+                .workflow_definition_with_operator_approval(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Save,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: Some(json!(valid_definition())),
+                })
+                .expect("seed workflow"),
+        );
+
+        let mut update = valid_definition();
+        update.name = "Updated agent handoff".into();
+        let review = workflow_output(
+            runtime
+                .workflow_definition(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Update,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: Some(json!(update.clone())),
+                })
+                .expect("update review"),
+        );
+        assert!(review.approval_required);
+        let approval_review = review.approval_review.expect("approval review");
+        assert_eq!(approval_review["action"], json!("update"));
+        assert_eq!(approval_review["prior"]["name"], json!("Agent handoff"));
+        assert_eq!(approval_review["next"]["name"], json!("Updated agent handoff"));
+
+        let applied = workflow_output(
+            runtime
+                .workflow_definition_with_operator_approval(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Update,
+                    project_id: None,
+                    workflow_id: Some("workflow-agent-handoff".into()),
+                    definition: Some(json!(update.clone())),
+                })
+                .expect("approved update"),
+        );
+        assert!(applied.applied);
+        assert_eq!(applied.definition.expect("saved summary").version, 2);
+
+        let loaded = workflow_output(
+            runtime
+                .workflow_definition(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Get,
+                    project_id: None,
+                    workflow_id: Some(" workflow-agent-handoff ".into()),
+                    definition: None,
+                })
+                .expect("get saved workflow"),
+        );
+        assert_eq!(loaded.definition.expect("loaded summary").name, update.name);
+        let listed = workflow_output(
+            runtime
+                .workflow_definition(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::List,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: None,
+                })
+                .expect("list saved workflow"),
+        );
+        assert_eq!(listed.definitions.len(), 1);
+
+        let mut invalid = update.clone();
+        invalid.version = 2;
+        invalid.start_node_id = "missing".into();
+        let invalid_output = workflow_output(
+            runtime
+                .workflow_definition_with_operator_approval(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Update,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: Some(json!(invalid)),
+                })
+                .expect("invalid update response"),
+        );
+        assert!(!invalid_output.applied);
+        assert_eq!(
+            invalid_output
+                .validation_report
+                .expect("validation report")
+                .status,
+            WorkflowValidationStatusDto::Invalid
+        );
+
+        let mut missing = valid_definition();
+        missing.id = "missing".into();
+        assert_eq!(
+            runtime
+                .workflow_definition(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Update,
+                    project_id: None,
+                    workflow_id: None,
+                    definition: Some(json!(missing)),
+                })
+                .expect_err("missing workflow")
+                .code,
+            "workflow_definition_not_found"
+        );
+        assert_eq!(
+            runtime
+                .workflow_definition(AutonomousWorkflowDefinitionRequest {
+                    action: AutonomousWorkflowDefinitionAction::Update,
+                    project_id: None,
+                    workflow_id: Some("different".into()),
+                    definition: Some(json!(update)),
+                })
+                .expect_err("workflow id mismatch")
+                .code,
+            "workflow_definition_id_mismatch"
         );
     }
 }

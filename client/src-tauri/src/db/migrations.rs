@@ -2998,6 +2998,7 @@ const BASELINE_SCHEMA_SQL: &str = r#"
             'sandbox_lifecycle_update',
             'action_required',
             'approval_required',
+            'route_requested',
             'tool_permission_grant',
             'provider_model_changed',
             'runtime_settings_changed',

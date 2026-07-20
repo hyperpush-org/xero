@@ -436,6 +436,64 @@ fn push_unique(values: &mut Vec<String>, value: String) {
 mod tests {
     use super::*;
 
+    fn code_history_record(status: &str) -> project_store::CodeHistoryOperationRecord {
+        project_store::CodeHistoryOperationRecord {
+            project_id: "project".into(),
+            operation_id: "history-operation-123".into(),
+            mode: "selective_undo".into(),
+            status: status.into(),
+            target_kind: "change_group".into(),
+            target_id: "change-group-123".into(),
+            target_change_group_id: Some("change-group-123".into()),
+            target_file_path: None,
+            target_hunk_ids: Vec::new(),
+            agent_session_id: "session".into(),
+            run_id: "run-history".into(),
+            expected_workspace_epoch: Some(7),
+            affected_paths: vec!["src/feature/provider_adapter.rs".into()],
+            conflicts: Vec::new(),
+            result_change_group_id: Some("result-group-456".into()),
+            result_commit_id: Some("commit-abcdef".into()),
+            failure_code: None,
+            failure_message: None,
+            repair_code: None,
+            repair_message: None,
+            target_summary_label: None,
+            result_summary_label: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            updated_at: "2026-01-01T00:00:01Z".into(),
+            completed_at: Some("2026-01-01T00:00:01Z".into()),
+        }
+    }
+
+    fn legacy_rollback_record() -> project_store::CodeRollbackOperationRecord {
+        project_store::CodeRollbackOperationRecord {
+            project_id: "project".into(),
+            operation_id: "legacy-operation-789".into(),
+            agent_session_id: "session".into(),
+            run_id: "run-legacy".into(),
+            target_change_group_id: "legacy-target-123".into(),
+            target_snapshot_id: "snapshot-before".into(),
+            pre_rollback_snapshot_id: Some("snapshot-current".into()),
+            result_change_group_id: Some("legacy-result-456".into()),
+            status: "repair_needed".into(),
+            failure_code: None,
+            failure_message: None,
+            affected_files: vec![project_store::CompletedCodeChangeFile {
+                path_before: Some("src/old_name.rs".into()),
+                path_after: Some("src/new_name.rs".into()),
+                operation: project_store::CodeFileOperation::Rename,
+                before_hash: Some("before".into()),
+                after_hash: Some("after".into()),
+                explicitly_edited: true,
+            }],
+            target_summary_label: None,
+            result_summary_label: None,
+            created_at: "2026-01-01T00:00:00Z".into(),
+            completed_at: Some("2026-01-01T00:00:01Z".into()),
+        }
+    }
+
     #[test]
     fn rejects_project_fact_about_affected_path_without_history_provenance() {
         let guard = CodeHistoryMemoryGuard::new(vec![CodeHistoryMemoryOperation {
@@ -531,5 +589,82 @@ mod tests {
         assert_eq!(scope, AgentMemoryScope::Session);
         assert_eq!(kind, AgentMemoryKind::SessionSummary);
         assert!(text.starts_with("Historical before code undo:"));
+    }
+
+    #[test]
+    fn code_history_operation_fixture_covers_current_and_legacy_provenance_aliases() {
+        assert!(code_history_status_changed_workspace("completed"));
+        assert!(code_history_status_changed_workspace("repair_needed"));
+        assert!(!code_history_status_changed_workspace("failed"));
+
+        let current = CodeHistoryMemoryOperation::from_code_history(code_history_record("completed"));
+        let legacy = CodeHistoryMemoryOperation::from_legacy_rollback(legacy_rollback_record());
+        let guard = CodeHistoryMemoryGuard::new(vec![current.clone(), legacy.clone()]);
+
+        let lines = guard.operation_lines();
+        assert_eq!(lines.len(), 2);
+        assert_eq!(lines[0].0, "code_history_operation:history-operation-123");
+        assert_eq!(lines[0].1, "run-history");
+        assert!(lines[0].2.contains("operationId=history-operation-123"));
+        assert!(lines[0].2.contains("resultCommitId=commit-abcdef"));
+        assert!(lines[1].2.contains("affectedPaths=src/new_name.rs, src/old_name.rs"));
+        assert!(lines[1].2.contains("resultCommitId=none"));
+
+        assert!(current.matches_source_item_id("code_history_operation:history-operation-123"));
+        assert!(current.matches_source_item_id("code_history_operations:history-operation-123"));
+        assert!(!current.matches_source_item_id("code_rollback_operations:history-operation-123"));
+        assert!(legacy.matches_source_item_id("code_rollback:legacy-operation-789"));
+        assert!(legacy.matches_source_item_id("code_rollback_operations:legacy-operation-789"));
+        assert!(!legacy.matches_source_item_id("code_history_operations:legacy-operation-789"));
+
+        let CodeHistoryMemoryGuardOutcome::Accepted { source_item_ids, .. } = guard.apply(
+            AgentMemoryScope::Project,
+            AgentMemoryKind::Decision,
+            "The result is supported by commit-abcdef and legacy-result-456.".into(),
+            vec!["code_history_operations:history-operation-123".into()],
+        ) else {
+            panic!("explicit current and legacy operation aliases should establish provenance");
+        };
+        assert!(source_item_ids.contains(&"code_history_operation:history-operation-123".into()));
+        assert!(source_item_ids.contains(&"code_rollback:legacy-operation-789".into()));
+    }
+
+    #[test]
+    fn memory_guard_fixture_preserves_unrelated_and_non_durable_candidates() {
+        let empty = CodeHistoryMemoryGuard::new(Vec::new());
+        assert!(empty.is_empty());
+        let CodeHistoryMemoryGuardOutcome::Accepted { text, .. } = empty.apply(
+            AgentMemoryScope::Project,
+            AgentMemoryKind::ProjectFact,
+            "The project uses Rust.".into(),
+            vec!["source".into()],
+        ) else {
+            panic!("an empty guard must be a pass-through");
+        };
+        assert_eq!(text, "The project uses Rust.");
+
+        let guard = CodeHistoryMemoryGuard::new(vec![
+            CodeHistoryMemoryOperation::from_code_history(code_history_record("completed")),
+        ]);
+        let CodeHistoryMemoryGuardOutcome::Accepted { scope, kind, .. } = guard.apply(
+            AgentMemoryScope::Project,
+            AgentMemoryKind::SessionSummary,
+            "provider_adapter.rs once used the old implementation.".into(),
+            Vec::new(),
+        ) else {
+            panic!("non-durable memory kinds should pass through");
+        };
+        assert_eq!(scope, AgentMemoryScope::Project);
+        assert_eq!(kind, AgentMemoryKind::SessionSummary);
+
+        let CodeHistoryMemoryGuardOutcome::Accepted { source_item_ids, .. } = guard.apply(
+            AgentMemoryScope::Project,
+            AgentMemoryKind::ProjectFact,
+            "The product color is blue.".into(),
+            vec!["source".into()],
+        ) else {
+            panic!("unrelated non-code facts should remain durable");
+        };
+        assert_eq!(source_item_ids, vec!["source"]);
     }
 }

@@ -21,12 +21,20 @@ use tauri::{Listener, Manager};
 use tempfile::TempDir;
 use xero_desktop_lib::{
     commands::{
-        self, CreateWorkflowDefinitionRequestDto, GetWorkflowRunRequestDto,
-        ResumeWorkflowCheckpointRequestDto, StartWorkflowRunRequestDto, WorkflowConditionDto,
-        WorkflowDefinitionDto, WorkflowDeliveryStateEntityTypeDto, WorkflowEdgeDto,
-        WorkflowEdgeTypeDto, WorkflowHumanCheckpointTypeDto, WorkflowNodeDto,
-        WorkflowNodeRunStatusDto, WorkflowRunDto, WorkflowRunPolicyDto, WorkflowRunStatusDto,
-        WorkflowStateQueryDto, WorkflowTerminalStatusDto, WORKFLOW_RUN_UPDATED_EVENT,
+        self, CancelWorkflowRunRequestDto, CreateWorkflowDefinitionRequestDto,
+        ExplainWorkflowRunBlockerRequestDto, ExportWorkflowDeliveryStateRequestDto,
+        ExportWorkflowRunBundleRequestDto, GetWorkflowDefinitionRequestDto,
+        GetWorkflowRunRequestDto, ListWorkflowDefinitionsRequestDto, ListWorkflowRunsRequestDto,
+        ReadWorkflowDeliveryStateRequestDto, ResumeWorkflowCheckpointRequestDto,
+        ResumeWorkflowNextIncompletePhaseRequestDto, RetryWorkflowNodeRunRequestDto,
+        SkipWorkflowBranchRequestDto, StartWorkflowRunRequestDto,
+        UpdateWorkflowDefinitionRequestDto, WipeWorkflowDeliveryStateRequestDto,
+        WorkflowConditionDto, WorkflowDefinitionDto, WorkflowDeliveryStateEntityTypeDto,
+        WorkflowEdgeDto, WorkflowEdgeTypeDto, WorkflowHumanCheckpointTypeDto,
+        WorkflowMergeWaitPolicyDto, WorkflowNodeDto, WorkflowNodeRunStatusDto, WorkflowRunDto,
+        WorkflowRunPolicyDto, WorkflowRunStatusDto, WorkflowStateQueryDto,
+        WorkflowStateWriteActionDto, WorkflowStateWriteOperationDto, WorkflowTerminalStatusDto,
+        WriteWorkflowDeliveryStateRequestDto, WORKFLOW_RUN_UPDATED_EVENT,
     },
     db::{self, project_store},
     git::repository::CanonicalRepository,
@@ -35,6 +43,7 @@ use xero_desktop_lib::{
 };
 
 static SHARED_ROOT: OnceLock<TempDir> = OnceLock::new();
+const GSD_AUTO_FIXTURE_TIMEOUT: Duration = Duration::from_secs(300);
 
 const GSD_AUTO_DEFINITION_FIXTURE: &str = include_str!(concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -123,7 +132,7 @@ impl WorkflowFixtureProviderServer {
         let thread_server_error = Arc::clone(&server_error);
         let handle = thread::spawn(move || {
             let result = (|| -> Result<Vec<String>, String> {
-                let deadline = Instant::now() + Duration::from_secs(120);
+                let deadline = Instant::now() + GSD_AUTO_FIXTURE_TIMEOUT;
                 let mut seen_titles = Vec::with_capacity(expected_node_call_count);
                 let mut title_turns = BTreeMap::<String, usize>::new();
                 let mut received_request_count = 0_usize;
@@ -711,6 +720,10 @@ fn create_definition(
     .definition
 }
 
+fn workflow_node_fixture(value: JsonValue) -> WorkflowNodeDto {
+    serde_json::from_value(value).expect("deserialize Workflow node fixture")
+}
+
 fn gsd_auto_definition(project_id: &str) -> WorkflowDefinitionDto {
     let mut definition = serde_json::from_str::<WorkflowDefinitionDto>(GSD_AUTO_DEFINITION_FIXTURE)
         .expect("deserialize GSD Auto definition fixture");
@@ -1096,6 +1109,727 @@ fn driver_advances_queued_run_and_emits_updates() {
 }
 
 #[test]
+fn workflow_command_surface_fixture_covers_definition_run_bundle_and_delivery_state_lifecycle() {
+    let (project_id, _repo_root) = seed_project("command-surface");
+    let app = build_app();
+    let stored = create_definition(
+        &app,
+        definition(
+            &project_id,
+            "workflow-command-surface",
+            "Command surface",
+            "done",
+            vec![terminal_node("done")],
+            Vec::new(),
+        ),
+    );
+
+    let listed = commands::workflows::list_workflow_definitions(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ListWorkflowDefinitionsRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("list workflow definitions");
+    assert!(listed
+        .definitions
+        .iter()
+        .any(|definition| definition.id == stored.id && definition.active_version_number == 1));
+    let loaded = commands::workflows::get_workflow_definition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        GetWorkflowDefinitionRequestDto {
+            project_id: project_id.clone(),
+            workflow_id: stored.id.clone(),
+        },
+    )
+    .expect("get workflow definition")
+    .definition;
+    assert_eq!(loaded, stored);
+
+    let mut next = loaded;
+    next.name = "Updated command surface".into();
+    let updated = commands::workflows::update_workflow_definition(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        UpdateWorkflowDefinitionRequestDto {
+            workflow_id: stored.id.clone(),
+            expected_version: stored.version,
+            definition: next,
+        },
+    )
+    .expect("update workflow definition")
+    .definition;
+    assert_eq!(updated.version, 2);
+    assert_eq!(updated.name, "Updated command surface");
+
+    let started = commands::workflows::start_workflow_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartWorkflowRunRequestDto {
+            project_id: project_id.clone(),
+            workflow_id: updated.id.clone(),
+            idempotency_key: "workflow-command-surface-start".into(),
+            initial_input: Some(json!({"goal": "exercise the command surface"})),
+        },
+    )
+    .expect("start terminal workflow")
+    .run;
+    assert_eq!(started.status, WorkflowRunStatusDto::Completed);
+    assert_eq!(
+        started.terminal_status,
+        Some(WorkflowTerminalStatusDto::Success)
+    );
+
+    let runs = commands::workflows::list_workflow_runs(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ListWorkflowRunsRequestDto {
+            project_id: project_id.clone(),
+            workflow_id: Some(updated.id.clone()),
+        },
+    )
+    .expect("list workflow runs");
+    assert_eq!(runs.runs.len(), 1);
+    assert_eq!(runs.runs[0].id, started.id);
+    let blocker = commands::workflows::explain_workflow_run_blocker(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ExplainWorkflowRunBlockerRequestDto {
+            project_id: project_id.clone(),
+            run_id: started.id.clone(),
+        },
+    )
+    .expect("explain completed workflow");
+    assert_eq!(blocker.status, "completed");
+
+    let payload = serde_json::Map::from_iter([
+        ("id".into(), json!("delivery-project-command-surface")),
+        ("title".into(), json!("Command surface delivery project")),
+        ("status".into(), json!("active")),
+    ]);
+    let written = commands::workflows::write_workflow_delivery_state(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        WriteWorkflowDeliveryStateRequestDto {
+            project_id: project_id.clone(),
+            operation: WorkflowStateWriteOperationDto {
+                entity_type: WorkflowDeliveryStateEntityTypeDto::DeliveryProject,
+                action: WorkflowStateWriteActionDto::Upsert,
+                idempotency_key: Some("command-surface-delivery-project".into()),
+                target_id: Some("delivery-project-command-surface".into()),
+                payload,
+                output_artifact_type: "state_write_result".into(),
+            },
+        },
+    )
+    .expect("write delivery state");
+    assert_eq!(
+        written.state["record"]["id"],
+        "delivery-project-command-surface"
+    );
+    let queried = commands::workflows::read_workflow_delivery_state(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ReadWorkflowDeliveryStateRequestDto {
+            project_id: project_id.clone(),
+            query: WorkflowStateQueryDto {
+                entity_type: WorkflowDeliveryStateEntityTypeDto::DeliveryProject,
+                filters: Vec::new(),
+                order_by: None,
+                limit: None,
+                include_archived: true,
+            },
+        },
+    )
+    .expect("read delivery state");
+    assert_eq!(queried.state["records"].as_array().map(Vec::len), Some(1));
+    let exported_state = commands::workflows::export_workflow_delivery_state(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ExportWorkflowDeliveryStateRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("export delivery state");
+    assert_eq!(
+        exported_state.state["delivery_project"]
+            .as_array()
+            .map(Vec::len),
+        Some(1),
+    );
+
+    let bundle = commands::workflows::export_workflow_run_bundle(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ExportWorkflowRunBundleRequestDto {
+            project_id: project_id.clone(),
+            run_id: started.id.clone(),
+        },
+    )
+    .expect("export workflow run bundle");
+    assert_eq!(bundle.bundle["schema"], "xero.workflow_run_bundle.v1");
+    assert_eq!(bundle.bundle["runId"], started.id);
+    assert_eq!(bundle.bundle["blocker"]["status"], "completed");
+
+    let cancellation = commands::workflows::cancel_workflow_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        CancelWorkflowRunRequestDto {
+            project_id: project_id.clone(),
+            run_id: started.id.clone(),
+            reason: Some("completed fixture cleanup".into()),
+        },
+    );
+    if let Ok(response) = cancellation {
+        assert!(matches!(
+            response.run.status,
+            WorkflowRunStatusDto::Completed | WorkflowRunStatusDto::Cancelled
+        ));
+    }
+
+    let wiped = commands::workflows::wipe_workflow_delivery_state(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        WipeWorkflowDeliveryStateRequestDto {
+            project_id: project_id.clone(),
+        },
+    )
+    .expect("wipe delivery state");
+    assert_eq!(wiped.state, json!({"wiped": true}));
+    let empty = commands::workflows::read_workflow_delivery_state(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        ReadWorkflowDeliveryStateRequestDto {
+            project_id,
+            query: WorkflowStateQueryDto {
+                entity_type: WorkflowDeliveryStateEntityTypeDto::DeliveryProject,
+                filters: Vec::new(),
+                order_by: None,
+                limit: None,
+                include_archived: true,
+            },
+        },
+    )
+    .expect("read wiped delivery state");
+    assert!(empty.state["records"].as_array().is_some_and(Vec::is_empty));
+}
+
+#[test]
+fn workflow_recovery_command_fixture_covers_retry_and_safe_branch_skip() {
+    let (project_id, repo_root) = seed_project("recovery-command-surface");
+    let app = build_app();
+
+    let retry_definition = create_definition(
+        &app,
+        definition(
+            &project_id,
+            "workflow-retry-command",
+            "Retry command",
+            "done",
+            vec![terminal_node("done")],
+            Vec::new(),
+        ),
+    );
+    let retry_run =
+        project_store::create_workflow_run(&repo_root, &project_id, &retry_definition.id, None)
+            .expect("create retry fixture run");
+    let failed_node = project_store::insert_workflow_run_node(
+        &repo_root,
+        &project_id,
+        &retry_run.id,
+        "done",
+        "terminal",
+        0,
+        WorkflowNodeRunStatusDto::Failed,
+        "retry-terminal-attempt-0",
+    )
+    .expect("insert failed retry source");
+    project_store::update_workflow_run_status(
+        &repo_root,
+        &project_id,
+        &retry_run.id,
+        WorkflowRunStatusDto::Failed,
+        None,
+        None,
+    )
+    .expect("mark retry fixture failed");
+    let retried = commands::workflows::retry_workflow_node_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        RetryWorkflowNodeRunRequestDto {
+            project_id: project_id.clone(),
+            run_id: retry_run.id.clone(),
+            node_run_id: failed_node.id.clone(),
+        },
+    )
+    .expect("retry failed workflow node")
+    .run;
+    assert_eq!(retried.status, WorkflowRunStatusDto::Running);
+    assert!(retried.nodes.iter().any(|node| {
+        node.node_id == "done"
+            && node.attempt_number == 1
+            && matches!(
+                node.status,
+                WorkflowNodeRunStatusDto::Eligible | WorkflowNodeRunStatusDto::Pending
+            )
+    }));
+    assert!(retried
+        .events
+        .iter()
+        .any(|event| event.event_type == "workflow_node_retry_requested"));
+
+    let skip_definition = create_definition(
+        &app,
+        definition(
+            &project_id,
+            "workflow-skip-command",
+            "Skip command",
+            "router",
+            vec![
+                WorkflowNodeDto::Router {
+                    id: "router".into(),
+                    title: "Router".into(),
+                    description: String::new(),
+                    position: Default::default(),
+                },
+                WorkflowNodeDto::Merge {
+                    id: "merge".into(),
+                    title: "Merge".into(),
+                    description: String::new(),
+                    position: Default::default(),
+                    wait_policy: WorkflowMergeWaitPolicyDto::All,
+                    quorum: None,
+                    fail_fast: false,
+                },
+                terminal_node("skip-done"),
+            ],
+            vec![
+                edge("router-to-merge", "router", "merge"),
+                edge("merge-to-done", "merge", "skip-done"),
+            ],
+        ),
+    );
+    let skip_run =
+        project_store::create_workflow_run(&repo_root, &project_id, &skip_definition.id, None)
+            .expect("create branch skip fixture run");
+    project_store::update_workflow_run_status(
+        &repo_root,
+        &project_id,
+        &skip_run.id,
+        WorkflowRunStatusDto::Running,
+        None,
+        None,
+    )
+    .expect("start branch skip fixture");
+    let source = project_store::insert_workflow_run_node(
+        &repo_root,
+        &project_id,
+        &skip_run.id,
+        "router",
+        "router",
+        0,
+        WorkflowNodeRunStatusDto::Running,
+        "skip-router-attempt-0",
+    )
+    .expect("insert branch skip source");
+    let skipped = commands::workflows::skip_workflow_branch(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        SkipWorkflowBranchRequestDto {
+            project_id: project_id.clone(),
+            run_id: skip_run.id.clone(),
+            node_run_id: source.id.clone(),
+            reason: Some("fixture selected the alternate branch".into()),
+        },
+    )
+    .expect("skip branch into direct merge")
+    .run;
+    assert!(skipped
+        .nodes
+        .iter()
+        .any(|node| { node.id == source.id && node.status == WorkflowNodeRunStatusDto::Skipped }));
+    assert!(skipped.nodes.iter().any(|node| {
+        node.node_id == "merge"
+            && matches!(
+                node.status,
+                WorkflowNodeRunStatusDto::Eligible | WorkflowNodeRunStatusDto::Pending
+            )
+    }));
+    assert!(skipped.events.iter().any(|event| {
+        event.event_type == "workflow_branch_skipped"
+            && event.node_run_id.as_deref() == Some(source.id.as_str())
+    }));
+
+    let replayed = commands::workflows::skip_workflow_branch(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        SkipWorkflowBranchRequestDto {
+            project_id,
+            run_id: skip_run.id,
+            node_run_id: source.id,
+            reason: Some("ignored replay reason".into()),
+        },
+    )
+    .expect("replay committed branch skip")
+    .run;
+    assert_eq!(
+        replayed
+            .events
+            .iter()
+            .filter(|event| event.event_type == "workflow_branch_skipped")
+            .count(),
+        1,
+    );
+}
+
+#[test]
+fn workflow_state_and_command_fixture_executes_every_deterministic_node_boundary() {
+    let (project_id, repo_root) = seed_project("state-command-pipeline");
+    let app = build_app();
+    let delivery_id = "delivery-project-state-command";
+    let nodes = vec![
+        workflow_node_fixture(json!({
+            "type": "state_write",
+            "id": "write",
+            "title": "Write state",
+            "operation": {
+                "entityType": "delivery_project",
+                "action": "upsert",
+                "idempotencyKey": "state-command-write",
+                "targetId": delivery_id,
+                "payload": {"id": delivery_id, "title": "Fixture", "status": "active"},
+                "outputArtifactType": "state_write_result"
+            }
+        })),
+        workflow_node_fixture(json!({
+            "type": "state_query",
+            "id": "query",
+            "title": "Query state",
+            "query": {
+                "entityType": "delivery_project",
+                "filters": [],
+                "limit": 10,
+                "includeArchived": true
+            },
+            "outputArtifactType": "state_query_result"
+        })),
+        workflow_node_fixture(json!({
+            "type": "state_read",
+            "id": "read",
+            "title": "Read state",
+            "query": {
+                "entityType": "delivery_project",
+                "filters": [],
+                "includeArchived": true
+            },
+            "outputArtifactType": "state_read_result"
+        })),
+        workflow_node_fixture(json!({
+            "type": "state_patch",
+            "id": "patch",
+            "title": "Patch state",
+            "operation": {
+                "entityType": "delivery_project",
+                "action": "patch",
+                "idempotencyKey": "state-command-patch",
+                "targetId": delivery_id,
+                "payload": {"status": "completed"},
+                "outputArtifactType": "state_patch_result"
+            }
+        })),
+        workflow_node_fixture(json!({
+            "type": "state_checkpoint",
+            "id": "state_gate",
+            "title": "Check state artifacts",
+            "requiredChecks": [{
+                "kind": "artifact_exists",
+                "artifactRef": "patch.state_patch_result"
+            }],
+            "onBlocked": "fail"
+        })),
+        workflow_node_fixture(json!({
+            "type": "command",
+            "id": "status",
+            "title": "Repository status",
+            "command": "git",
+            "args": ["status", "--short", "--untracked-files=no"],
+            "allowedCommands": ["git"],
+            "timeoutSeconds": 10,
+            "successExitCodes": [0],
+            "outputContract": {
+                "artifactType": "command_result",
+                "schemaVersion": 1,
+                "extraction": "generic_text",
+                "required": true,
+                "renderTextPath": "$.stdout"
+            },
+            "parser": {"extraction": "generic_text", "renderTextPath": "$.stdout"}
+        })),
+        terminal_node("done"),
+    ];
+    let stored = create_definition(
+        &app,
+        definition(
+            &project_id,
+            "workflow-state-command-pipeline",
+            "State and command pipeline",
+            "write",
+            nodes,
+            vec![
+                edge("write-query", "write", "query"),
+                edge("query-read", "query", "read"),
+                edge("read-patch", "read", "patch"),
+                edge("patch-gate", "patch", "state_gate"),
+                edge("gate-command", "state_gate", "status"),
+                edge("command-done", "status", "done"),
+            ],
+        ),
+    );
+    let started = commands::workflows::start_workflow_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartWorkflowRunRequestDto {
+            project_id: project_id.clone(),
+            workflow_id: stored.id,
+            idempotency_key: "start-state-command-pipeline".into(),
+            initial_input: Some(json!({"fixture": true})),
+        },
+    )
+    .expect("start deterministic node pipeline")
+    .run;
+    let completed = wait_for_workflow_status(
+        &repo_root,
+        &project_id,
+        &started.id,
+        WorkflowRunStatusDto::Completed,
+        Duration::from_secs(20),
+        None,
+    );
+    assert!(completed
+        .nodes
+        .iter()
+        .all(|node| node.status == WorkflowNodeRunStatusDto::Succeeded));
+    for artifact_type in [
+        "state_write_result",
+        "state_query_result",
+        "state_read_result",
+        "state_patch_result",
+        "command_result",
+    ] {
+        assert!(completed
+            .artifacts
+            .iter()
+            .any(|artifact| artifact.artifact_type == artifact_type));
+    }
+    let records = delivery_state_records(
+        &repo_root,
+        &project_id,
+        WorkflowDeliveryStateEntityTypeDto::DeliveryProject,
+    );
+    assert_eq!(records.len(), 1);
+    assert_eq!(records[0]["status"], "completed");
+}
+
+#[test]
+fn resume_next_incomplete_phase_fixture_creates_and_replays_a_scoped_run() {
+    let (project_id, _repo_root) = seed_project("resume-next-phase");
+    let app = build_app();
+    let collection_loop = workflow_node_fixture(json!({
+        "type": "collection_loop",
+        "id": "delivery-phases",
+        "title": "Delivery phases",
+        "collection": {
+            "entityType": "delivery_phase",
+            "filters": [],
+            "includeArchived": false
+        },
+        "itemArtifactType": "delivery_phase_item",
+        "itemVariableName": "phase",
+        "sortKey": "$.sortOrder",
+        "afterItemRequery": true,
+        "maxItemCount": 10,
+        "controls": {"fromInputPath": "$.phase.from"}
+    }));
+    let stored = create_definition(
+        &app,
+        definition(
+            &project_id,
+            "workflow-resume-next-phase",
+            "Resume next phase",
+            "done",
+            vec![terminal_node("done"), collection_loop],
+            Vec::new(),
+        ),
+    );
+    commands::workflows::write_workflow_delivery_state(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        WriteWorkflowDeliveryStateRequestDto {
+            project_id: project_id.clone(),
+            operation: WorkflowStateWriteOperationDto {
+                entity_type: WorkflowDeliveryStateEntityTypeDto::Milestone,
+                action: WorkflowStateWriteActionDto::Upsert,
+                idempotency_key: Some("seed-resume-milestone".into()),
+                target_id: Some("milestone-resume".into()),
+                payload: serde_json::Map::from_iter([
+                    ("id".into(), json!("milestone-resume")),
+                    ("title".into(), json!("Resume fixture")),
+                    ("status".into(), json!("active")),
+                ]),
+                output_artifact_type: "state_write_result".into(),
+            },
+        },
+    )
+    .expect("seed the delivery milestone");
+    commands::workflows::write_workflow_delivery_state(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        WriteWorkflowDeliveryStateRequestDto {
+            project_id: project_id.clone(),
+            operation: WorkflowStateWriteOperationDto {
+                entity_type: WorkflowDeliveryStateEntityTypeDto::DeliveryPhase,
+                action: WorkflowStateWriteActionDto::Upsert,
+                idempotency_key: Some("seed-resume-phase".into()),
+                target_id: Some("phase-2".into()),
+                payload: serde_json::Map::from_iter([
+                    ("id".into(), json!("phase-2")),
+                    ("milestoneId".into(), json!("milestone-resume")),
+                    ("phaseKey".into(), json!("2")),
+                    ("sortOrder".into(), json!(2)),
+                    ("status".into(), json!("incomplete")),
+                ]),
+                output_artifact_type: "state_write_result".into(),
+            },
+        },
+    )
+    .expect("seed an incomplete delivery phase");
+    let source = commands::workflows::start_workflow_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartWorkflowRunRequestDto {
+            project_id: project_id.clone(),
+            workflow_id: stored.id,
+            idempotency_key: "start-resume-source".into(),
+            initial_input: Some(json!({"goal": "resume", "phase": {"keep": true}})),
+        },
+    )
+    .expect("start terminal source run")
+    .run;
+    assert_eq!(source.status, WorkflowRunStatusDto::Completed);
+
+    let request = ResumeWorkflowNextIncompletePhaseRequestDto {
+        project_id: project_id.clone(),
+        run_id: source.id.clone(),
+        idempotency_key: "resume-phase-2".into(),
+    };
+    let resumed = commands::workflows::resume_workflow_next_incomplete_phase(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        request.clone(),
+    )
+    .expect("resume next incomplete phase")
+    .run;
+    assert_ne!(resumed.id, source.id);
+    assert_eq!(resumed.status, WorkflowRunStatusDto::Completed);
+    assert_eq!(
+        resumed.initial_input.as_ref().unwrap()["phase"]["from"],
+        "2"
+    );
+    assert_eq!(
+        resumed.initial_input.as_ref().unwrap()["phase"]["keep"],
+        true
+    );
+
+    let replayed = commands::workflows::resume_workflow_next_incomplete_phase(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        request,
+    )
+    .expect("replay next-phase resume")
+    .run;
+    assert_eq!(replayed.id, resumed.id);
+    assert_eq!(replayed.initial_input, resumed.initial_input);
+}
+
+#[test]
+fn workflow_command_failure_fixture_routes_failed_capture_to_recovery_terminal() {
+    let (project_id, repo_root) = seed_project("command-failure-route");
+    let app = build_app();
+    let command = workflow_node_fixture(json!({
+        "type": "command",
+        "id": "status",
+        "title": "Expected command failure",
+        "command": "git",
+        "args": ["status", "--short"],
+        "allowedCommands": ["git"],
+        "timeoutSeconds": 10,
+        "successExitCodes": [99],
+        "outputContract": {
+            "artifactType": "command_result",
+            "schemaVersion": 1,
+            "extraction": "generic_text",
+            "required": true
+        },
+        "parser": {"extraction": "json_object", "renderTextPath": "$.stdout"}
+    }));
+    let mut failure_edge = edge("status-recovery", "status", "recovered");
+    failure_edge.r#type = WorkflowEdgeTypeDto::Failure;
+    let stored = create_definition(
+        &app,
+        definition(
+            &project_id,
+            "workflow-command-failure-route",
+            "Command failure recovery",
+            "status",
+            vec![command, terminal_node("recovered")],
+            vec![failure_edge],
+        ),
+    );
+    let started = commands::workflows::start_workflow_run(
+        app.handle().clone(),
+        app.state::<DesktopState>(),
+        StartWorkflowRunRequestDto {
+            project_id: project_id.clone(),
+            workflow_id: stored.id,
+            idempotency_key: "start-command-failure-route".into(),
+            initial_input: None,
+        },
+    )
+    .expect("start command failure route")
+    .run;
+    let completed = wait_for_workflow_status(
+        &repo_root,
+        &project_id,
+        &started.id,
+        WorkflowRunStatusDto::Completed,
+        Duration::from_secs(20),
+        None,
+    );
+    let failed = completed
+        .nodes
+        .iter()
+        .find(|node| node.node_id == "status")
+        .expect("failed command node");
+    assert_eq!(failed.status, WorkflowNodeRunStatusDto::Failed);
+    assert_eq!(
+        failed.failure_class.as_deref(),
+        Some("workflow_command_failed")
+    );
+    let artifact = completed
+        .artifacts
+        .iter()
+        .find(|artifact| artifact.producer_node_run_id == failed.id)
+        .expect("failed command capture artifact");
+    assert_eq!(artifact.payload["status"], "failed");
+    assert!(completed.events.iter().any(|event| {
+        event.event_type == "workflow_node_routed"
+            && event.node_run_id.as_deref() == Some(failed.id.as_str())
+    }));
+}
+
+#[test]
 fn gsd_auto_runs_all_phases_with_fixture_llm_responses_and_archives_the_milestone() {
     let (project_id, repo_root) = seed_project("gsd-auto-fixture");
     let llm_fixtures = gsd_auto_llm_response_fixtures();
@@ -1150,7 +1884,7 @@ fn gsd_auto_runs_all_phases_with_fixture_llm_responses_and_archives_the_mileston
         &project_id,
         &started.id,
         WorkflowRunStatusDto::Paused,
-        Duration::from_secs(120),
+        GSD_AUTO_FIXTURE_TIMEOUT,
         Some(&fixture_provider),
     );
     let waiting_checkpoint = paused

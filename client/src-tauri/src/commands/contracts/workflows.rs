@@ -1469,3 +1469,295 @@ pub struct WipeWorkflowDeliveryStateRequestDto {
 pub struct WorkflowDeliveryStateResponseDto {
     pub state: JsonValue,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn workflow_enum_label_fixture_covers_every_wire_value() {
+        assert_eq!(
+            [
+                WorkflowNodeTypeDto::Agent,
+                WorkflowNodeTypeDto::Router,
+                WorkflowNodeTypeDto::Gate,
+                WorkflowNodeTypeDto::HumanCheckpoint,
+                WorkflowNodeTypeDto::Merge,
+                WorkflowNodeTypeDto::Terminal,
+                WorkflowNodeTypeDto::StateRead,
+                WorkflowNodeTypeDto::StateWrite,
+                WorkflowNodeTypeDto::StatePatch,
+                WorkflowNodeTypeDto::StateQuery,
+                WorkflowNodeTypeDto::StateCheckpoint,
+                WorkflowNodeTypeDto::CollectionLoop,
+                WorkflowNodeTypeDto::Subgraph,
+                WorkflowNodeTypeDto::Command,
+            ]
+            .map(WorkflowNodeTypeDto::as_str),
+            [
+                "agent",
+                "router",
+                "gate",
+                "human_checkpoint",
+                "merge",
+                "terminal",
+                "state_read",
+                "state_write",
+                "state_patch",
+                "state_query",
+                "state_checkpoint",
+                "collection_loop",
+                "subgraph",
+                "command",
+            ]
+        );
+        assert_eq!(
+            [
+                WorkflowEdgeTypeDto::Success,
+                WorkflowEdgeTypeDto::Failure,
+                WorkflowEdgeTypeDto::Conditional,
+                WorkflowEdgeTypeDto::Loop,
+                WorkflowEdgeTypeDto::Recovery,
+                WorkflowEdgeTypeDto::ManualOverride,
+            ]
+            .map(WorkflowEdgeTypeDto::as_str),
+            [
+                "success",
+                "failure",
+                "conditional",
+                "loop",
+                "recovery",
+                "manual_override",
+            ]
+        );
+        assert_eq!(
+            [
+                WorkflowNodeRunStatusDto::Pending,
+                WorkflowNodeRunStatusDto::Eligible,
+                WorkflowNodeRunStatusDto::Starting,
+                WorkflowNodeRunStatusDto::Running,
+                WorkflowNodeRunStatusDto::WaitingOnGate,
+                WorkflowNodeRunStatusDto::Succeeded,
+                WorkflowNodeRunStatusDto::Failed,
+                WorkflowNodeRunStatusDto::Stalled,
+                WorkflowNodeRunStatusDto::Skipped,
+                WorkflowNodeRunStatusDto::Cancelled,
+            ]
+            .map(WorkflowNodeRunStatusDto::as_str),
+            [
+                "pending",
+                "eligible",
+                "starting",
+                "running",
+                "waiting_on_gate",
+                "succeeded",
+                "failed",
+                "stalled",
+                "skipped",
+                "cancelled",
+            ]
+        );
+        assert_eq!(
+            [
+                WorkflowRunStatusDto::Queued,
+                WorkflowRunStatusDto::Running,
+                WorkflowRunStatusDto::Paused,
+                WorkflowRunStatusDto::Cancelling,
+                WorkflowRunStatusDto::Completed,
+                WorkflowRunStatusDto::Failed,
+                WorkflowRunStatusDto::Cancelled,
+            ]
+            .map(WorkflowRunStatusDto::as_str),
+            [
+                "queued",
+                "running",
+                "paused",
+                "cancelling",
+                "completed",
+                "failed",
+                "cancelled",
+            ]
+        );
+        assert_eq!(
+            [
+                WorkflowTerminalStatusDto::Success,
+                WorkflowTerminalStatusDto::Failure,
+                WorkflowTerminalStatusDto::Cancelled,
+                WorkflowTerminalStatusDto::NeedsHuman,
+            ]
+            .map(WorkflowTerminalStatusDto::as_str),
+            ["success", "failure", "cancelled", "needs_human"]
+        );
+        assert_eq!(
+            [
+                WorkflowHumanCheckpointTypeDto::HumanVerify,
+                WorkflowHumanCheckpointTypeDto::Decision,
+                WorkflowHumanCheckpointTypeDto::HumanAction,
+            ]
+            .map(WorkflowHumanCheckpointTypeDto::as_str),
+            ["human_verify", "decision", "human_action"]
+        );
+        assert_eq!(
+            [
+                WorkflowStallDetectorDto::FindingCountNotDecreasing,
+                WorkflowStallDetectorDto::SameFailureClassRepeated,
+                WorkflowStallDetectorDto::NoArtifactProgress,
+                WorkflowStallDetectorDto::RuntimeActivityTimeout,
+                WorkflowStallDetectorDto::RetryLimitExceeded,
+            ]
+            .map(WorkflowStallDetectorDto::as_str),
+            [
+                "finding_count_not_decreasing",
+                "same_failure_class_repeated",
+                "no_artifact_progress",
+                "runtime_activity_timeout",
+                "retry_limit_exceeded",
+            ]
+        );
+        assert_eq!(
+            [
+                WorkflowResourceConflictModeDto::AllowConflicts,
+                WorkflowResourceConflictModeDto::SerializeConflicts,
+            ]
+            .map(WorkflowResourceConflictModeDto::as_str),
+            ["allow_conflicts", "serialize_conflicts"]
+        );
+        assert_eq!(
+            [
+                WorkflowDeliveryStateEntityTypeDto::DeliveryProject,
+                WorkflowDeliveryStateEntityTypeDto::Milestone,
+                WorkflowDeliveryStateEntityTypeDto::Requirement,
+                WorkflowDeliveryStateEntityTypeDto::DeliveryPhase,
+                WorkflowDeliveryStateEntityTypeDto::PhaseContext,
+                WorkflowDeliveryStateEntityTypeDto::PhasePlan,
+                WorkflowDeliveryStateEntityTypeDto::PhaseSummary,
+                WorkflowDeliveryStateEntityTypeDto::VerificationEvidence,
+                WorkflowDeliveryStateEntityTypeDto::DeferredItem,
+                WorkflowDeliveryStateEntityTypeDto::MilestoneArchive,
+            ]
+            .map(WorkflowDeliveryStateEntityTypeDto::as_str),
+            [
+                "delivery_project",
+                "milestone",
+                "requirement",
+                "delivery_phase",
+                "phase_context",
+                "phase_plan",
+                "phase_summary",
+                "verification_evidence",
+                "deferred_item",
+                "milestone_archive",
+            ]
+        );
+        assert_eq!(
+            [
+                WorkflowStateWriteActionDto::Create,
+                WorkflowStateWriteActionDto::Upsert,
+                WorkflowStateWriteActionDto::Update,
+                WorkflowStateWriteActionDto::Patch,
+                WorkflowStateWriteActionDto::MarkComplete,
+                WorkflowStateWriteActionDto::Archive,
+            ]
+            .map(WorkflowStateWriteActionDto::as_str),
+            [
+                "create",
+                "upsert",
+                "update",
+                "patch",
+                "mark_complete",
+                "archive",
+            ]
+        );
+    }
+
+    #[test]
+    fn workflow_definition_default_fixture_round_trips_every_node_surface() {
+        let definition: WorkflowDefinitionDto = serde_json::from_value(json!({
+            "id": "workflow-fixture",
+            "projectId": "project-fixture",
+            "name": "Every node",
+            "startNodeId": "agent",
+            "nodes": [
+                {"type":"agent","id":"agent","title":"Agent","agentRef":{"kind":"built_in","runtimeAgentId":"engineer","version":1}},
+                {"type":"router","id":"router","title":"Router"},
+                {"type":"gate","id":"gate","title":"Gate"},
+                {"type":"human_checkpoint","id":"human","title":"Human","checkpointType":"decision","prompt":"Choose"},
+                {"type":"merge","id":"merge","title":"Merge"},
+                {"type":"terminal","id":"terminal","title":"Terminal","terminalStatus":"success"},
+                {"type":"state_read","id":"read","title":"Read","query":{"entityType":"milestone"}},
+                {"type":"state_write","id":"write","title":"Write","operation":{"entityType":"milestone","action":"create"}},
+                {"type":"state_patch","id":"patch","title":"Patch","operation":{"entityType":"milestone","action":"patch"}},
+                {"type":"state_query","id":"query","title":"Query","query":{"entityType":"requirement"}},
+                {"type":"state_checkpoint","id":"checkpoint","title":"Checkpoint"},
+                {"type":"collection_loop","id":"loop","title":"Loop","collection":{"entityType":"requirement"}},
+                {"type":"subgraph","id":"subgraph","title":"Subgraph","subgraphId":"child"},
+                {"type":"command","id":"command","title":"Command","command":"git status"}
+            ],
+            "edges": [{"id":"edge","fromNodeId":"agent","toNodeId":"router","type":"success"}],
+            "artifactContracts": [{"artifactType":"report","displayName":"Report"}]
+        }))
+        .expect("all workflow node defaults should decode");
+
+        assert_eq!(definition.schema, "xero.workflow_definition.v1");
+        assert_eq!(definition.version, 1);
+        assert_eq!(definition.run_policy, WorkflowRunPolicyDto::default());
+        assert_eq!(definition.edges[0].priority, 100);
+        assert_eq!(definition.artifact_contracts[0].schema_version, 1);
+        assert_eq!(definition.nodes.len(), 14);
+
+        for (index, node) in definition.nodes.iter().enumerate() {
+            assert_eq!(node.id(), node.id().trim());
+            assert!(!node.title().is_empty());
+            assert_eq!(node.node_type().as_str(), [
+                "agent", "router", "gate", "human_checkpoint", "merge", "terminal",
+                "state_read", "state_write", "state_patch", "state_query",
+                "state_checkpoint", "collection_loop", "subgraph", "command",
+            ][index]);
+        }
+
+        assert_eq!(definition.nodes[0].produced_artifact_type(), Some("text_output"));
+        assert!(definition.nodes[0].output_contract().is_some());
+        assert_eq!(definition.nodes[6].produced_artifact_type(), Some("state_read_result"));
+        assert_eq!(definition.nodes[7].produced_artifact_type(), Some("state_write_result"));
+        assert_eq!(definition.nodes[8].produced_artifact_type(), Some("state_write_result"));
+        assert_eq!(definition.nodes[9].produced_artifact_type(), Some("state_query_result"));
+        assert_eq!(definition.nodes[11].produced_artifact_type(), Some("collection_item"));
+        assert_eq!(definition.nodes[12].produced_artifact_type(), Some("text_output"));
+        assert_eq!(definition.nodes[13].produced_artifact_type(), Some("text_output"));
+        assert!(definition.nodes[1].output_contract().is_none());
+
+        let encoded = serde_json::to_value(&definition).expect("definition should encode");
+        assert_eq!(
+            serde_json::from_value::<WorkflowDefinitionDto>(encoded)
+                .expect("definition should round trip"),
+            definition
+        );
+    }
+
+    #[test]
+    fn workflow_default_and_strict_schema_fixture_covers_nested_contracts() {
+        assert_eq!(WorkflowPositionDto::default(), WorkflowPositionDto { x: 0.0, y: 0.0 });
+        assert_eq!(WorkflowOutputContractDto::default().artifact_type, "text_output");
+        assert_eq!(WorkflowCommandParserDto::default().extraction, WorkflowOutputExtractionDto::GenericText);
+        assert_eq!(WorkflowRunPolicyDto::default().concurrency_limit, 1);
+        assert_eq!(WorkflowRecoveryDefaultsDto::default().debug_max_attempts, 2);
+        assert_eq!(WorkflowRecoveryDefaultsDto::default().gap_closure_max_attempts, 2);
+        assert_eq!(WorkflowRecoveryDefaultsDto::default().review_fix_max_attempts, 3);
+
+        let override_defaults: WorkflowRunOverrideDto = serde_json::from_value(json!({}))
+            .expect("run override defaults");
+        assert!(override_defaults.auto_compact_enabled);
+        let binding: WorkflowInputBindingDto = serde_json::from_value(json!({
+            "source":"run_input", "name":"prompt"
+        }))
+        .expect("binding defaults");
+        assert!(matches!(binding, WorkflowInputBindingDto::RunInput { required: true, .. }));
+
+        assert!(serde_json::from_value::<WorkflowDefinitionDto>(json!({
+            "id":"w", "projectId":"p", "name":"n", "startNodeId":"x", "nodes":[],
+            "unexpected": true
+        }))
+        .is_err());
+    }
+}
