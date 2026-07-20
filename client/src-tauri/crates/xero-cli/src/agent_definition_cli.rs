@@ -17,6 +17,9 @@ struct AgentDefinitionRow {
     scope: String,
     lifecycle_state: String,
     base_capability_profile: String,
+    default_approval_mode: String,
+    allowed_approval_modes: Vec<String>,
+    stage_count: usize,
     updated_at: String,
 }
 
@@ -284,32 +287,42 @@ fn list_agent_definitions(
     let connection = project_cli::project_connection(globals, project_id)?;
     let sql = if include_archived {
         r#"
-            SELECT definition_id, current_version, display_name, short_label, scope,
-                   lifecycle_state, base_capability_profile, updated_at
-            FROM agent_definitions
+            SELECT definitions.definition_id, definitions.current_version,
+                   definitions.display_name, definitions.short_label, definitions.scope,
+                   definitions.lifecycle_state, definitions.base_capability_profile,
+                   definitions.updated_at, versions.snapshot_json
+            FROM agent_definitions AS definitions
+            JOIN agent_definition_versions AS versions
+              ON versions.definition_id = definitions.definition_id
+             AND versions.version = definitions.current_version
             ORDER BY
-                CASE scope
+                CASE definitions.scope
                     WHEN 'built_in' THEN 0
                     WHEN 'project_custom' THEN 1
                     ELSE 2
                 END,
-                display_name COLLATE NOCASE,
-                definition_id COLLATE NOCASE
+                definitions.display_name COLLATE NOCASE,
+                definitions.definition_id COLLATE NOCASE
             "#
     } else {
         r#"
-            SELECT definition_id, current_version, display_name, short_label, scope,
-                   lifecycle_state, base_capability_profile, updated_at
-            FROM agent_definitions
-            WHERE lifecycle_state = 'active'
+            SELECT definitions.definition_id, definitions.current_version,
+                   definitions.display_name, definitions.short_label, definitions.scope,
+                   definitions.lifecycle_state, definitions.base_capability_profile,
+                   definitions.updated_at, versions.snapshot_json
+            FROM agent_definitions AS definitions
+            JOIN agent_definition_versions AS versions
+              ON versions.definition_id = definitions.definition_id
+             AND versions.version = definitions.current_version
+            WHERE definitions.lifecycle_state = 'active'
             ORDER BY
-                CASE scope
+                CASE definitions.scope
                     WHEN 'built_in' THEN 0
                     WHEN 'project_custom' THEN 1
                     ELSE 2
                 END,
-                display_name COLLATE NOCASE,
-                definition_id COLLATE NOCASE
+                definitions.display_name COLLATE NOCASE,
+                definitions.definition_id COLLATE NOCASE
             "#
     };
     let mut statement = connection
@@ -317,20 +330,70 @@ fn list_agent_definitions(
         .map_err(|error| sqlite_agent_definition_error("prepare", error))?;
     let rows = statement
         .query_map([], |row| {
-            Ok(AgentDefinitionRow {
-                definition_id: row.get(0)?,
-                current_version: row.get(1)?,
-                display_name: row.get(2)?,
-                short_label: row.get(3)?,
-                scope: row.get(4)?,
-                lifecycle_state: row.get(5)?,
-                base_capability_profile: row.get(6)?,
-                updated_at: row.get(7)?,
-            })
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, i64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
+                row.get::<_, String>(5)?,
+                row.get::<_, String>(6)?,
+                row.get::<_, String>(7)?,
+                row.get::<_, String>(8)?,
+            ))
         })
         .map_err(|error| sqlite_agent_definition_error("query", error))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| sqlite_agent_definition_error("decode", error))
+    let rows = rows
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|error| sqlite_agent_definition_error("decode", error))?;
+    rows.into_iter()
+        .map(|row| {
+            let snapshot = serde_json::from_str::<JsonValue>(&row.8).map_err(|error| {
+                CliError::system_fault(
+                    "xero_cli_agent_definition_snapshot_decode_failed",
+                    format!(
+                        "Could not decode Agent definition `{}` v{}: {error}",
+                        row.0, row.1
+                    ),
+                )
+            })?;
+            let mut allowed_approval_modes = snapshot["allowedApprovalModes"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(JsonValue::as_str)
+                .map(str::to_owned)
+                .collect::<Vec<_>>();
+            if allowed_approval_modes.is_empty() {
+                allowed_approval_modes = if matches!(row.6.as_str(), "engineering" | "debugging") {
+                    vec!["suggest".into(), "auto_edit".into(), "yolo".into()]
+                } else {
+                    vec!["suggest".into()]
+                };
+            }
+            let default_approval_mode = snapshot["defaultApprovalMode"]
+                .as_str()
+                .filter(|mode| allowed_approval_modes.iter().any(|allowed| allowed == mode))
+                .unwrap_or_else(|| allowed_approval_modes[0].as_str())
+                .to_owned();
+            let stage_count = snapshot["workflowStructure"]["phases"]
+                .as_array()
+                .map_or(0, Vec::len);
+            Ok(AgentDefinitionRow {
+                definition_id: row.0,
+                current_version: row.1,
+                display_name: row.2,
+                short_label: row.3,
+                scope: row.4,
+                lifecycle_state: row.5,
+                base_capability_profile: row.6,
+                default_approval_mode,
+                allowed_approval_modes,
+                stage_count,
+                updated_at: row.7,
+            })
+        })
+        .collect()
 }
 
 fn list_agent_definition_versions(
@@ -517,30 +580,82 @@ fn load_agent_definition_row(
     connection: &rusqlite::Connection,
     definition_id: &str,
 ) -> Result<Option<AgentDefinitionRow>, CliError> {
-    connection
+    let row = connection
         .query_row(
             r#"
-            SELECT definition_id, current_version, display_name, short_label, scope,
-                   lifecycle_state, base_capability_profile, updated_at
-            FROM agent_definitions
-            WHERE definition_id = ?1
+            SELECT definitions.definition_id, definitions.current_version,
+                   definitions.display_name, definitions.short_label, definitions.scope,
+                   definitions.lifecycle_state, definitions.base_capability_profile,
+                   definitions.updated_at, versions.snapshot_json
+            FROM agent_definitions AS definitions
+            JOIN agent_definition_versions AS versions
+              ON versions.definition_id = definitions.definition_id
+             AND versions.version = definitions.current_version
+            WHERE definitions.definition_id = ?1
             "#,
             params![definition_id],
             |row| {
-                Ok(AgentDefinitionRow {
-                    definition_id: row.get(0)?,
-                    current_version: row.get(1)?,
-                    display_name: row.get(2)?,
-                    short_label: row.get(3)?,
-                    scope: row.get(4)?,
-                    lifecycle_state: row.get(5)?,
-                    base_capability_profile: row.get(6)?,
-                    updated_at: row.get(7)?,
-                })
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
+                ))
             },
         )
         .optional()
-        .map_err(|error| sqlite_agent_definition_error("load", error))
+        .map_err(|error| sqlite_agent_definition_error("load", error))?;
+    row.map(|row| {
+        let snapshot = serde_json::from_str::<JsonValue>(&row.8).map_err(|error| {
+            CliError::system_fault(
+                "xero_cli_agent_definition_snapshot_decode_failed",
+                format!(
+                    "Could not decode Agent definition `{}` v{}: {error}",
+                    row.0, row.1
+                ),
+            )
+        })?;
+        let mut allowed_approval_modes = snapshot["allowedApprovalModes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(JsonValue::as_str)
+            .map(str::to_owned)
+            .collect::<Vec<_>>();
+        if allowed_approval_modes.is_empty() {
+            allowed_approval_modes = if matches!(row.6.as_str(), "engineering" | "debugging") {
+                vec!["suggest".into(), "auto_edit".into(), "yolo".into()]
+            } else {
+                vec!["suggest".into()]
+            };
+        }
+        let default_approval_mode = snapshot["defaultApprovalMode"]
+            .as_str()
+            .filter(|mode| allowed_approval_modes.iter().any(|allowed| allowed == mode))
+            .unwrap_or_else(|| allowed_approval_modes[0].as_str())
+            .to_owned();
+        Ok(AgentDefinitionRow {
+            definition_id: row.0,
+            current_version: row.1,
+            display_name: row.2,
+            short_label: row.3,
+            scope: row.4,
+            lifecycle_state: row.5,
+            base_capability_profile: row.6,
+            default_approval_mode,
+            allowed_approval_modes,
+            stage_count: snapshot["workflowStructure"]["phases"]
+                .as_array()
+                .map_or(0, Vec::len),
+            updated_at: row.7,
+        })
+    })
+    .transpose()
 }
 
 fn build_agent_definition_diff_payload(

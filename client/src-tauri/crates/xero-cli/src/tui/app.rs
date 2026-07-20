@@ -196,6 +196,7 @@ pub struct RunDetail {
 pub struct AgentEntry {
     pub definition_id: String,
     pub display_name: String,
+    pub allowed_approval_modes: Vec<ApprovalMode>,
 }
 
 const DEFAULT_SELECTED_AGENT_DEFINITION_ID: &str = "generalist";
@@ -206,6 +207,14 @@ impl AgentEntry {
             &self.definition_id
         } else {
             &self.display_name
+        }
+    }
+
+    fn approval_modes(&self) -> &[ApprovalMode] {
+        if self.allowed_approval_modes.is_empty() {
+            approval_modes_for_agent(&self.definition_id)
+        } else {
+            &self.allowed_approval_modes
         }
     }
 }
@@ -226,6 +235,7 @@ fn default_agent_catalog() -> Vec<AgentEntry> {
     .map(|(definition_id, display_name)| AgentEntry {
         definition_id: definition_id.into(),
         display_name: display_name.into(),
+        allowed_approval_modes: approval_modes_for_agent(definition_id).to_vec(),
     })
     .collect()
 }
@@ -358,23 +368,21 @@ impl ApprovalMode {
         )
     }
 
-    fn resolve_for_agent(self, agent_id: &str) -> Self {
-        if approval_modes_for_agent(agent_id).contains(&self) {
+    fn resolve_for_modes(self, modes: &[Self]) -> Self {
+        if modes.contains(&self) {
             self
         } else {
-            Self::default_for_agent(agent_id)
+            modes.first().copied().unwrap_or(Self::Suggest)
         }
     }
 
-    fn default_for_agent(_agent_id: &str) -> Self {
-        Self::Suggest
-    }
-
-    fn next_for_agent(self, agent_id: &str) -> Self {
-        let modes = approval_modes_for_agent(agent_id);
-        let current = self.resolve_for_agent(agent_id);
+    fn next_for_modes(self, modes: &[Self]) -> Self {
+        let current = self.resolve_for_modes(modes);
         let index = modes.iter().position(|mode| *mode == current).unwrap_or(0);
-        modes[(index + 1) % modes.len()]
+        modes
+            .get((index + 1) % modes.len().max(1))
+            .copied()
+            .unwrap_or(Self::Suggest)
     }
 }
 
@@ -487,16 +495,16 @@ impl App {
             .as_deref()
             .and_then(ThinkingEffort::from_str)
             .unwrap_or(ThinkingEffort::High);
-        let selected_agent_id = agents
+        let selected_agent_modes = agents
             .get(selected_agent)
-            .map(|agent| agent.definition_id.as_str())
-            .unwrap_or(DEFAULT_SELECTED_AGENT_DEFINITION_ID);
+            .map(AgentEntry::approval_modes)
+            .unwrap_or(APPROVAL_FULL_CONTROL);
         let approval_mode = stored
             .approval_mode
             .as_deref()
             .and_then(ApprovalMode::from_str)
-            .unwrap_or_else(|| ApprovalMode::default_for_agent(selected_agent_id))
-            .resolve_for_agent(selected_agent_id);
+            .unwrap_or(ApprovalMode::Suggest)
+            .resolve_for_modes(selected_agent_modes);
         let selected_provider = stored
             .provider_id
             .as_deref()
@@ -614,32 +622,26 @@ impl App {
     }
 
     pub fn cycle_approval_mode(&mut self) {
-        let agent_id = self
-            .selected_agent_definition_id()
-            .unwrap_or(DEFAULT_SELECTED_AGENT_DEFINITION_ID);
-        self.approval_mode = self.approval_mode.next_for_agent(agent_id);
+        self.approval_mode = self
+            .approval_mode
+            .next_for_modes(self.approval_modes_for_selected_agent());
         self.persist_preferences();
     }
 
     pub fn selected_approval_mode(&self) -> ApprovalMode {
-        let agent_id = self
-            .selected_agent_definition_id()
-            .unwrap_or(DEFAULT_SELECTED_AGENT_DEFINITION_ID);
-        self.approval_mode.resolve_for_agent(agent_id)
+        self.approval_mode
+            .resolve_for_modes(self.approval_modes_for_selected_agent())
     }
 
-    pub fn approval_modes_for_selected_agent(&self) -> &'static [ApprovalMode] {
-        approval_modes_for_agent(
-            self.selected_agent_definition_id()
-                .unwrap_or(DEFAULT_SELECTED_AGENT_DEFINITION_ID),
-        )
+    pub fn approval_modes_for_selected_agent(&self) -> &[ApprovalMode] {
+        self.agents
+            .get(self.selected_agent)
+            .map(AgentEntry::approval_modes)
+            .unwrap_or(APPROVAL_FULL_CONTROL)
     }
 
     pub fn set_approval_mode(&mut self, mode: ApprovalMode) -> bool {
-        let agent_id = self
-            .selected_agent_definition_id()
-            .unwrap_or(DEFAULT_SELECTED_AGENT_DEFINITION_ID);
-        let resolved = mode.resolve_for_agent(agent_id);
+        let resolved = mode.resolve_for_modes(self.approval_modes_for_selected_agent());
         if resolved != mode {
             return false;
         }
@@ -1303,9 +1305,12 @@ fn apply_remote_controls_update(app: &mut App, update: super::remote::RemoteCont
     {
         app.selected_agent = index;
     } else if !update.runtime_agent_id.trim().is_empty() {
+        let allowed_approval_modes =
+            approval_modes_for_agent(&update.runtime_agent_id).to_vec();
         app.agents.push(AgentEntry {
             display_name: update.runtime_agent_id.clone(),
             definition_id: update.runtime_agent_id,
+            allowed_approval_modes,
         });
         app.selected_agent = app.agents.len().saturating_sub(1);
     }
@@ -1313,10 +1318,8 @@ fn apply_remote_controls_update(app: &mut App, update: super::remote::RemoteCont
         app.thinking_effort = thinking_effort;
     }
     if let Some(approval_mode) = ApprovalMode::from_str(&update.approval_mode) {
-        app.approval_mode = approval_mode.resolve_for_agent(
-            app.selected_agent_definition_id()
-                .unwrap_or(DEFAULT_SELECTED_AGENT_DEFINITION_ID),
-        );
+        app.approval_mode =
+            approval_mode.resolve_for_modes(app.approval_modes_for_selected_agent());
     }
     app.persist_preferences();
 }
@@ -3373,6 +3376,14 @@ fn load_agents(
         .map(|definition| AgentEntry {
             definition_id: string_field(definition, "definitionId"),
             display_name: string_field(definition, "displayName"),
+            allowed_approval_modes: definition
+                .get("allowedApprovalModes")
+                .and_then(JsonValue::as_array)
+                .into_iter()
+                .flatten()
+                .filter_map(JsonValue::as_str)
+                .filter_map(ApprovalMode::from_str)
+                .collect(),
         })
         .filter(|entry| {
             !entry.definition_id.is_empty()
@@ -4244,6 +4255,37 @@ mod tests {
                                 ]
                             }
                         ]
+                    })))
+                }
+                _ => None,
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct AgentListAdapter;
+
+    impl crate::TuiCommandAdapter for AgentListAdapter {
+        fn invoke_json(
+            &self,
+            _state_dir: &Path,
+            args: &[String],
+        ) -> Option<Result<JsonValue, CliError>> {
+            match args {
+                [command, subcommand, project_flag, project_id]
+                    if command == "agent-definition"
+                        && subcommand == "list"
+                        && project_flag == "--project-id"
+                        && project_id == "project-1" =>
+                {
+                    Some(Ok(json!({
+                        "kind": "agentDefinitionList",
+                        "definitions": [{
+                            "definitionId": "release_notes_helper",
+                            "displayName": "Release Notes Helper",
+                            "lifecycleState": "active",
+                            "allowedApprovalModes": ["suggest"]
+                        }]
                     })))
                 }
                 _ => None,
@@ -5933,6 +5975,29 @@ mod tests {
             .position(|agent| agent.definition_id == "ask")
             .expect("ask agent");
 
+        assert_eq!(app.selected_approval_mode(), ApprovalMode::Suggest);
+    }
+
+    #[test]
+    fn custom_agent_approval_modes_come_from_the_saved_definition() {
+        let mut globals = test_only_globals();
+        globals.tui_adapter = Some(Arc::new(AgentListAdapter));
+        let agents = load_agents(&globals, Some("project-1")).expect("load Agent catalog");
+        let custom_index = agents
+            .iter()
+            .position(|agent| agent.definition_id == "release_notes_helper")
+            .expect("custom Agent");
+        let mut app = empty_app();
+        app.agents = agents;
+        app.selected_agent = custom_index;
+        app.approval_mode = ApprovalMode::Yolo;
+
+        assert_eq!(
+            app.approval_modes_for_selected_agent(),
+            APPROVAL_SUGGEST_ONLY
+        );
+        assert_eq!(app.selected_approval_mode(), ApprovalMode::Suggest);
+        app.cycle_approval_mode();
         assert_eq!(app.selected_approval_mode(), ApprovalMode::Suggest);
     }
 

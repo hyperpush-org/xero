@@ -4762,8 +4762,10 @@ mod tests {
         assert_eq!(expired.remaining(), Some(Duration::ZERO));
         assert!(expired.is_cancelled());
 
-        let mut call_budget = ToolBudget::default();
-        call_budget.max_tool_calls_per_turn = 1;
+        let call_budget = ToolBudget {
+            max_tool_calls_per_turn: 1,
+            ..ToolBudget::default()
+        };
         let mut tracker = ToolBudgetTracker::new(call_budget);
         let first = call("budget-1", "read_file", "one.txt");
         tracker.record_call(&first).expect("first budgeted call");
@@ -4772,8 +4774,10 @@ mod tests {
             .expect_err("second call must exceed a one-call budget");
         assert_eq!(exhausted.code, "agent_tool_budget_calls_exceeded");
 
-        let mut failure_budget = ToolBudget::default();
-        failure_budget.max_tool_failures_per_turn = 0;
+        let failure_budget = ToolBudget {
+            max_tool_failures_per_turn: 0,
+            ..ToolBudget::default()
+        };
         let mut tracker = ToolBudgetTracker::new(failure_budget);
         let exhausted = tracker
             .record_failure(

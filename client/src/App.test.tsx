@@ -3388,6 +3388,15 @@ describe('XeroApp current UI', () => {
     expect(startWorkflowRun.mock.calls[0]?.[0].workflowId).toBe(
       createWorkflowDefinition.mock.calls[0]?.[0].definition.id,
     )
+
+    // With a run selected on the canvas, the header offers the workflow chat
+    // dock so the user can follow and prompt the running agent from here.
+    const openChatButton = await screen.findByRole('button', {
+      name: 'Open workflow chat',
+    })
+    fireEvent.click(openChatButton)
+    const dock = await screen.findByLabelText('Agent dock')
+    await waitFor(() => expect(dock).toHaveAttribute('aria-hidden', 'false'))
   })
 
   it('keeps the newest saved Workflow list when an older refresh resolves last', async () => {
@@ -3538,11 +3547,15 @@ describe('XeroApp current UI', () => {
     })
     const listWorkflowDefinitions = vi.fn(async () => ({ definitions: [summary] }))
     const getWorkflowDefinition = vi.fn(async () => ({ definition }))
-    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => ({
-      run: makeWorkflowRun(definition, request.initialInput),
-    }))
+    let startedRun: WorkflowRunDto | null = null
+    const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => {
+      startedRun = makeWorkflowRun(definition, request.initialInput)
+      return { run: startedRun }
+    })
     adapter.listWorkflowDefinitions = listWorkflowDefinitions
-    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    adapter.listWorkflowRuns = vi.fn(async () => ({
+      runs: startedRun ? [startedRun] : [],
+    }))
     adapter.getWorkflowDefinition = getWorkflowDefinition
     adapter.startWorkflowRun = startWorkflowRun
 
@@ -3573,9 +3586,15 @@ describe('XeroApp current UI', () => {
     expect(
       screen.queryByRole('dialog', { name: 'Start Saved release pipeline' }),
     ).not.toBeInTheDocument()
+    // Starting from the composer keeps the user in Chat; the floating run
+    // panel surfaces the workflow's progress there instead of the canvas.
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Create' })).toHaveClass('bg-secondary'),
+      expect(
+        screen.getByRole('complementary', { name: 'Workflow run status' }),
+      ).toBeVisible(),
     )
+    expect(screen.getByRole('button', { name: 'Chat' })).toHaveClass('bg-secondary')
+    expect(screen.getByRole('button', { name: 'Create' })).not.toHaveClass('bg-secondary')
   })
 
   it('keeps a failed direct Workflow start in Chat and retries from the composer', async () => {
@@ -3590,13 +3609,17 @@ describe('XeroApp current UI', () => {
     })
     const listWorkflowDefinitions = vi.fn(async () => ({ definitions: [summary] }))
     let startAttempt = 0
+    let startedRun: WorkflowRunDto | null = null
     const startWorkflowRun = vi.fn(async (request: StartWorkflowRunRequest) => {
       startAttempt += 1
       if (startAttempt === 1) throw new Error('Workflow service is unavailable.')
-      return { run: makeWorkflowRun(definition, request.initialInput) }
+      startedRun = makeWorkflowRun(definition, request.initialInput)
+      return { run: startedRun }
     })
     adapter.listWorkflowDefinitions = listWorkflowDefinitions
-    adapter.listWorkflowRuns = vi.fn(async () => ({ runs: [] }))
+    adapter.listWorkflowRuns = vi.fn(async () => ({
+      runs: startedRun ? [startedRun] : [],
+    }))
     adapter.getWorkflowDefinition = vi.fn(async () => ({ definition }))
     adapter.startWorkflowRun = startWorkflowRun
 
@@ -3625,9 +3648,13 @@ describe('XeroApp current UI', () => {
     expect(startWorkflowRun.mock.calls[1]?.[0].idempotencyKey).toBe(
       startWorkflowRun.mock.calls[0]?.[0].idempotencyKey,
     )
+    // The successful retry also stays in Chat and surfaces the run panel.
     await waitFor(() =>
-      expect(screen.getByRole('button', { name: 'Create' })).toHaveClass('bg-secondary'),
+      expect(
+        screen.getByRole('complementary', { name: 'Workflow run status' }),
+      ).toBeVisible(),
     )
+    expect(screen.getByRole('button', { name: 'Chat' })).toHaveClass('bg-secondary')
   })
 
   it('starts hand authoring and opens Agent Create from the workflow empty state', async () => {

@@ -1,0 +1,86 @@
+{
+  "schema": "xero.agent_definition.v1",
+  "schemaVersion": 3,
+  "id": "release_notes_helper",
+  "version": 7,
+  "displayName": "Release Notes Helper",
+  "shortLabel": "Release",
+  "description": "Draft source-cited release notes without changing the workspace.",
+  "taskPurpose": "Inspect the requested source and return release notes grounded in it.",
+  "scope": "project_custom",
+  "lifecycleState": "active",
+  "baseCapabilityProfile": "observe_only",
+  "defaultApprovalMode": "suggest",
+  "allowedApprovalModes": ["suggest"],
+  "toolPolicy": {
+    "allowedTools": ["read"],
+    "deniedTools": ["list", "write", "patch", "delete", "move", "replace", "command"],
+    "commandAllowed": false,
+    "destructiveWriteAllowed": false
+  },
+  "workflowContract": "Inspect the source before drafting release notes.",
+  "workflowStructure": {
+    "startPhaseId": "inspect",
+    "phases": [
+      {
+        "id": "inspect",
+        "title": "Inspect",
+        "description": "Read the release source before answering.",
+        "allowedTools": ["read"],
+        "requiredChecks": [
+          {
+            "kind": "tool_succeeded",
+            "toolName": "read",
+            "minCount": 1
+          }
+        ],
+        "retryLimit": 1
+      }
+    ]
+  },
+  "finalResponseContract": "Return concise source-cited release notes.",
+  "examplePrompts": [
+    "Draft release notes from CHANGELOG.md.",
+    "Summarize the fixes in this release.",
+    "List the user-visible changes."
+  ],
+  "refusalEscalationCases": [
+    "Refuse workspace edits.",
+    "Escalate missing release sources.",
+    "Refuse secret disclosure."
+  ],
+  "attachedSkills": [],
+  "prompts": [
+    {
+      "id": "release_system",
+      "label": "Release notes system prompt",
+      "role": "system",
+      "source": "fixture",
+      "body": "CUSTOM RELEASE AUDITOR: inspect sources and never modify the workspace."
+    }
+  ],
+  "tools": [
+    {
+      "name": "read",
+      "group": "core",
+      "description": "Read a workspace file.",
+      "effectClass": "observe",
+      "riskClass": "observe",
+      "tags": [],
+      "schemaFields": ["path"],
+      "examples": []
+    }
+  ],
+  "output": {
+    "contract": "answer",
+    "label": "Release notes",
+    "description": "Grounded release notes.",
+    "sections": []
+  },
+  "dbTouchpoints": {
+    "reads": [],
+    "writes": [],
+    "encouraged": []
+  },
+  "consumes": []
+}

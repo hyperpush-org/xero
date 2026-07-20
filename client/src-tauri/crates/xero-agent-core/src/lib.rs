@@ -159,6 +159,12 @@ pub struct RunControls {
     pub agent_definition_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub agent_definition_version: Option<i64>,
+    /// Immutable Agent definition selected for this run. The reusable headless
+    /// runtime uses the snapshot to enforce the same prompt, tool-policy, and
+    /// Stage boundaries as the desktop runtime instead of treating the
+    /// definition id as display-only metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_definition_snapshot: Option<JsonValue>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub thinking_effort: Option<String>,
     pub approval_mode: String,
@@ -1610,6 +1616,7 @@ where
         snapshot: &RunSnapshot,
         prompt: &str,
         turn_index: usize,
+        identity: &headless_runtime::HeadlessRunIdentity,
     ) -> CoreResult<()> {
         let provider_preflight = fake_provider_preflight_snapshot();
         self.store.record_context_manifest(NewContextManifest {
@@ -1671,6 +1678,65 @@ where
                 "text": "Loaded reusable Xero fake-provider harness context."
             }),
         })?;
+        if let Some((stage_id, gate_message)) = identity.incomplete_stage_gate(snapshot) {
+            self.store.append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::AssistantCandidate,
+                trace: Some(RuntimeTraceContext::for_provider_turn(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    turn_index,
+                )),
+                payload: json!({
+                    "state": "superseded",
+                    "disposition": "stage_gate",
+                    "stageId": stage_id,
+                    "text": "Owned agent run completed through the reusable Xero core facade.",
+                }),
+            })?;
+            self.store.append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::VerificationGate,
+                trace: Some(RuntimeTraceContext::for_run(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    "stage_gate_blocked",
+                )),
+                payload: json!({
+                    "state": "blocked",
+                    "stageId": stage_id,
+                    "message": gate_message,
+                    "turnIndex": turn_index,
+                }),
+            })?;
+            self.store.update_run_status(
+                &snapshot.project_id,
+                &snapshot.run_id,
+                RunStatus::Failed,
+            )?;
+            self.store.append_event(NewRuntimeEvent {
+                project_id: snapshot.project_id.clone(),
+                run_id: snapshot.run_id.clone(),
+                event_kind: RuntimeEventKind::RunFailed,
+                trace: Some(RuntimeTraceContext::for_run(
+                    &snapshot.trace_id,
+                    &snapshot.run_id,
+                    "stage_gate_incomplete",
+                )),
+                payload: json!({
+                    "code": "agent_core_fake_provider_stage_evidence_required",
+                    "message": "The deterministic fake provider cannot complete an Agent Stage that requires tool or TODO evidence.",
+                    "retryable": false,
+                    "stageId": stage_id,
+                }),
+            })?;
+            return Err(CoreError::invalid_request(
+                "agent_core_fake_provider_stage_evidence_required",
+                "The deterministic fake provider cannot complete an Agent Stage that requires tool or TODO evidence.",
+            ));
+        }
         self.store.append_message(NewMessageRecord {
             project_id: snapshot.project_id.clone(),
             run_id: snapshot.run_id.clone(),
@@ -1751,33 +1817,14 @@ where
         );
         validate_production_runtime_contract(&runtime_contract)?;
         let provider_preflight = fake_provider_preflight_snapshot();
-        let runtime_agent_id = request
-            .controls
-            .as_ref()
-            .map(|controls| controls.runtime_agent_id.trim())
-            .filter(|id| !id.is_empty())
-            .unwrap_or("engineer")
-            .to_owned();
-        let agent_definition_id = request
-            .controls
-            .as_ref()
-            .and_then(|controls| controls.agent_definition_id.as_deref())
-            .map(str::trim)
-            .filter(|id| !id.is_empty())
-            .unwrap_or(runtime_agent_id.as_str())
-            .to_owned();
-        let agent_definition_version = request
-            .controls
-            .as_ref()
-            .and_then(|controls| controls.agent_definition_version)
-            .filter(|version| *version > 0)
-            .unwrap_or(1);
+        let identity = headless_runtime::HeadlessRunIdentity::from_request(&request, None)?;
+        let definition_runtime = identity.definition_runtime_json();
         let snapshot = self.store.insert_run(NewRunRecord {
             trace_id: None,
-            runtime_agent_id,
-            agent_definition_id,
-            agent_definition_version,
-            system_prompt: "Reusable Xero fake-provider system prompt.".into(),
+            runtime_agent_id: identity.runtime_agent_id.clone(),
+            agent_definition_id: identity.agent_definition_id.clone(),
+            agent_definition_version: identity.agent_definition_version,
+            system_prompt: identity.system_prompt.clone(),
             project_id: request.project_id,
             agent_session_id: request.agent_session_id,
             run_id: request.run_id,
@@ -1800,6 +1847,9 @@ where
                 "modelId": snapshot.model_id,
                 "runtimeContract": production_runtime_trace_metadata(&runtime_contract),
                 "providerPreflight": provider_preflight,
+                "thinkingEffort": identity.thinking_effort.clone(),
+                "approvalMode": identity.approval_mode.clone(),
+                "agentDefinitionRuntime": definition_runtime,
             }),
         })?;
         let lifecycle = EnvironmentLifecycleService::new(self.store.clone());
@@ -1819,7 +1869,7 @@ where
             project_id: snapshot.project_id.clone(),
             run_id: snapshot.run_id.clone(),
             role: MessageRole::System,
-            content: "Reusable Xero fake-provider system prompt.".into(),
+            content: identity.system_prompt.clone(),
             provider_metadata: None,
         })?;
         self.store.append_message(NewMessageRecord {
@@ -1865,7 +1915,7 @@ where
         let started = self
             .store
             .load_run(&snapshot.project_id, &snapshot.run_id)?;
-        self.drive_fake_turn(&started, &request.prompt, 0)?;
+        self.drive_fake_turn(&started, &request.prompt, 0, &identity)?;
         self.store.load_run(&snapshot.project_id, &snapshot.run_id)
     }
 
@@ -1894,7 +1944,8 @@ where
         })?;
         let turn_index = before.context_manifests.len();
         let snapshot = self.store.load_run(&request.project_id, &request.run_id)?;
-        self.drive_fake_turn(&snapshot, &request.prompt, turn_index)?;
+        let identity = headless_runtime::HeadlessRunIdentity::from_snapshot(&snapshot)?;
+        self.drive_fake_turn(&snapshot, &request.prompt, turn_index, &identity)?;
         self.store.load_run(&request.project_id, &request.run_id)
     }
 
@@ -3666,6 +3717,7 @@ mod tests {
                 runtime_agent_id: " ".into(),
                 agent_definition_id: Some(" ".into()),
                 agent_definition_version: Some(0),
+                agent_definition_snapshot: None,
                 thinking_effort: None,
                 approval_mode: "suggest".into(),
                 plan_mode_required: false,
@@ -3767,6 +3819,95 @@ mod tests {
     }
 
     #[test]
+    fn fake_provider_honors_custom_agent_identity_and_fails_closed_on_stage_evidence() {
+        let runtime = FakeProviderRuntime::default();
+        let definition = json!({
+            "id": "fixture-observer",
+            "version": 3,
+            "lifecycleState": "active",
+            "displayName": "Fixture Observer",
+            "baseCapabilityProfile": "ask",
+            "allowedApprovalModes": ["suggest"],
+            "toolPolicy": { "allowedTools": ["read"] },
+            "prompts": [{
+                "role": "system",
+                "body": "CUSTOM_FAKE_AGENT_PROMPT_MARKER"
+            }]
+        });
+        let request = |run_id: &str, snapshot: JsonValue| StartRunRequest {
+            project_id: "project-fake-agent".into(),
+            agent_session_id: "session-fake-agent".into(),
+            run_id: run_id.into(),
+            prompt: "Inspect the fixture.".into(),
+            provider: ProviderSelection {
+                provider_id: FAKE_PROVIDER_ID.into(),
+                model_id: "fake-model".into(),
+            },
+            controls: Some(RunControls {
+                runtime_agent_id: "fixture-observer".into(),
+                agent_definition_id: Some("fixture-observer".into()),
+                agent_definition_version: Some(3),
+                agent_definition_snapshot: Some(snapshot),
+                thinking_effort: Some("low".into()),
+                approval_mode: "suggest".into(),
+                plan_mode_required: false,
+            }),
+        };
+
+        let completed = runtime
+            .start_run(request("fake-custom-agent", definition.clone()))
+            .expect("custom Agent without required Stage evidence should complete");
+        assert_eq!(completed.status, RunStatus::Completed);
+        assert!(completed.system_prompt.contains("CUSTOM_FAKE_AGENT_PROMPT_MARKER"));
+        let started = completed
+            .events
+            .iter()
+            .find(|event| event.event_kind == RuntimeEventKind::RunStarted)
+            .expect("run-started Agent policy");
+        assert_eq!(started.payload["approvalMode"], "suggest");
+        assert_eq!(
+            started.payload["agentDefinitionRuntime"]["definitionId"],
+            "fixture-observer"
+        );
+
+        let mut staged = definition;
+        staged["workflowStructure"] = json!({
+            "startPhaseId": "inspect",
+            "phases": [{
+                "id": "inspect",
+                "title": "Inspect",
+                "allowedTools": ["read"],
+                "requiredChecks": [{
+                    "kind": "tool_succeeded",
+                    "toolName": "read",
+                    "minCount": 1
+                }]
+            }]
+        });
+        let error = runtime
+            .start_run(request("fake-staged-agent", staged))
+            .expect_err("fake final response must not bypass required Stage evidence");
+        assert_eq!(
+            error.code,
+            "agent_core_fake_provider_stage_evidence_required"
+        );
+        let failed = runtime
+            .store()
+            .load_run("project-fake-agent", "fake-staged-agent")
+            .expect("failed Stage run remains inspectable");
+        assert_eq!(failed.status, RunStatus::Failed);
+        assert!(failed.events.iter().any(|event| {
+            event.event_kind == RuntimeEventKind::VerificationGate
+                && event.payload["state"] == "blocked"
+                && event.payload["stageId"] == "inspect"
+        }));
+        assert!(!failed
+            .messages
+            .iter()
+            .any(|message| message.role == MessageRole::Assistant));
+    }
+
+    #[test]
     fn fake_provider_records_manifest_before_provider_events() {
         let runtime = FakeProviderRuntime::default();
 
@@ -3784,6 +3925,7 @@ mod tests {
                     runtime_agent_id: "engineer".into(),
                     agent_definition_id: Some("engineer".into()),
                     agent_definition_version: Some(1),
+                    agent_definition_snapshot: None,
                     thinking_effort: None,
                     approval_mode: "yolo".into(),
                     plan_mode_required: false,

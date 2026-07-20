@@ -672,6 +672,7 @@ fn command_agent_exec(
                 runtime_agent_id: runtime_agent_id.clone(),
                 agent_definition_id: Some(agent_definition.definition_id),
                 agent_definition_version: Some(agent_definition.version),
+                agent_definition_snapshot: Some(agent_definition.snapshot),
                 thinking_effort,
                 approval_mode: approval_mode.clone(),
                 plan_mode_required: globals.ci || approval_mode == "strict",
@@ -1684,9 +1685,18 @@ fn command_conversation_retry(
     args: Vec<String>,
 ) -> Result<CliResponse, CliError> {
     let (store, snapshot) = load_conversation_from_args(&globals, args)?;
-    let provider = resolve_runtime_for_existing_snapshot(&globals, &snapshot)?;
+    let provider = resolve_runtime_for_existing_snapshot(&globals, &snapshot)?
+        .with_project_workspace(&store)
+        .with_workspace_writes(headless_runtime_agent_allows_writes(
+            &snapshot.runtime_agent_id,
+        ));
     let provider_preflight = ensure_cli_provider_preflight_for_run(&globals, &provider)?;
-    let retry_controls = headless_retry_controls(&snapshot, globals.ci);
+    let agent_definition = store.resolve_agent_definition_version_for_run(
+        &snapshot.agent_definition_id,
+        snapshot.agent_definition_version,
+    )?;
+    let retry_controls =
+        headless_retry_controls(&snapshot, globals.ci, Some(agent_definition.snapshot));
     let runtime = HeadlessProviderRuntime::new(
         store.clone(),
         provider.execution,
@@ -2861,7 +2871,11 @@ fn runtime_for_existing_snapshot(
     ),
     CliError,
 > {
-    let provider = resolve_runtime_for_existing_snapshot(globals, snapshot)?;
+    let provider = resolve_runtime_for_existing_snapshot(globals, snapshot)?
+        .with_project_workspace(&store)
+        .with_workspace_writes(headless_runtime_agent_allows_writes(
+            &snapshot.runtime_agent_id,
+        ));
     let provider_preflight = if with_preflight {
         Some(ensure_cli_provider_preflight_for_run(globals, &provider)?)
     } else {
@@ -3108,6 +3122,7 @@ enum CliAgentStore {
 struct AgentDefinitionForRun {
     definition_id: String,
     version: i64,
+    snapshot: JsonValue,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -3227,12 +3242,38 @@ impl CliAgentStore {
                     .unwrap_or(runtime_agent_id)
                     .to_owned();
                 Ok(AgentDefinitionForRun {
+                    snapshot: builtin_agent_definition_seed(&definition_id)
+                        .and_then(|seed| serde_json::from_str(seed.snapshot_json).ok())
+                        .unwrap_or_else(|| json!({ "id": definition_id, "version": 1 })),
                     definition_id,
                     version: 1,
                 })
             }
             Self::AppData(store) => store
                 .resolve_agent_definition_for_run(requested_definition_id, runtime_agent_id)
+                .map_err(core_error),
+        }
+    }
+
+    fn resolve_agent_definition_version_for_run(
+        &self,
+        definition_id: &str,
+        version: i64,
+    ) -> Result<AgentDefinitionForRun, CliError> {
+        match self {
+            Self::Harness(_) => {
+                let snapshot = builtin_agent_definition_seed(definition_id)
+                    .filter(|seed| seed.version == version)
+                    .and_then(|seed| serde_json::from_str(seed.snapshot_json).ok())
+                    .unwrap_or_else(|| json!({ "id": definition_id, "version": version }));
+                Ok(AgentDefinitionForRun {
+                    definition_id: definition_id.into(),
+                    version,
+                    snapshot,
+                })
+            }
+            Self::AppData(store) => store
+                .resolve_agent_definition_version_for_run(definition_id, version)
                 .map_err(core_error),
         }
     }
@@ -3396,26 +3437,95 @@ impl AppDataProjectAgentStore {
             })
     }
 
+    fn resolve_agent_definition_version_for_run(
+        &self,
+        definition_id: &str,
+        version: i64,
+    ) -> xero_agent_core::CoreResult<AgentDefinitionForRun> {
+        let connection = self.connection()?;
+        let snapshot_json = connection
+            .query_row(
+                r#"
+                SELECT snapshot_json
+                FROM agent_definition_versions
+                WHERE definition_id = ?1 AND version = ?2
+                "#,
+                params![definition_id, version],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(|error| {
+                self.query_error("agent_core_app_data_agent_definition_read_failed", error)
+            })?
+            .ok_or_else(|| {
+                xero_agent_core::CoreError::invalid_request(
+                    "agent_core_app_data_agent_definition_version_missing",
+                    format!(
+                        "App-data project `{}` does not contain Agent definition `{definition_id}` version `{version}`.",
+                        self.project_id
+                    ),
+                )
+            })?;
+        let snapshot = serde_json::from_str(&snapshot_json).map_err(|error| {
+            xero_agent_core::CoreError::invalid_request(
+                "agent_core_app_data_agent_definition_decode_failed",
+                format!(
+                    "App-data Agent definition `{definition_id}` version `{version}` is invalid JSON: {error}"
+                ),
+            )
+        })?;
+        Ok(AgentDefinitionForRun {
+            definition_id: definition_id.into(),
+            version,
+            snapshot,
+        })
+    }
+
     fn query_agent_definition_for_run(
         &self,
         connection: &Connection,
         definition_id: &str,
     ) -> xero_agent_core::CoreResult<Option<AgentDefinitionForRun>> {
-        connection
+        let row = connection
             .query_row(
-                "SELECT definition_id, current_version FROM agent_definitions WHERE definition_id = ?1 AND lifecycle_state != 'archived'",
+                r#"
+                SELECT definitions.definition_id, definitions.current_version, versions.snapshot_json
+                FROM agent_definitions AS definitions
+                JOIN agent_definition_versions AS versions
+                  ON versions.definition_id = definitions.definition_id
+                 AND versions.version = definitions.current_version
+                WHERE definitions.definition_id = ?1
+                  AND definitions.lifecycle_state != 'archived'
+                "#,
                 params![definition_id],
                 |row| {
-                    Ok(AgentDefinitionForRun {
-                        definition_id: row.get(0)?,
-                        version: row.get(1)?,
-                    })
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, i64>(1)?,
+                        row.get::<_, String>(2)?,
+                    ))
                 },
             )
             .optional()
             .map_err(|error| {
                 self.query_error("agent_core_app_data_agent_definition_read_failed", error)
+            })?;
+        row.map(|(definition_id, version, snapshot_json)| {
+            let snapshot = serde_json::from_str(&snapshot_json).map_err(|error| {
+                xero_agent_core::CoreError::invalid_request(
+                    "agent_core_app_data_agent_definition_decode_failed",
+                    format!(
+                        "App-data Agent definition `{definition_id}` version `{version}` is invalid JSON: {error}"
+                    ),
+                )
+            })?;
+            Ok(AgentDefinitionForRun {
+                definition_id,
+                version,
+                snapshot,
             })
+        })
+        .transpose()
     }
 
     fn backfill_builtin_agent_definition(
@@ -3601,25 +3711,45 @@ impl AppDataProjectAgentStore {
             .map_err(|error| self.query_error("agent_core_app_data_run_list_prepare_failed", error))?;
         let rows = statement
             .query_map(params![project_id], |row| {
-                Ok(RunSummary {
-                    trace_id: row.get(0)?,
-                    project_id: row.get(1)?,
-                    agent_session_id: row.get(2)?,
-                    run_id: row.get(3)?,
-                    provider_id: row.get(4)?,
-                    model_id: row.get(5)?,
-                    status: parse_core_run_status(row.get::<_, String>(6)?.as_str()),
-                    prompt: row.get(7)?,
-                    message_count: nonnegative_count(row.get(8)?),
-                    event_count: nonnegative_count(row.get(9)?),
-                    context_manifest_count: nonnegative_count(row.get(10)?),
-                    started_at: row.get(11)?,
-                    updated_at: row.get(12)?,
-                })
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, i64>(8)?,
+                    row.get::<_, i64>(9)?,
+                    row.get::<_, i64>(10)?,
+                    row.get::<_, Option<String>>(11)?,
+                    row.get::<_, Option<String>>(12)?,
+                ))
             })
             .map_err(|error| self.query_error("agent_core_app_data_run_list_failed", error))?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(|error| self.query_error("agent_core_app_data_run_list_decode_failed", error))
+        let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+            self.query_error("agent_core_app_data_run_list_decode_failed", error)
+        })?;
+        rows.into_iter()
+            .map(|row| {
+                Ok(RunSummary {
+                    trace_id: row.0,
+                    project_id: row.1,
+                    agent_session_id: row.2,
+                    run_id: row.3,
+                    provider_id: row.4,
+                    model_id: row.5,
+                    status: parse_core_run_status(&row.6)?,
+                    prompt: row.7,
+                    message_count: nonnegative_count(row.8),
+                    event_count: nonnegative_count(row.9),
+                    context_manifest_count: nonnegative_count(row.10),
+                    started_at: row.11,
+                    updated_at: row.12,
+                })
+            })
+            .collect()
     }
 
     fn load_run_by_id(&self, run_id: &str) -> xero_agent_core::CoreResult<RunSnapshot> {
@@ -3887,7 +4017,7 @@ impl AgentCoreStore for AppDataProjectAgentStore {
             run_id: run.7,
             provider_id: run.8,
             model_id: run.9,
-            status: parse_core_run_status(&run.10),
+            status: parse_core_run_status(&run.10)?,
             prompt: run.11,
             messages,
             events,
@@ -4130,19 +4260,33 @@ fn read_app_data_messages(
                 ),
                 None => None,
             };
-            Ok(RuntimeMessage {
-                id: row.get(0)?,
-                project_id: row.get(1)?,
-                run_id: row.get(2)?,
-                role: parse_message_role(row.get::<_, String>(3)?.as_str()),
-                content: row.get(4)?,
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, String>(4)?,
                 provider_metadata,
-                created_at: row.get(6)?,
-            })
+                row.get::<_, String>(6)?,
+            ))
         })
         .map_err(|error| store.query_error("agent_core_app_data_messages_query_failed", error))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| store.query_error("agent_core_app_data_messages_decode_failed", error))
+    let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        store.query_error("agent_core_app_data_messages_decode_failed", error)
+    })?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(RuntimeMessage {
+                id: row.0,
+                project_id: row.1,
+                run_id: row.2,
+                role: parse_message_role(&row.3)?,
+                content: row.4,
+                provider_metadata: row.5,
+                created_at: row.6,
+            })
+        })
+        .collect()
 }
 
 fn read_app_data_events(
@@ -4160,7 +4304,6 @@ fn read_app_data_events(
     let rows = statement
         .query_map(params![project_id, run_id], |row| {
             let id = row.get::<_, i64>(0)?;
-            let event_kind = parse_runtime_event_kind(row.get::<_, String>(3)?.as_str());
             let payload_text = row.get::<_, String>(4)?;
             let payload = serde_json::from_str::<JsonValue>(&payload_text).map_err(|error| {
                 rusqlite::Error::FromSqlConversionFailure(
@@ -4169,19 +4312,33 @@ fn read_app_data_events(
                     Box::new(error),
                 )
             })?;
-            Ok(RuntimeEvent {
+            Ok((
                 id,
-                project_id: row.get(1)?,
-                run_id: row.get(2)?,
-                trace: RuntimeTraceContext::for_event(trace_id, run_id, id, &event_kind),
-                event_kind,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
                 payload,
-                created_at: row.get(5)?,
-            })
+                row.get::<_, String>(5)?,
+            ))
         })
         .map_err(|error| store.query_error("agent_core_app_data_events_query_failed", error))?;
-    rows.collect::<Result<Vec<_>, _>>()
-        .map_err(|error| store.query_error("agent_core_app_data_events_decode_failed", error))
+    let rows = rows.collect::<Result<Vec<_>, _>>().map_err(|error| {
+        store.query_error("agent_core_app_data_events_decode_failed", error)
+    })?;
+    rows.into_iter()
+        .map(|row| {
+            let event_kind = parse_runtime_event_kind(&row.3)?;
+            Ok(RuntimeEvent {
+                id: row.0,
+                project_id: row.1,
+                run_id: row.2,
+                trace: RuntimeTraceContext::for_event(trace_id, run_id, row.0, &event_kind),
+                event_kind,
+                payload: row.4,
+                created_at: row.5,
+            })
+        })
+        .collect()
 }
 
 fn read_app_data_context_manifests(
@@ -4547,8 +4704,8 @@ fn run_status_wire(status: &RunStatus) -> &'static str {
     }
 }
 
-fn parse_core_run_status(value: &str) -> RunStatus {
-    match value {
+fn parse_core_run_status(value: &str) -> xero_agent_core::CoreResult<RunStatus> {
+    let status = match value {
         "starting" => RunStatus::Starting,
         "running" => RunStatus::Running,
         "paused" => RunStatus::Paused,
@@ -4557,8 +4714,14 @@ fn parse_core_run_status(value: &str) -> RunStatus {
         "handed_off" => RunStatus::HandedOff,
         "completed" => RunStatus::Completed,
         "failed" => RunStatus::Failed,
-        _ => RunStatus::Failed,
-    }
+        _ => {
+            return Err(xero_agent_core::CoreError::system_fault(
+                "agent_core_app_data_run_status_invalid",
+                format!("App-data contains unknown Agent run status `{value}`."),
+            ));
+        }
+    };
+    Ok(status)
 }
 
 fn message_role_wire(role: &MessageRole) -> &'static str {
@@ -4571,14 +4734,21 @@ fn message_role_wire(role: &MessageRole) -> &'static str {
     }
 }
 
-fn parse_message_role(value: &str) -> MessageRole {
-    match value {
+fn parse_message_role(value: &str) -> xero_agent_core::CoreResult<MessageRole> {
+    let role = match value {
         "system" => MessageRole::System,
         "developer" => MessageRole::Developer,
         "user" => MessageRole::User,
+        "assistant" => MessageRole::Assistant,
         "tool" => MessageRole::Tool,
-        _ => MessageRole::Assistant,
-    }
+        _ => {
+            return Err(xero_agent_core::CoreError::system_fault(
+                "agent_core_app_data_message_role_invalid",
+                format!("App-data contains unknown Agent message role `{value}`."),
+            ));
+        }
+    };
+    Ok(role)
 }
 
 fn runtime_event_kind_wire(kind: &RuntimeEventKind) -> &'static str {
@@ -4617,9 +4787,10 @@ fn runtime_event_kind_wire(kind: &RuntimeEventKind) -> &'static str {
     }
 }
 
-fn parse_runtime_event_kind(value: &str) -> RuntimeEventKind {
-    match value {
+fn parse_runtime_event_kind(value: &str) -> xero_agent_core::CoreResult<RuntimeEventKind> {
+    let kind = match value {
         "run_started" => RuntimeEventKind::RunStarted,
+        "assistant_candidate" => RuntimeEventKind::AssistantCandidate,
         "message_delta" => RuntimeEventKind::MessageDelta,
         "reasoning_summary" => RuntimeEventKind::ReasoningSummary,
         "tool_started" => RuntimeEventKind::ToolStarted,
@@ -4649,8 +4820,14 @@ fn parse_runtime_event_kind(value: &str) -> RuntimeEventKind {
         "run_completed" => RuntimeEventKind::RunCompleted,
         "run_failed" => RuntimeEventKind::RunFailed,
         "subagent_lifecycle" => RuntimeEventKind::SubagentLifecycle,
-        _ => RuntimeEventKind::RunFailed,
-    }
+        _ => {
+            return Err(xero_agent_core::CoreError::system_fault(
+                "agent_core_app_data_event_kind_invalid",
+                format!("App-data contains unknown Agent runtime event kind `{value}`."),
+            ));
+        }
+    };
+    Ok(kind)
 }
 
 fn parse_global_options(raw_args: Vec<String>) -> Result<(GlobalOptions, Vec<String>), CliError> {
@@ -5055,7 +5232,11 @@ fn last_assistant_message(snapshot: &RunSnapshot) -> Option<String> {
         .map(|message| message.content.clone())
 }
 
-fn headless_retry_controls(snapshot: &RunSnapshot, ci: bool) -> RunControls {
+fn headless_retry_controls(
+    snapshot: &RunSnapshot,
+    ci: bool,
+    agent_definition_snapshot: Option<JsonValue>,
+) -> RunControls {
     let run_started = snapshot
         .events
         .iter()
@@ -5081,6 +5262,7 @@ fn headless_retry_controls(snapshot: &RunSnapshot, ci: bool) -> RunControls {
         runtime_agent_id: snapshot.runtime_agent_id.clone(),
         agent_definition_id: Some(snapshot.agent_definition_id.clone()),
         agent_definition_version: Some(snapshot.agent_definition_version),
+        agent_definition_snapshot,
         thinking_effort,
         plan_mode_required: approval_mode == "strict",
         approval_mode,
@@ -8368,15 +8550,9 @@ impl McpServerSession {
                 runtime_agent_id: runtime_agent_id.clone(),
                 agent_definition_id: Some(agent_definition.definition_id),
                 agent_definition_version: Some(agent_definition.version),
+                agent_definition_snapshot: Some(agent_definition.snapshot),
                 thinking_effort,
-                approval_mode: if self.globals.ci {
-                    "strict"
-                } else if headless_runtime_agent_allows_writes(&runtime_agent_id) {
-                    "on_request"
-                } else {
-                    "suggest"
-                }
-                .into(),
+                approval_mode: if self.globals.ci { "strict" } else { "suggest" }.into(),
                 plan_mode_required: self.globals.ci,
             }),
         }) {
@@ -12368,6 +12544,92 @@ mod tests {
     }
 
     #[test]
+    fn agent_definition_list_exposes_custom_approval_policy_for_terminal_clients() {
+        let state_dir = unique_temp_dir("agent-definition-list-policy");
+        let repo_dir = unique_temp_dir("agent-definition-list-policy-repo");
+        seed_registered_project(&state_dir, "project-agent-policy", &repo_dir);
+        seed_custom_agent_definition_fixture(
+            &state_dir,
+            "project-agent-policy",
+            include_str!("../test-fixtures/observe_only_staged_agent.json"),
+        );
+
+        let listed = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent-definition",
+            "list",
+            "--project-id",
+            "project-agent-policy",
+        ])
+        .expect("list custom Agent definitions");
+        let custom = listed.json["definitions"]
+            .as_array()
+            .expect("definitions")
+            .iter()
+            .find(|definition| definition["definitionId"] == "release_notes_helper")
+            .expect("custom Agent definition");
+
+        assert_eq!(custom["allowedApprovalModes"], json!(["suggest"]));
+        assert_eq!(custom["defaultApprovalMode"], json!("suggest"));
+    }
+
+    #[test]
+    fn cli_rejects_unknown_app_data_runtime_discriminants() {
+        let cases = [
+            (
+                "run-status",
+                "UPDATE agent_runs SET status = 'future_status' WHERE run_id = 'run-desktop'",
+                "agent_core_app_data_run_status_invalid",
+            ),
+            (
+                "message-role",
+                "UPDATE agent_messages SET role = 'future_role' WHERE run_id = 'run-desktop'",
+                "agent_core_app_data_message_role_invalid",
+            ),
+            (
+                "event-kind",
+                "UPDATE agent_events SET event_kind = 'future_event' WHERE run_id = 'run-desktop'",
+                "agent_core_app_data_event_kind_invalid",
+            ),
+        ];
+
+        for (label, mutation, expected_code) in cases {
+            let state_dir = unique_temp_dir(&format!("invalid-app-data-{label}"));
+            let repo_dir = unique_temp_dir(&format!("invalid-app-data-{label}-repo"));
+            seed_desktop_style_app_data_run(
+                &state_dir,
+                "project-desktop",
+                &repo_dir,
+                "session-desktop",
+                "run-desktop",
+            );
+            let database =
+                workspace_project_database_path_for_app_root(&state_dir, "project-desktop");
+            Connection::open(database)
+                .expect("open project database")
+                .execute(mutation, [])
+                .expect("corrupt persisted discriminator");
+
+            let error = run_with_args([
+                "xero",
+                "--json",
+                "--state-dir",
+                state_dir.to_str().expect("state dir"),
+                "conversation",
+                "show",
+                "--project-id",
+                "project-desktop",
+                "run-desktop",
+            ])
+            .expect_err("unknown app-data discriminants must fail closed");
+            assert_eq!(error.code, expected_code, "failed case: {label}");
+        }
+    }
+
+    #[test]
     fn real_provider_uses_project_store() {
         let state_dir = unique_temp_dir("agent-exec-real-provider-store");
         let repo_dir = unique_temp_dir("agent-exec-real-provider-store-repo");
@@ -12542,6 +12804,418 @@ mod tests {
         assert_eq!(persisted.1, "ask");
         assert_eq!(persisted.2, 1);
         assert!(persisted.3.contains("You are Xero's Ask agent"));
+    }
+
+    #[test]
+    fn real_provider_agent_exec_applies_custom_agent_prompt_policy_and_stage_fixture() {
+        let state_dir = unique_temp_dir("agent-exec-custom-agent-stage");
+        let workspace = unique_temp_dir("agent-exec-custom-agent-stage-workspace");
+        fs::write(workspace.join("CHANGELOG.md"), "# Release\n\n- Fixed parity.\n")
+            .expect("seed release source");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        seed_custom_agent_definition_fixture(
+            &state_dir,
+            "project-real",
+            include_str!("../test-fixtures/observe_only_staged_agent.json"),
+        );
+        let (server, captured_requests) = MockOpenAiCompatibleServer::start_capturing(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": null,
+                        "tool_calls": [{
+                            "id": "call-read-release-source",
+                            "type": "function",
+                            "function": {
+                                "name": "read",
+                                "arguments": "{\"path\":\"CHANGELOG.md\"}"
+                            }
+                        }]
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Release notes: fixed headless parity."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-release",
+            "--run-id",
+            "run-release",
+            "--runtime-agent-id",
+            "engineer",
+            "--agent-definition-id",
+            "release_notes_helper",
+            "Draft release notes from CHANGELOG.md.",
+        ])
+        .expect("custom Agent run should succeed");
+        server.join();
+
+        assert_eq!(
+            output.json["snapshot"]["agentDefinitionId"],
+            json!("release_notes_helper")
+        );
+        assert_eq!(output.json["snapshot"]["agentDefinitionVersion"], json!(7));
+        assert!(output.json["snapshot"]["systemPrompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("CUSTOM RELEASE AUDITOR")));
+
+        let captured_requests = captured_requests
+            .lock()
+            .expect("captured provider requests");
+        let first_turn = captured_requests
+            .get(1)
+            .and_then(|request| request.split_once("\r\n\r\n").map(|(_, body)| body))
+            .and_then(|body| serde_json::from_str::<JsonValue>(body).ok())
+            .expect("first provider turn JSON");
+        let tool_names = first_turn["tools"]
+            .as_array()
+            .expect("provider tools")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(tool_names, vec!["read", "todo"]);
+        assert!(first_turn["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("CUSTOM RELEASE AUDITOR")));
+
+        let manifests = output.json["snapshot"]["contextManifests"]
+            .as_array()
+            .expect("context manifests");
+        assert_eq!(manifests[0]["manifest"]["stage"]["id"], json!("inspect"));
+        assert_eq!(
+            manifests[0]["manifest"]["stage"]["allowedTools"],
+            json!(["read", "todo"])
+        );
+    }
+
+    #[test]
+    fn real_provider_custom_agent_rejects_repeated_final_answers_before_stage_gate() {
+        let state_dir = unique_temp_dir("agent-exec-custom-agent-stage-gate");
+        let workspace = unique_temp_dir("agent-exec-custom-agent-stage-gate-workspace");
+        fs::write(workspace.join("CHANGELOG.md"), "# Release\n")
+            .expect("seed release source");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        seed_custom_agent_definition_fixture(
+            &state_dir,
+            "project-real",
+            include_str!("../test-fixtures/observe_only_staged_agent.json"),
+        );
+        let server = MockOpenAiCompatibleServer::start(vec![
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Premature release notes."
+                    }
+                }]
+            }),
+            json!({
+                "choices": [{
+                    "message": {
+                        "role": "assistant",
+                        "content": "Still premature release notes."
+                    }
+                }]
+            }),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+
+        let result = run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-release",
+            "--run-id",
+            "run-release",
+            "--runtime-agent-id",
+            "engineer",
+            "--agent-definition-id",
+            "release_notes_helper",
+            "Draft release notes from CHANGELOG.md.",
+        ]);
+        if result.is_err() {
+            server.join();
+        }
+        let error = result.expect_err("an incomplete Stage must block the final answer");
+        assert_eq!(error.code, "agent_core_headless_stage_incomplete");
+
+        let shown = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "show",
+            "--project-id",
+            "project-real",
+            "run-release",
+        ])
+        .expect("failed staged run remains inspectable");
+        assert_eq!(shown.json["snapshot"]["status"], json!("failed"));
+        assert!(shown.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| {
+                event["eventKind"] == json!("verification_gate")
+                    && event["payload"]["state"] == json!("blocked")
+                    && event["payload"]["stageId"] == json!("inspect")
+            }));
+    }
+
+    #[test]
+    fn real_provider_custom_agent_supports_todo_gates_and_empty_terminal_stage_fixture() {
+        let state_dir = unique_temp_dir("agent-exec-todo-stage");
+        let workspace = unique_temp_dir("agent-exec-todo-stage-workspace");
+        fs::write(workspace.join("CHANGELOG.md"), "# Release\n\n- Added Stage parity.\n")
+            .expect("seed release source");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        seed_custom_agent_definition_fixture(
+            &state_dir,
+            "project-real",
+            include_str!("../test-fixtures/todo_staged_agent.json"),
+        );
+        let (server, captured_requests) = MockOpenAiCompatibleServer::start_capturing(vec![
+            provider_tool_call_response(
+                "call-complete-inspection",
+                "todo",
+                json!({
+                    "action": "upsert",
+                    "id": "inspection_complete",
+                    "title": "Source inspection complete",
+                    "status": "completed"
+                }),
+            ),
+            provider_text_response("Stage-parity release notes."),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+        let output = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-todo-stage",
+            "--run-id",
+            "run-todo-stage",
+            "--runtime-agent-id",
+            "plan",
+            "--agent-definition-id",
+            "todo_release_helper",
+            "Draft the release notes.",
+        ]);
+        let output = match output {
+            Ok(output) => output,
+            Err(error) => {
+                drop(server);
+                panic!("desktop-valid todo Stages should run headlessly: {error:?}");
+            }
+        };
+        server.join();
+
+        assert_eq!(output.json["snapshot"]["status"], json!("completed"));
+        assert!(output.json["snapshot"]["events"]
+            .as_array()
+            .expect("events")
+            .iter()
+            .any(|event| {
+                event["eventKind"] == json!("verification_gate")
+                    && event["payload"]["state"] == json!("passed")
+                    && event["payload"]["stageId"] == json!("inspect")
+                    && event["payload"]["nextStageId"] == json!("publish")
+            }));
+        let captured_requests = captured_requests
+            .lock()
+            .expect("captured provider requests");
+        let first_turn = captured_requests
+            .get(1)
+            .and_then(|request| request.split_once("\r\n\r\n").map(|(_, body)| body))
+            .and_then(|body| serde_json::from_str::<JsonValue>(body).ok())
+            .expect("first provider turn JSON");
+        let tool_names = first_turn["tools"]
+            .as_array()
+            .expect("provider tools")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(tool_names, vec!["read", "todo"]);
+    }
+
+    #[test]
+    fn conversation_retry_preserves_custom_agent_snapshot_and_stages() {
+        let state_dir = unique_temp_dir("conversation-retry-custom-agent");
+        let workspace = unique_temp_dir("conversation-retry-custom-agent-workspace");
+        fs::write(workspace.join("CHANGELOG.md"), "# Release\n\n- Fixed retry parity.\n")
+            .expect("seed release source");
+        seed_registered_project(&state_dir, "project-real", &workspace);
+        seed_custom_agent_definition_fixture(
+            &state_dir,
+            "project-real",
+            include_str!("../test-fixtures/observe_only_staged_agent.json"),
+        );
+        let (server, captured_requests) = MockOpenAiCompatibleServer::start_capturing(vec![
+            provider_tool_call_response(
+                "call-initial-read",
+                "read",
+                json!({ "path": "CHANGELOG.md" }),
+            ),
+            provider_text_response("Initial release notes."),
+            provider_tool_call_response(
+                "call-retry-read",
+                "read",
+                json!({ "path": "CHANGELOG.md" }),
+            ),
+            provider_text_response("Retried release notes."),
+        ]);
+
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "provider",
+            "login",
+            "openai_api",
+            "--base-url",
+            server.base_url.as_str(),
+        ])
+        .expect("provider profile should be recorded");
+        run_with_args([
+            "xero",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "agent",
+            "exec",
+            "--provider",
+            "openai_api",
+            "--model",
+            "test-model",
+            "--project-id",
+            "project-real",
+            "--session-id",
+            "session-release",
+            "--run-id",
+            "run-release",
+            "--runtime-agent-id",
+            "engineer",
+            "--agent-definition-id",
+            "release_notes_helper",
+            "Draft release notes from CHANGELOG.md.",
+        ])
+        .expect("initial custom Agent run should succeed");
+
+        let retried = run_with_args([
+            "xero",
+            "--json",
+            "--state-dir",
+            state_dir.to_str().expect("state dir"),
+            "conversation",
+            "retry",
+            "--project-id",
+            "project-real",
+            "run-release",
+        ])
+        .expect("custom Agent retry should succeed");
+        server.join();
+
+        assert_eq!(
+            retried.json["snapshot"]["agentDefinitionId"],
+            json!("release_notes_helper")
+        );
+        assert_eq!(retried.json["snapshot"]["agentDefinitionVersion"], json!(7));
+        assert!(retried.json["snapshot"]["systemPrompt"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("CUSTOM RELEASE AUDITOR")));
+
+        let captured_requests = captured_requests
+            .lock()
+            .expect("captured provider requests");
+        let retry_first_turn = captured_requests
+            .get(3)
+            .and_then(|request| request.split_once("\r\n\r\n").map(|(_, body)| body))
+            .and_then(|body| serde_json::from_str::<JsonValue>(body).ok())
+            .expect("retry first provider turn JSON");
+        let retry_tools = retry_first_turn["tools"]
+            .as_array()
+            .expect("retry provider tools")
+            .iter()
+            .filter_map(|tool| tool["function"]["name"].as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(retry_tools, vec!["read", "todo"]);
+        assert!(retry_first_turn["messages"][0]["content"]
+            .as_str()
+            .is_some_and(|prompt| prompt.contains("CUSTOM RELEASE AUDITOR")));
     }
 
     #[test]
@@ -15323,6 +15997,7 @@ mod tests {
                 CREATE TABLE IF NOT EXISTS projects (
                     id TEXT PRIMARY KEY,
                     name TEXT NOT NULL,
+                    start_targets TEXT NOT NULL DEFAULT '[]',
                     updated_at TEXT NOT NULL
                 );
                 CREATE TABLE IF NOT EXISTS repositories (
@@ -15330,6 +16005,8 @@ mod tests {
                     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
                     root_path TEXT NOT NULL UNIQUE,
                     display_name TEXT NOT NULL,
+                    branch TEXT,
+                    head_sha TEXT,
                     updated_at TEXT NOT NULL
                 );
                 "#,
@@ -15377,6 +16054,63 @@ mod tests {
                 params![project_id, project_id, now_timestamp()],
             )
             .expect("seed project row");
+    }
+
+    fn seed_custom_agent_definition_fixture(
+        state_dir: &Path,
+        project_id: &str,
+        fixture_json: &str,
+    ) {
+        let fixture: JsonValue =
+            serde_json::from_str(fixture_json).expect("decode custom Agent fixture");
+        let definition_id = fixture["id"].as_str().expect("fixture Agent id");
+        let version = fixture["version"].as_i64().expect("fixture Agent version");
+        let database_path =
+            workspace_project_database_path_for_app_root(state_dir, project_id);
+        let connection = Connection::open(database_path).expect("open project database");
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_definitions (
+                    definition_id,
+                    current_version,
+                    display_name,
+                    short_label,
+                    scope,
+                    lifecycle_state,
+                    base_capability_profile,
+                    updated_at
+                )
+                VALUES (?1, ?2, ?3, ?4, ?5, 'active', ?6, ?7)
+                "#,
+                params![
+                    definition_id,
+                    version,
+                    fixture["displayName"].as_str().expect("display name"),
+                    fixture["shortLabel"].as_str().expect("short label"),
+                    fixture["scope"].as_str().expect("scope"),
+                    fixture["baseCapabilityProfile"]
+                        .as_str()
+                        .expect("base capability profile"),
+                    now_timestamp(),
+                ],
+            )
+            .expect("insert custom Agent definition");
+        connection
+            .execute(
+                r#"
+                INSERT INTO agent_definition_versions (
+                    definition_id,
+                    version,
+                    snapshot_json,
+                    validation_report_json,
+                    created_at
+                )
+                VALUES (?1, ?2, ?3, '{"status":"valid","source":"fixture"}', ?4)
+                "#,
+                params![definition_id, version, fixture_json, now_timestamp()],
+            )
+            .expect("insert custom Agent definition version");
     }
 
     fn seed_openai_codex_oauth_session(
@@ -15798,6 +16532,40 @@ mod tests {
     struct MockOpenAiCompatibleServer {
         base_url: String,
         handle: std::thread::JoinHandle<()>,
+    }
+
+    fn provider_text_response(content: &str) -> JsonValue {
+        json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": content
+                }
+            }]
+        })
+    }
+
+    fn provider_tool_call_response(
+        tool_call_id: &str,
+        tool_name: &str,
+        arguments: JsonValue,
+    ) -> JsonValue {
+        json!({
+            "choices": [{
+                "message": {
+                    "role": "assistant",
+                    "content": null,
+                    "tool_calls": [{
+                        "id": tool_call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": arguments.to_string()
+                        }
+                    }]
+                }
+            }]
+        })
     }
 
     impl MockOpenAiCompatibleServer {

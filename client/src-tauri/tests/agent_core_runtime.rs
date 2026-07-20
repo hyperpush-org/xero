@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicI64, Ordering as AtomicOrdering},
-        LazyLock, Mutex, MutexGuard,
+        LazyLock, Mutex,
     },
     thread,
     time::{Duration, Instant},
@@ -68,22 +68,21 @@ fn build_mock_app(state: DesktopState) -> tauri::App<tauri::test::MockRuntime> {
         .expect("failed to build mock Tauri app")
 }
 
-fn create_state(root: &TempDir) -> DesktopState {
+static AGENT_RUNTIME_APP_DATA_FIXTURE: LazyLock<TempDir> =
+    LazyLock::new(|| tempfile::tempdir().expect("shared agent runtime app-data fixture"));
+static AGENT_RUNTIME_SEED_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+static WORKSPACE_INDEX_FIXTURE_GENERATION: AtomicI64 = AtomicI64::new(0);
+
+fn create_state(_root: &TempDir) -> DesktopState {
     DesktopState::default()
-        .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
+        .with_global_db_path_override(AGENT_RUNTIME_APP_DATA_FIXTURE.path().join("xero.db"))
         .with_owned_agent_provider_config_override(AgentProviderConfig::Fake)
 }
 
-static RUNTIME_RUN_TEST_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-static WORKSPACE_INDEX_FIXTURE_GENERATION: AtomicI64 = AtomicI64::new(0);
-
-fn runtime_run_test_guard() -> MutexGuard<'static, ()> {
-    RUNTIME_RUN_TEST_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-}
-
 fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (String, PathBuf) {
+    let _seed_guard = AGENT_RUNTIME_SEED_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let repo_root = root.path().join("repo");
     fs::create_dir_all(repo_root.join("src")).expect("create repo src");
     fs::write(repo_root.join("src").join("tracked.txt"), "alpha\nbeta\n")
@@ -137,14 +136,15 @@ fn seed_project(root: &TempDir, app: &tauri::App<tauri::test::MockRuntime>) -> (
         .state::<DesktopState>()
         .global_db_path(&app.handle().clone())
         .expect("registry path");
-    registry::replace_projects(
+    registry::upsert_project(
         &registry_path,
-        vec![RegistryProjectRecord {
+        RegistryProjectRecord {
             project_id: repository.project_id.clone(),
             repository_id: repository.repository_id.clone(),
             root_path: root_path_string,
             is_git_repo: true,
-        }],
+        },
+        desktop_state.import_failpoints(),
     )
     .expect("persist registry entry");
 
@@ -478,7 +478,7 @@ impl MockOpenAiCompatibleSseServer {
                 // project after this listener starts. Keep the fixture alive for the
                 // same order of magnitude as the run-status wait below so coverage
                 // speed cannot masquerade as a provider outage.
-                let deadline = Instant::now() + Duration::from_secs(30);
+                let deadline = Instant::now() + Duration::from_secs(90);
                 let mut stream = loop {
                     match listener.accept() {
                         Ok((stream, _)) => {
@@ -5304,7 +5304,6 @@ fn owned_agent_command_sessions_enforce_concurrency_limit() {
 
 #[test]
 fn start_runtime_run_defaults_to_owned_agent_runtime() {
-    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, _repo_root) = seed_project(&root, &app);
@@ -5339,7 +5338,6 @@ fn start_runtime_run_defaults_to_owned_agent_runtime() {
 
 #[test]
 fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
-    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -5377,7 +5375,6 @@ fn start_runtime_run_initial_prompt_runs_owned_agent_task() {
 
 #[test]
 fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
-    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -5429,7 +5426,6 @@ fn archive_agent_session_stops_idle_runtime_run_after_interaction() {
 
 #[test]
 fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
-    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);
@@ -5515,7 +5511,6 @@ fn update_runtime_run_controls_prompt_drives_owned_agent_continuation() {
 
 #[test]
 fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
-    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let provider_id = "openai_api";
     let model_id = "gpt-4.1";
@@ -5604,7 +5599,7 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
     ]);
     let app = build_mock_app(
         DesktopState::default()
-            .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
+            .with_global_db_path_override(AGENT_RUNTIME_APP_DATA_FIXTURE.path().join("xero.db"))
             .with_owned_agent_provider_config_override(AgentProviderConfig::OpenAiCompatible(
                 OpenAiCompatibleProviderConfig {
                     provider_id: provider_id.into(),
@@ -5721,7 +5716,6 @@ fn update_runtime_run_controls_queues_runtime_agent_switch_for_next_boundary() {
 
 #[test]
 fn update_runtime_run_controls_queues_provider_profile_switch_for_next_prompt() {
-    let _runtime_run_guard = runtime_run_test_guard();
     let root = tempfile::tempdir().expect("temp dir");
     let app = build_mock_app(create_state(&root));
     let (project_id, repo_root) = seed_project(&root, &app);

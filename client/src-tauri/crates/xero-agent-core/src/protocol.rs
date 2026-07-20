@@ -4159,6 +4159,7 @@ mod tests {
                     runtime_agent_id: "engineer".into(),
                     agent_definition_id: None,
                     agent_definition_version: None,
+                    agent_definition_snapshot: None,
                     thinking_effort: None,
                     approval_mode: "suggest".into(),
                     plan_mode_required: true,

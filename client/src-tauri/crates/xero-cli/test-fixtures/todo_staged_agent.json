@@ -1,0 +1,56 @@
+{
+  "schema": "xero.agent_definition.v1",
+  "schemaVersion": 3,
+  "id": "todo_release_helper",
+  "version": 3,
+  "displayName": "Todo Release Helper",
+  "shortLabel": "Todo Release",
+  "description": "Use the canonical todo gate before publishing release notes.",
+  "taskPurpose": "Record completed inspection evidence, then publish grounded notes.",
+  "scope": "project_custom",
+  "lifecycleState": "active",
+  "baseCapabilityProfile": "observe_only",
+  "defaultApprovalMode": "suggest",
+  "allowedApprovalModes": ["suggest"],
+  "toolPolicy": {
+    "allowedTools": ["read", "todo"],
+    "deniedTools": ["list", "write", "patch", "delete", "move", "replace", "command"],
+    "commandAllowed": false,
+    "destructiveWriteAllowed": false
+  },
+  "workflowContract": "Close the inspection todo before publishing.",
+  "workflowStructure": {
+    "startPhaseId": "inspect",
+    "phases": [
+      {
+        "id": "inspect",
+        "title": "Inspect",
+        "description": "Record that source inspection is complete.",
+        "allowedTools": ["read"],
+        "requiredChecks": [
+          {
+            "kind": "todo_completed",
+            "todoId": "inspection_complete"
+          }
+        ]
+      },
+      {
+        "id": "publish",
+        "title": "Publish",
+        "description": "Return the grounded release notes.",
+        "allowedTools": ["read"]
+      }
+    ]
+  },
+  "finalResponseContract": "Return concise release notes.",
+  "attachedSkills": [],
+  "prompts": [
+    {
+      "id": "todo_release_system",
+      "label": "Todo release system prompt",
+      "role": "system",
+      "source": "fixture",
+      "body": "TODO RELEASE AUDITOR: close the inspection todo before publishing."
+    }
+  ]
+}

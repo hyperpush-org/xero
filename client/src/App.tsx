@@ -35,6 +35,10 @@ import { NoProjectEmptyState } from '@/components/xero/no-project-empty-state'
 import { OnboardingFlow } from '@/components/xero/onboarding/onboarding-flow'
 import { ProjectLoadErrorState } from '@/components/xero/project-load-error-state'
 import { PhaseView } from '@/components/xero/phase-view'
+import {
+  WorkflowRunFloatingPanel,
+  useChatWorkflowRunPanel,
+} from '@/components/xero/workflow-run-panel'
 import { ProjectAddDialog } from '@/components/xero/project-add-dialog'
 import { ProjectRail } from '@/components/xero/project-rail'
 import { UpdateScreen } from '@/components/xero/update-screen'
@@ -189,6 +193,10 @@ import { DesktopControlBanner } from '@/components/xero/desktop-control-banner'
 import { checkAttachmentModelCompatibility } from '@/lib/agent-attachments'
 import { WORKFLOWS_ENABLED } from '@/src/features/xero/workflows-feature-flag'
 import { WorkflowStartIdempotencyCoordinator } from '@/src/features/xero/workflow-start-idempotency'
+import {
+  activeWorkflowAgentSessionId,
+  workflowRunSessionIds,
+} from '@/src/features/xero/workflow-run-selectors'
 
 export interface XeroAppProps {
   adapter?: XeroDesktopAdapter
@@ -4452,7 +4460,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
         return run
       }
       composerTemplateMaterializationRef.current = null
-      setActiveView('phases')
+      // Stay in the chat view: the floating workflow-run panel surfaces the
+      // run's progress there, and the canvas remains one click away.
       return run
     },
     [
@@ -4634,6 +4643,73 @@ export function XeroApp({ adapter }: XeroAppProps) {
     },
     [setActiveView, workflowAgentInspector.selectAgent],
   )
+
+  const chatWorkflowRunPanel = useChatWorkflowRunPanel(workflowRuns)
+
+  const handleOpenWorkflowRunCanvas = useCallback(
+    (runId: string) => {
+      void handleSelectWorkflowRun(runId)
+    },
+    [handleSelectWorkflowRun],
+  )
+
+  const handleOpenWorkflowAgentSessionInChat = useCallback(
+    (agentSessionId: string) => {
+      handleSelectAgentSession(agentSessionId)
+    },
+    [handleSelectAgentSession],
+  )
+
+  const handleOpenWorkflowRunChat = useCallback(() => {
+    if (!selectedWorkflowRun) return
+    const sessionId = activeWorkflowAgentSessionId(selectedWorkflowRun)
+    if (sessionId) handleSelectAgentSession(sessionId)
+    clearPendingAgentDockOpen()
+    if (agentDockOpen) return
+    if (computerUseOpen) {
+      closeSidebarsExcept('agentDock')
+      setAgentDockOpen(false)
+      pendingAgentDockOpenTimeoutRef.current = window.setTimeout(() => {
+        pendingAgentDockOpenTimeoutRef.current = null
+        setAgentDockOpen(true)
+      }, SIDEBAR_WIDTH_DURATION_MS)
+      return
+    }
+    closeSidebarsExcept('agentDock')
+    setAgentDockOpen(true)
+  }, [
+    agentDockOpen,
+    clearPendingAgentDockOpen,
+    closeSidebarsExcept,
+    computerUseOpen,
+    handleSelectAgentSession,
+    selectedWorkflowRun,
+  ])
+
+  // While the chat dock follows a workflow run on the canvas, keep it pointed
+  // at the node the run is currently working. Only auto-switch when the chat
+  // is already showing one of this run's sessions so we never yank the user
+  // away from an unrelated conversation.
+  useEffect(() => {
+    if (!WORKFLOWS_ENABLED || !agentDockOpen || activeView !== 'phases') return
+    if (computerUseOpen || !selectedWorkflowRun) return
+    const targetSessionId = activeWorkflowAgentSessionId(selectedWorkflowRun)
+    if (!targetSessionId || targetSessionId === selectedAgentSessionId) return
+    if (
+      !selectedAgentSessionId ||
+      !workflowRunSessionIds(selectedWorkflowRun).has(selectedAgentSessionId)
+    ) {
+      return
+    }
+    handleSelectAgentSession(targetSessionId)
+  }, [
+    activeView,
+    agentDockOpen,
+    computerUseOpen,
+    handleSelectAgentSession,
+    selectedAgentSessionId,
+    selectedWorkflowRun,
+  ])
 
   const focusedChatPane = agentWorkspaceLayout?.paneSlots.find(
     (slot) => slot.id === agentWorkspaceLayout.focusedPaneId,
@@ -5491,6 +5567,8 @@ export function XeroApp({ adapter }: XeroAppProps) {
                   WORKFLOWS_ENABLED ? handleWorkflowStartRequestHandled : undefined
                 }
                 onCancelWorkflowRun={WORKFLOWS_ENABLED ? handleCancelWorkflowRun : undefined}
+                onOpenWorkflowRunChat={WORKFLOWS_ENABLED ? handleOpenWorkflowRunChat : undefined}
+                workflowRunChatOpen={agentDockOpen && !computerUseOpen}
                 onRetryWorkflowNodeRun={WORKFLOWS_ENABLED ? handleRetryWorkflowNodeRun : undefined}
                 onSkipWorkflowBranch={WORKFLOWS_ENABLED ? handleSkipWorkflowBranch : undefined}
                 onResumeWorkflowCheckpoint={
@@ -5542,6 +5620,7 @@ export function XeroApp({ adapter }: XeroAppProps) {
               name="agent-pane"
               prewarm={startupSurfacePrewarm.shouldMount}
             >
+              <div className="relative flex h-full min-h-0 w-full min-w-0 flex-1">
               <AgentWorkspace
                 active={activeView === 'agent'}
                 layout={agentRenderWorkspaceLayout}
@@ -5598,6 +5677,18 @@ export function XeroApp({ adapter }: XeroAppProps) {
                 }
                 onPendingComposerInsertConsumed={handleBrowserComposerInsertConsumed}
               />
+              {WORKFLOWS_ENABLED && chatWorkflowRunPanel.run ? (
+                <WorkflowRunFloatingPanel
+                  run={chatWorkflowRunPanel.run}
+                  actionRunning={workflowActionRunning}
+                  onOpenCanvas={handleOpenWorkflowRunCanvas}
+                  onCancelRun={handleCancelWorkflowRun}
+                  onResumeCheckpoint={handleResumeWorkflowCheckpoint}
+                  onOpenAgentSession={handleOpenWorkflowAgentSessionInChat}
+                  onDismiss={chatWorkflowRunPanel.dismiss}
+                />
+              ) : null}
+              </div>
             </LazyActivityPane>
           ) : null}
 

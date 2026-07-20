@@ -4,13 +4,13 @@ use std::{
     io::{BufRead, BufReader, Read, Write},
     path::{Component, Path, PathBuf},
     process::{Command, Stdio},
-    sync::Arc,
+    sync::{Arc, Mutex},
     thread,
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use reqwest::blocking::Client;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 
 use crate::{
@@ -61,6 +61,18 @@ const HEADLESS_TOOL_DELETE: &str = "delete";
 const HEADLESS_TOOL_MOVE: &str = "move";
 const HEADLESS_TOOL_REPLACE: &str = "replace";
 const HEADLESS_TOOL_COMMAND: &str = "command";
+const HEADLESS_TOOL_TODO: &str = "todo";
+const HEADLESS_SUPPORTED_AGENT_TOOLS: &[&str] = &[
+    HEADLESS_TOOL_READ,
+    HEADLESS_TOOL_LIST,
+    HEADLESS_TOOL_WRITE,
+    HEADLESS_TOOL_PATCH,
+    HEADLESS_TOOL_DELETE,
+    HEADLESS_TOOL_MOVE,
+    HEADLESS_TOOL_REPLACE,
+    HEADLESS_TOOL_COMMAND,
+    HEADLESS_TOOL_TODO,
+];
 const LEGACY_HEADLESS_MINI_TOOLS: &[&str] = &["read_file", "write_file", "list_files"];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -151,6 +163,491 @@ impl Default for HeadlessRuntimeOptions {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HeadlessAgentStageWorkflow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    start_phase_id: Option<String>,
+    phases: Vec<HeadlessAgentStage>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HeadlessAgentStage {
+    id: String,
+    title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    description: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allowed_tools: Option<Vec<String>>,
+    #[serde(default)]
+    required_checks: Vec<JsonValue>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_limit: Option<u64>,
+    #[serde(default)]
+    branches: Vec<JsonValue>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct HeadlessAgentDefinitionProfile {
+    definition_id: String,
+    definition_version: i64,
+    base_capability_profile: String,
+    display_name: String,
+    task_purpose: String,
+    workflow_contract: String,
+    final_response_contract: String,
+    system_prompt_fragments: Vec<String>,
+    allowed_approval_modes: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    allowed_tools: Option<BTreeSet<String>>,
+    #[serde(default)]
+    denied_tools: BTreeSet<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    workflow_structure: Option<HeadlessAgentStageWorkflow>,
+}
+
+impl HeadlessAgentDefinitionProfile {
+    fn from_snapshot(
+        snapshot: &JsonValue,
+        expected_definition_id: &str,
+        expected_definition_version: i64,
+    ) -> CoreResult<Self> {
+        let object = snapshot.as_object().ok_or_else(|| {
+            CoreError::invalid_request(
+                "agent_core_headless_agent_definition_invalid",
+                "The selected Agent definition snapshot must be a JSON object.",
+            )
+        })?;
+        let definition_id = object
+            .get("id")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| {
+                CoreError::invalid_request(
+                    "agent_core_headless_agent_definition_id_missing",
+                    "The selected Agent definition snapshot has no id.",
+                )
+            })?;
+        if definition_id != expected_definition_id {
+            return Err(CoreError::invalid_request(
+                "agent_core_headless_agent_definition_id_mismatch",
+                format!(
+                    "Selected Agent definition `{expected_definition_id}` does not match snapshot `{definition_id}`."
+                ),
+            ));
+        }
+        let definition_version = object
+            .get("version")
+            .and_then(JsonValue::as_i64)
+            .unwrap_or(expected_definition_version);
+        if definition_version != expected_definition_version {
+            return Err(CoreError::invalid_request(
+                "agent_core_headless_agent_definition_version_mismatch",
+                format!(
+                    "Selected Agent definition `{definition_id}` version `{expected_definition_version}` does not match snapshot version `{definition_version}`."
+                ),
+            ));
+        }
+        if object
+            .get("lifecycleState")
+            .and_then(JsonValue::as_str)
+            .is_some_and(|state| state != "active")
+        {
+            return Err(CoreError::invalid_request(
+                "agent_core_headless_agent_definition_inactive",
+                format!("Agent definition `{definition_id}` is not active."),
+            ));
+        }
+
+        let base_capability_profile = object
+            .get("baseCapabilityProfile")
+            .and_then(JsonValue::as_str)
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| base_capability_profile_for_runtime_agent(definition_id))
+            .to_owned();
+        let allowed_approval_modes = object
+            .get("allowedApprovalModes")
+            .and_then(JsonValue::as_array)
+            .map(|values| normalized_string_set(values.iter()))
+            .filter(|values| !values.is_empty())
+            .unwrap_or_else(|| default_approval_modes_for_profile(&base_capability_profile));
+
+        let mut allowed_tools = None;
+        let mut denied_tools = BTreeSet::new();
+        if let Some(policy) = object.get("toolPolicy") {
+            match policy {
+                JsonValue::String(policy) => {
+                    allowed_tools = named_headless_tool_policy(policy);
+                }
+                JsonValue::Object(policy) => {
+                    allowed_tools = policy
+                        .get("allowedTools")
+                        .and_then(JsonValue::as_array)
+                        .map(|values| normalized_headless_tool_set(values.iter()));
+                    denied_tools = policy
+                        .get("deniedTools")
+                        .and_then(JsonValue::as_array)
+                        .map(|values| normalized_headless_tool_set(values.iter()))
+                        .unwrap_or_default();
+                    if policy.get("commandAllowed").and_then(JsonValue::as_bool) == Some(false) {
+                        denied_tools.insert(HEADLESS_TOOL_COMMAND.into());
+                    }
+                    if policy
+                        .get("destructiveWriteAllowed")
+                        .and_then(JsonValue::as_bool)
+                        == Some(false)
+                    {
+                        denied_tools.insert(HEADLESS_TOOL_DELETE.into());
+                        denied_tools.insert(HEADLESS_TOOL_MOVE.into());
+                    }
+                }
+                _ => {
+                    return Err(CoreError::invalid_request(
+                        "agent_core_headless_agent_tool_policy_invalid",
+                        format!("Agent definition `{definition_id}` has an invalid toolPolicy."),
+                    ));
+                }
+            }
+        }
+        if !profile_allows_workspace_writes(&base_capability_profile) {
+            allowed_tools = Some(BTreeSet::from([
+                HEADLESS_TOOL_READ.into(),
+                HEADLESS_TOOL_LIST.into(),
+                HEADLESS_TOOL_TODO.into(),
+            ]));
+        }
+        if let Some(allowed) = allowed_tools.as_mut() {
+            allowed.retain(|tool| supported_headless_agent_tools().contains(tool.as_str()));
+            for denied in &denied_tools {
+                allowed.remove(denied);
+            }
+        }
+
+        let workflow_structure = object
+            .get("workflowStructure")
+            .cloned()
+            .map(serde_json::from_value::<HeadlessAgentStageWorkflow>)
+            .transpose()
+            .map_err(|error| {
+                CoreError::invalid_request(
+                    "agent_core_headless_agent_stages_invalid",
+                    format!("Agent definition `{definition_id}` has invalid Stages: {error}"),
+                )
+            })?;
+        validate_headless_agent_stages(definition_id, workflow_structure.as_ref())?;
+
+        let system_prompt_fragments = object
+            .get("prompts")
+            .and_then(JsonValue::as_array)
+            .into_iter()
+            .flatten()
+            .filter(|prompt| prompt.get("role").and_then(JsonValue::as_str) == Some("system"))
+            .filter_map(|prompt| prompt.get("body").and_then(JsonValue::as_str))
+            .map(str::trim)
+            .filter(|body| !body.is_empty())
+            .map(str::to_owned)
+            .collect();
+
+        Ok(Self {
+            definition_id: definition_id.into(),
+            definition_version,
+            base_capability_profile,
+            display_name: definition_text(object, "displayName", definition_id),
+            task_purpose: definition_text(object, "taskPurpose", ""),
+            workflow_contract: definition_text(object, "workflowContract", ""),
+            final_response_contract: definition_text(object, "finalResponseContract", ""),
+            system_prompt_fragments,
+            allowed_approval_modes,
+            allowed_tools,
+            denied_tools,
+            workflow_structure,
+        })
+    }
+
+    fn initial_stage(&self) -> Option<&HeadlessAgentStage> {
+        let workflow = self.workflow_structure.as_ref()?;
+        let start = workflow
+            .start_phase_id
+            .as_deref()
+            .or_else(|| workflow.phases.first().map(|stage| stage.id.as_str()))?;
+        workflow.phases.iter().find(|stage| stage.id == start)
+    }
+
+    fn effective_allowed_tools_for_stage(
+        &self,
+        stage: Option<&HeadlessAgentStage>,
+    ) -> Option<BTreeSet<String>> {
+        let mut allowed = self.allowed_tools.clone();
+        if let Some(stage_tools) = stage.and_then(|stage| stage.allowed_tools.as_ref()) {
+            let declares_restriction = !stage_tools.is_empty();
+            let stage_tools = stage_tools
+                .iter()
+                .flat_map(|tool| normalized_headless_tool_names(tool))
+                .map(str::to_owned)
+                .collect::<BTreeSet<_>>();
+            if declares_restriction {
+                allowed = Some(match allowed {
+                    Some(policy_tools) => policy_tools.intersection(&stage_tools).cloned().collect(),
+                    None => stage_tools,
+                });
+            }
+        }
+        if let Some(allowed) = allowed.as_mut() {
+            allowed.insert(HEADLESS_TOOL_TODO.into());
+            for denied in &self.denied_tools {
+                allowed.remove(denied);
+            }
+        }
+        allowed
+    }
+
+    fn effective_allowed_tools(&self) -> Option<BTreeSet<String>> {
+        self.effective_allowed_tools_for_stage(self.initial_stage())
+    }
+}
+
+#[derive(Debug, Clone)]
+struct HeadlessAgentStageRuntime {
+    profile: HeadlessAgentDefinitionProfile,
+    current_stage_id: String,
+    successful_tools: BTreeMap<String, u64>,
+    completed_todos: BTreeSet<String>,
+    completed: bool,
+    final_reprompted: bool,
+}
+
+#[derive(Debug, Clone)]
+struct HeadlessAgentStageTransition {
+    from_stage_id: String,
+    to_stage_id: Option<String>,
+}
+
+impl HeadlessAgentStageRuntime {
+    fn new(identity: &HeadlessRunIdentity, snapshot: &RunSnapshot) -> Option<Self> {
+        let profile = identity.definition_profile.clone()?;
+        let initial_stage = profile.initial_stage()?.id.clone();
+        let mut runtime = Self {
+            profile,
+            current_stage_id: initial_stage,
+            successful_tools: BTreeMap::new(),
+            completed_todos: BTreeSet::new(),
+            completed: false,
+            final_reprompted: false,
+        };
+        runtime.advance_if_satisfied();
+        for event in &snapshot.events {
+            match event.event_kind {
+                RuntimeEventKind::ToolCompleted if event.payload["ok"] == true => {
+                    if let Some(tool_name) = event.payload["toolName"].as_str() {
+                        *runtime
+                            .successful_tools
+                            .entry(tool_name.to_owned())
+                            .or_default() += 1;
+                    }
+                    if let Some(todo_id) = event.payload["completedTodoId"].as_str() {
+                        runtime.completed_todos.insert(todo_id.to_owned());
+                    }
+                }
+                RuntimeEventKind::VerificationGate
+                    if event.payload["state"] == "passed"
+                        && event.payload["stageId"].as_str()
+                            == Some(runtime.current_stage_id.as_str()) =>
+                {
+                    if let Some(next_stage_id) =
+                        event.payload["nextStageId"].as_str().map(str::to_owned)
+                    {
+                        runtime.enter_stage(next_stage_id);
+                    } else {
+                        runtime.completed = true;
+                    }
+                }
+                RuntimeEventKind::VerificationGate
+                    if event.payload["state"] == "blocked"
+                        && event.payload["stageId"].as_str()
+                            == Some(runtime.current_stage_id.as_str()) =>
+                {
+                    runtime.final_reprompted = true;
+                }
+                _ => {}
+            }
+        }
+        runtime.advance_if_satisfied();
+        Some(runtime)
+    }
+
+    fn current_stage(&self) -> Option<&HeadlessAgentStage> {
+        if self.completed {
+            return None;
+        }
+        self.profile
+            .workflow_structure
+            .as_ref()?
+            .phases
+            .iter()
+            .find(|stage| stage.id == self.current_stage_id)
+    }
+
+    fn allowed_tools(&self) -> Option<BTreeSet<String>> {
+        self.profile
+            .effective_allowed_tools_for_stage(self.current_stage())
+    }
+
+    fn stage_json(&self) -> JsonValue {
+        self.current_stage()
+            .map(|stage| {
+                json!({
+                    "id": stage.id,
+                    "title": stage.title,
+                    "allowedTools": self.allowed_tools().map(|tools| tools.into_iter().collect::<Vec<_>>()),
+                    "requiredChecks": stage.required_checks,
+                })
+            })
+            .unwrap_or(JsonValue::Null)
+    }
+
+    fn record_tool_results(
+        &mut self,
+        results: &[HeadlessToolResultMessage],
+    ) -> Vec<HeadlessAgentStageTransition> {
+        for result in results {
+            if result.payload["ok"] == true {
+                *self
+                    .successful_tools
+                    .entry(result.tool_name.clone())
+                    .or_default() += 1;
+                if let Some(todo_id) = completed_todo_id_from_headless_result(result) {
+                    self.completed_todos.insert(todo_id);
+                }
+            }
+        }
+        self.advance_if_satisfied()
+    }
+
+    fn advance_if_satisfied(&mut self) -> Vec<HeadlessAgentStageTransition> {
+        let mut transitions = Vec::new();
+        let mut visited = BTreeSet::new();
+        while !self.completed && visited.insert(self.current_stage_id.clone()) {
+            let Some(stage) = self.current_stage().cloned() else {
+                break;
+            };
+            if !self.stage_checks_satisfied(&stage) {
+                break;
+            }
+            let next_stage_id = stage
+                .branches
+                .iter()
+                .find(|branch| self.branch_matches(branch))
+                .and_then(|branch| branch["targetPhaseId"].as_str())
+                .map(str::to_owned)
+                .or_else(|| {
+                    let phases = &self.profile.workflow_structure.as_ref()?.phases;
+                    let index = phases.iter().position(|candidate| candidate.id == stage.id)?;
+                    phases.get(index + 1).map(|next| next.id.clone())
+                });
+            if next_stage_id.as_deref() == Some(stage.id.as_str()) {
+                break;
+            }
+            transitions.push(HeadlessAgentStageTransition {
+                from_stage_id: stage.id,
+                to_stage_id: next_stage_id.clone(),
+            });
+            if let Some(next_stage_id) = next_stage_id {
+                self.enter_stage(next_stage_id);
+            } else {
+                self.completed = true;
+            }
+        }
+        transitions
+    }
+
+    fn enter_stage(&mut self, stage_id: String) {
+        self.current_stage_id = stage_id;
+        self.successful_tools.clear();
+        self.completed_todos.clear();
+        self.final_reprompted = false;
+        self.completed = false;
+    }
+
+    fn stage_checks_satisfied(&self, stage: &HeadlessAgentStage) -> bool {
+        stage
+            .required_checks
+            .iter()
+            .all(|check| self.condition_satisfied(check))
+    }
+
+    fn branch_matches(&self, branch: &JsonValue) -> bool {
+        self.condition_satisfied(&branch["condition"])
+    }
+
+    fn condition_satisfied(&self, condition: &JsonValue) -> bool {
+        match condition["kind"].as_str() {
+            Some("always") => true,
+            Some("todo_completed") => condition["todoId"]
+                .as_str()
+                .is_some_and(|todo_id| self.completed_todos.contains(todo_id)),
+            Some("tool_succeeded") => {
+                headless_condition_tool_names(condition)
+                    .iter()
+                    .map(|tool| self.successful_tools.get(tool).copied().unwrap_or(0))
+                    .sum::<u64>()
+                    >= condition["minCount"].as_u64().unwrap_or(1)
+            }
+            _ => false,
+        }
+    }
+
+    fn completion_gate_message(&self) -> Option<String> {
+        if self.completed {
+            return None;
+        }
+        let Some(stage) = self.current_stage() else {
+            return Some("Complete the active Stage checks before answering.".into());
+        };
+        if self.stage_checks_satisfied(stage)
+            && stage
+                .branches
+                .iter()
+                .all(|branch| !self.branch_matches(branch))
+            && self.next_sequential_stage(stage).is_none()
+        {
+            return None;
+        };
+        Some(format!(
+            "Xero Stage gate: `{}` is incomplete. Complete these required checks before the final response: {}.",
+            stage.title,
+            stage
+                .required_checks
+                .iter()
+                .map(|check| check.to_string())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    }
+
+    fn next_sequential_stage(&self, stage: &HeadlessAgentStage) -> Option<&HeadlessAgentStage> {
+        let phases = &self.profile.workflow_structure.as_ref()?.phases;
+        let index = phases.iter().position(|candidate| candidate.id == stage.id)?;
+        phases.get(index + 1)
+    }
+}
+
+fn completed_todo_id_from_headless_result(result: &HeadlessToolResultMessage) -> Option<String> {
+    (result.tool_name == HEADLESS_TOOL_TODO)
+        .then(|| completed_todo_id_from_headless_output(&result.payload["output"]))
+        .flatten()
+        .map(str::to_owned)
+}
+
+fn completed_todo_id_from_headless_output(output: &JsonValue) -> Option<&str> {
+    (output["changedItem"]["status"] == "completed")
+        .then(|| output["changedItem"]["id"].as_str())
+        .flatten()
+}
+
 #[derive(Debug, Clone)]
 pub struct HeadlessProviderRuntime<S = FileAgentCoreStore> {
     store: S,
@@ -159,17 +656,21 @@ pub struct HeadlessProviderRuntime<S = FileAgentCoreStore> {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-struct HeadlessRunIdentity {
-    runtime_agent_id: String,
-    agent_definition_id: String,
-    agent_definition_version: i64,
-    system_prompt: String,
-    thinking_effort: Option<String>,
-    approval_mode: String,
+pub(crate) struct HeadlessRunIdentity {
+    pub(crate) runtime_agent_id: String,
+    pub(crate) agent_definition_id: String,
+    pub(crate) agent_definition_version: i64,
+    pub(crate) system_prompt: String,
+    pub(crate) thinking_effort: Option<String>,
+    pub(crate) approval_mode: String,
+    definition_profile: Option<HeadlessAgentDefinitionProfile>,
 }
 
 impl HeadlessRunIdentity {
-    fn from_request(request: &StartRunRequest, workspace_root: Option<&Path>) -> Self {
+    pub(crate) fn from_request(
+        request: &StartRunRequest,
+        workspace_root: Option<&Path>,
+    ) -> CoreResult<Self> {
         let runtime_agent_id = request
             .controls
             .as_ref()
@@ -201,18 +702,61 @@ impl HeadlessRunIdentity {
             .filter(|mode| !mode.is_empty())
             .unwrap_or("suggest")
             .to_owned();
-        let system_prompt = headless_system_prompt_for_agent(&runtime_agent_id, workspace_root);
-        Self {
+        let definition_profile = request
+            .controls
+            .as_ref()
+            .and_then(|controls| controls.agent_definition_snapshot.as_ref())
+            .map(|snapshot| {
+                HeadlessAgentDefinitionProfile::from_snapshot(
+                    snapshot,
+                    &agent_definition_id,
+                    agent_definition_version,
+                )
+            })
+            .transpose()?;
+        if let Some(profile) = definition_profile.as_ref() {
+            if approval_mode != "strict" && !profile.allowed_approval_modes.contains(&approval_mode) {
+                return Err(CoreError::invalid_request(
+                    "agent_core_headless_agent_approval_mode_denied",
+                    format!(
+                        "Agent definition `{}` does not allow approval mode `{approval_mode}`.",
+                        profile.definition_id
+                    ),
+                ));
+            }
+        }
+        let system_prompt = definition_profile.as_ref().map_or_else(
+            || headless_system_prompt_for_agent(&runtime_agent_id, workspace_root),
+            |profile| custom_headless_agent_system_prompt(profile, workspace_root),
+        );
+        Ok(Self {
             runtime_agent_id,
             agent_definition_id,
             agent_definition_version,
             system_prompt,
             thinking_effort,
             approval_mode,
-        }
+            definition_profile,
+        })
     }
 
-    fn from_snapshot(snapshot: &RunSnapshot) -> Self {
+    pub(crate) fn definition_runtime_json(&self) -> Option<JsonValue> {
+        self.definition_profile
+            .as_ref()
+            .and_then(|profile| serde_json::to_value(profile).ok())
+    }
+
+    pub(crate) fn incomplete_stage_gate(
+        &self,
+        snapshot: &RunSnapshot,
+    ) -> Option<(String, String)> {
+        let runtime = HeadlessAgentStageRuntime::new(self, snapshot)?;
+        runtime
+            .completion_gate_message()
+            .map(|message| (runtime.current_stage_id, message))
+    }
+
+    pub(crate) fn from_snapshot(snapshot: &RunSnapshot) -> CoreResult<Self> {
         let run_started = snapshot
             .events
             .iter()
@@ -227,25 +771,84 @@ impl HeadlessRunIdentity {
             .filter(|mode| matches!(*mode, "suggest" | "auto_edit" | "yolo" | "strict"))
             .unwrap_or("suggest")
             .to_owned();
-        Self {
+        let definition_profile = match run_started
+            .and_then(|event| event.payload.get("agentDefinitionRuntime"))
+        {
+            None | Some(JsonValue::Null) => None,
+            Some(profile) => {
+                let profile = serde_json::from_value::<HeadlessAgentDefinitionProfile>(
+                    profile.clone(),
+                )
+                .map_err(|error| {
+                    CoreError::system_fault(
+                        "agent_core_headless_agent_definition_runtime_invalid",
+                        format!(
+                            "Persisted headless Agent runtime policy is invalid: {error}"
+                        ),
+                    )
+                })?;
+                if profile.definition_id != snapshot.agent_definition_id
+                    || profile.definition_version != snapshot.agent_definition_version
+                {
+                    return Err(CoreError::system_fault(
+                        "agent_core_headless_agent_definition_runtime_mismatch",
+                        "Persisted headless Agent runtime policy does not match the run identity.",
+                    ));
+                }
+                if approval_mode != "strict"
+                    && !profile.allowed_approval_modes.contains(&approval_mode)
+                {
+                    return Err(CoreError::system_fault(
+                        "agent_core_headless_agent_approval_runtime_mismatch",
+                        "Persisted headless Agent approval mode is outside its saved policy.",
+                    ));
+                }
+                Some(profile)
+            }
+        };
+        Ok(Self {
             runtime_agent_id: snapshot.runtime_agent_id.clone(),
             agent_definition_id: snapshot.agent_definition_id.clone(),
             agent_definition_version: snapshot.agent_definition_version,
             system_prompt: snapshot.system_prompt.clone(),
             thinking_effort,
             approval_mode,
-        }
+            definition_profile,
+        })
     }
 
     fn allows_workspace_writes(&self) -> bool {
-        headless_agent_allows_workspace_writes(&self.runtime_agent_id)
+        self.definition_profile.as_ref().map_or_else(
+            || headless_agent_allows_workspace_writes(&self.runtime_agent_id),
+            |profile| {
+                profile_allows_workspace_writes(&profile.base_capability_profile)
+                    && profile.effective_allowed_tools().is_none_or(|tools| {
+                        tools.iter().any(|tool| headless_tool_is_write(tool))
+                    })
+            },
+        )
             && matches!(self.approval_mode.as_str(), "auto_edit" | "yolo")
     }
 
     fn allows_commands(&self) -> bool {
-        headless_agent_allows_workspace_writes(&self.runtime_agent_id)
+        self.definition_profile.as_ref().map_or_else(
+            || headless_agent_allows_workspace_writes(&self.runtime_agent_id),
+            |profile| {
+                profile_allows_workspace_writes(&profile.base_capability_profile)
+                    && profile
+                        .effective_allowed_tools()
+                        .is_none_or(|tools| tools.contains(HEADLESS_TOOL_COMMAND))
+            },
+        )
             && self.approval_mode == "yolo"
     }
+
+    fn allowed_tools(&self) -> Option<BTreeSet<String>> {
+        self.definition_profile
+            .as_ref()
+            .and_then(HeadlessAgentDefinitionProfile::effective_allowed_tools)
+    }
+
 }
 
 impl<S> HeadlessProviderRuntime<S>
@@ -271,7 +874,7 @@ where
     fn start_real_run(&self, request: StartRunRequest) -> CoreResult<RunSnapshot> {
         self.validate_selected_provider(&request.provider)?;
         let workspace_root = self.workspace_root();
-        let identity = HeadlessRunIdentity::from_request(&request, workspace_root.as_deref());
+        let identity = HeadlessRunIdentity::from_request(&request, workspace_root.as_deref())?;
         let runtime_contract = ProductionRuntimeContract::real_provider(
             "headless_provider_runtime",
             request.project_id.clone(),
@@ -328,6 +931,7 @@ where
                 "runtimeAgentId": identity.runtime_agent_id.clone(),
                 "agentDefinitionId": identity.agent_definition_id.clone(),
                 "agentDefinitionVersion": identity.agent_definition_version,
+                "agentDefinitionRuntime": identity.definition_profile.clone(),
                 "thinkingEffort": identity.thinking_effort.clone(),
                 "approvalMode": identity.approval_mode.clone(),
                 "providerPreflight": preflight.clone(),
@@ -479,7 +1083,7 @@ where
             }),
         })?;
         let snapshot = self.store.load_run(&request.project_id, &request.run_id)?;
-        let identity = HeadlessRunIdentity::from_snapshot(&snapshot);
+        let identity = HeadlessRunIdentity::from_snapshot(&snapshot)?;
         self.drive_real_turn(snapshot, &preflight, &identity)?;
         self.store.load_run(&request.project_id, &request.run_id)
     }
@@ -517,6 +1121,8 @@ where
         let mut tool_call_count = 0_u64;
         let mut command_call_count = 0_u64;
         let provider_turn_base = next_headless_provider_turn_index(&current);
+        let mut stage_runtime = HeadlessAgentStageRuntime::new(identity, &current);
+        let todo_state = Arc::new(Mutex::new(BTreeMap::new()));
         for turn_offset in 0..self.options.max_provider_turns {
             let turn_index = provider_turn_base.saturating_add(turn_offset);
             if let Some(max_wall_time_ms) = self.options.max_wall_time_ms {
@@ -534,18 +1140,29 @@ where
                 }
             }
             let workspace_root = self.workspace_root();
+            let allowed_tools = stage_runtime
+                .as_ref()
+                .and_then(HeadlessAgentStageRuntime::allowed_tools)
+                .or_else(|| identity.allowed_tools());
+            let stage = stage_runtime
+                .as_ref()
+                .map(HeadlessAgentStageRuntime::stage_json)
+                .unwrap_or(JsonValue::Null);
             let tool_runtime = HeadlessProductionToolRuntime::new_with_modes(
                 workspace_root.as_ref(),
                 self.allow_workspace_writes() && identity.allows_workspace_writes(),
                 self.allow_workspace_writes() && identity.allows_commands(),
                 self.app_data_roots_for_project(&current.project_id),
-            )?;
+            )?
+            .with_allowed_tools(allowed_tools)
+            .with_todo_state(Arc::clone(&todo_state));
             self.record_tool_registry_snapshot(&current, turn_index, &tool_runtime)?;
             self.record_provider_context_manifest(
                 &current,
                 turn_index,
                 &tool_runtime,
                 provider_preflight,
+                &stage,
             )?;
             let project_id = current.project_id.clone();
             let run_id = current.run_id.clone();
@@ -659,6 +1276,70 @@ where
             }
 
             if tool_calls.is_empty() {
+                if let Some((stage_runtime, gate_message)) = stage_runtime
+                    .as_mut()
+                    .and_then(|runtime| runtime.completion_gate_message().map(|message| (runtime, message)))
+                {
+                    let stage_id = stage_runtime.current_stage_id.clone();
+                    self.store.append_event(NewRuntimeEvent {
+                        project_id: current.project_id.clone(),
+                        run_id: current.run_id.clone(),
+                        event_kind: RuntimeEventKind::AssistantCandidate,
+                        trace: Some(RuntimeTraceContext::for_provider_turn(
+                            &current.trace_id,
+                            &current.run_id,
+                            turn_index,
+                        )),
+                        payload: json!({
+                            "state": "superseded",
+                            "disposition": "stage_gate",
+                            "stageId": stage_id,
+                            "text": content,
+                        }),
+                    })?;
+                    self.store.append_event(NewRuntimeEvent {
+                        project_id: current.project_id.clone(),
+                        run_id: current.run_id.clone(),
+                        event_kind: RuntimeEventKind::VerificationGate,
+                        trace: Some(RuntimeTraceContext::for_run(
+                            &current.trace_id,
+                            &current.run_id,
+                            "stage_gate_blocked",
+                        )),
+                        payload: json!({
+                            "state": "blocked",
+                            "stageId": stage_id,
+                            "message": gate_message,
+                            "turnIndex": turn_index,
+                        }),
+                    })?;
+                    if stage_runtime.final_reprompted {
+                        return self.fail_real_provider_run(
+                            &current,
+                            "agent_core_headless_stage_incomplete",
+                            "The headless Agent returned repeated final answers before completing its Stage checks.",
+                            "stage_gate_incomplete",
+                            json!({
+                                "stageId": stage_id,
+                                "turnIndex": turn_index,
+                            }),
+                        );
+                    }
+                    stage_runtime.final_reprompted = true;
+                    self.store.append_message(NewMessageRecord {
+                        project_id: current.project_id.clone(),
+                        run_id: current.run_id.clone(),
+                        role: MessageRole::Developer,
+                        content: gate_message.clone(),
+                        provider_metadata: None,
+                    })?;
+                    chat_messages.push(json!({
+                        "role": "user",
+                        "content": gate_message,
+                    }));
+                    current = self.store.load_run(&current.project_id, &current.run_id)?;
+                    continue;
+                }
                 if !content.trim().is_empty() {
                     let assistant_provider_message_id =
                         provider_assistant_message_id(&current.run_id, turn_index);
@@ -719,13 +1400,34 @@ where
                 )),
             })?;
 
-            for result in self.dispatch_headless_tool_batch(
+            let tool_results = self.dispatch_headless_tool_batch(
                 &tool_runtime,
                 &current,
                 turn_index,
                 &tool_calls,
                 &assistant_provider_message_id,
-            )? {
+            )?;
+            if let Some(stage_runtime) = stage_runtime.as_mut() {
+                for transition in stage_runtime.record_tool_results(&tool_results) {
+                    self.store.append_event(NewRuntimeEvent {
+                        project_id: current.project_id.clone(),
+                        run_id: current.run_id.clone(),
+                        event_kind: RuntimeEventKind::VerificationGate,
+                        trace: Some(RuntimeTraceContext::for_run(
+                            &current.trace_id,
+                            &current.run_id,
+                            "stage_gate_passed",
+                        )),
+                        payload: json!({
+                            "state": "passed",
+                            "stageId": transition.from_stage_id,
+                            "nextStageId": transition.to_stage_id,
+                            "turnIndex": turn_index,
+                        }),
+                    })?;
+                }
+            }
+            for result in tool_results {
                 let result_payload = serde_json::to_string(&result.payload).map_err(|error| {
                     CoreError::system_fault(
                         "agent_core_tool_result_encode_failed",
@@ -903,6 +1605,7 @@ where
         turn_index: usize,
         tool_runtime: &HeadlessProductionToolRuntime,
         provider_preflight: &ProviderPreflightSnapshot,
+        stage: &JsonValue,
     ) -> CoreResult<()> {
         let manifest_id = format!("context-manifest-{}-{turn_index}", snapshot.run_id);
         let context_hash = headless_context_hash(snapshot, turn_index);
@@ -935,6 +1638,7 @@ where
                 "runtime": "production_real_provider",
                 "workspaceRoot": self.workspace_root().map(|root| root.display().to_string()),
                 "tools": tool_runtime.tool_names(),
+                "stage": stage,
                 "executionRegistry": "tool_registry_v2",
                 "providerPreflight": provider_preflight,
                 "admittedProviderPreflightHash": provider_preflight_hash,
@@ -1055,6 +1759,9 @@ where
             "parentAssistantMessageId": parent_assistant_message_id,
             "providerToolName": tool_name,
         });
+        let completed_todo_id = (tool_name == HEADLESS_TOOL_TODO)
+            .then(|| completed_todo_id_from_headless_output(&provider_payload["output"]))
+            .flatten();
         if tool_name == HEADLESS_TOOL_WRITE {
             self.record_headless_file_changed(
                 snapshot,
@@ -1144,6 +1851,7 @@ where
                 "toolName": provider_payload["toolName"].clone(),
                 "ok": true,
                 "summary": provider_payload["summary"].clone(),
+                "completedTodoId": completed_todo_id,
                 "resultPreview": truncate_text(&provider_payload.to_string(), 2048),
                 "dispatch": dispatch,
             }),
@@ -1770,7 +2478,9 @@ pub struct HeadlessProductionToolRuntime {
     workspace_root: PathBuf,
     allow_workspace_writes: bool,
     allow_commands: bool,
+    allowed_tools: Option<BTreeSet<String>>,
     app_data_roots: Vec<String>,
+    todos: Arc<Mutex<BTreeMap<String, JsonValue>>>,
 }
 
 impl HeadlessProductionToolRuntime {
@@ -1812,12 +2522,28 @@ impl HeadlessProductionToolRuntime {
             workspace_root,
             allow_workspace_writes,
             allow_commands,
+            allowed_tools: None,
             app_data_roots,
+            todos: Arc::new(Mutex::new(BTreeMap::new())),
         })
     }
 
+    fn with_allowed_tools(mut self, allowed_tools: Option<BTreeSet<String>>) -> Self {
+        self.allowed_tools = allowed_tools;
+        self
+    }
+
+    fn with_todo_state(mut self, todos: Arc<Mutex<BTreeMap<String, JsonValue>>>) -> Self {
+        self.todos = todos;
+        self
+    }
+
     pub fn descriptors(&self) -> Vec<ToolDescriptorV2> {
-        let mut descriptors = vec![headless_read_descriptor(), headless_list_descriptor()];
+        let mut descriptors = vec![
+            headless_read_descriptor(),
+            headless_list_descriptor(),
+            headless_todo_descriptor(),
+        ];
         if self.allow_workspace_writes {
             descriptors.push(headless_write_descriptor());
             descriptors.push(headless_patch_descriptor());
@@ -1827,6 +2553,9 @@ impl HeadlessProductionToolRuntime {
         }
         if self.allow_commands {
             descriptors.push(headless_command_descriptor());
+        }
+        if let Some(allowed_tools) = self.allowed_tools.as_ref() {
+            descriptors.retain(|descriptor| allowed_tools.contains(&descriptor.name));
         }
         descriptors
     }
@@ -1869,6 +2598,7 @@ impl HeadlessProductionToolRuntime {
             policy: Arc::new(HeadlessProductionToolPolicy {
                 allow_workspace_writes: self.allow_workspace_writes,
                 allow_commands: self.allow_commands,
+                allowed_tools: self.allowed_tools.clone(),
             }),
             sandbox: Arc::new(PermissionProfileSandbox::new(SandboxExecutionContext {
                 workspace_root: self.workspace_root.display().to_string(),
@@ -1931,6 +2661,19 @@ impl HeadlessProductionToolRuntime {
                 move |_context, call, control| {
                     control.ensure_not_cancelled(&call.tool_name)?;
                     let output = list_runtime.list(call)?;
+                    control.ensure_not_cancelled(&call.tool_name)?;
+                    Ok(output)
+                },
+            ))
+            .map_err(tool_execution_error_to_core_error)?;
+
+        let todo_runtime = self.clone();
+        registry
+            .register(StaticToolHandler::new_cancellable(
+                headless_todo_descriptor(),
+                move |_context, call, control| {
+                    control.ensure_not_cancelled(&call.tool_name)?;
+                    let output = todo_runtime.todo(call)?;
                     control.ensure_not_cancelled(&call.tool_name)?;
                     Ok(output)
                 },
@@ -2039,6 +2782,93 @@ impl HeadlessProductionToolRuntime {
                 "path": path,
                 "content": truncate_text(&content, MAX_TOOL_OUTPUT_BYTES),
                 "truncated": content.len() > MAX_TOOL_OUTPUT_BYTES,
+            }),
+        ))
+    }
+
+    fn todo(&self, call: &ToolCallInput) -> Result<ToolHandlerOutput, ToolExecutionError> {
+        let action = required_tool_string(&call.input, "action")?;
+        let mut todos = self.todos.lock().map_err(|_| {
+            ToolExecutionError::unavailable(
+                "agent_core_headless_todo_state_failed",
+                "Xero could not lock headless todo state.",
+            )
+        })?;
+        let mut changed_item = JsonValue::Null;
+        match action {
+            "list" => {}
+            "upsert" => {
+                let id = call
+                    .input
+                    .get("id")
+                    .and_then(JsonValue::as_str)
+                    .map(str::trim)
+                    .filter(|id| !id.is_empty())
+                    .map(str::to_owned)
+                    .unwrap_or_else(|| format!("todo-{}", todos.len().saturating_add(1)));
+                let existing = todos.get(&id);
+                let title = call
+                    .input
+                    .get("title")
+                    .and_then(JsonValue::as_str)
+                    .map(str::trim)
+                    .filter(|title| !title.is_empty())
+                    .map(str::to_owned)
+                    .or_else(|| {
+                        existing
+                            .and_then(|item| item["title"].as_str())
+                            .map(str::to_owned)
+                    })
+                    .ok_or_else(|| {
+                        ToolExecutionError::invalid_input(
+                            "agent_core_headless_todo_title_missing",
+                            "Todo upsert requires a non-empty title.",
+                        )
+                    })?;
+                let status = call
+                    .input
+                    .get("status")
+                    .and_then(JsonValue::as_str)
+                    .unwrap_or("pending");
+                let item = json!({
+                    "id": id,
+                    "title": title,
+                    "notes": call.input.get("notes").cloned().unwrap_or(JsonValue::Null),
+                    "status": status,
+                });
+                todos.insert(id, item.clone());
+                changed_item = item;
+            }
+            "complete" => {
+                let id = required_tool_string(&call.input, "id")?;
+                let item = todos.get_mut(id).ok_or_else(|| {
+                    ToolExecutionError::invalid_input(
+                        "agent_core_headless_todo_not_found",
+                        format!("Xero could not find todo `{id}`."),
+                    )
+                })?;
+                item["status"] = json!("completed");
+                changed_item = item.clone();
+            }
+            "delete" => {
+                let id = required_tool_string(&call.input, "id")?;
+                changed_item = todos.remove(id).unwrap_or(JsonValue::Null);
+            }
+            "clear" => todos.clear(),
+            _ => {
+                return Err(ToolExecutionError::invalid_input(
+                    "agent_core_headless_todo_action_invalid",
+                    "Todo action must be list, upsert, complete, delete, or clear.",
+                ));
+            }
+        }
+        let items = todos.values().cloned().collect::<Vec<_>>();
+        Ok(ToolHandlerOutput::new(
+            format!("Todo action `{action}` returned {} item(s).", items.len()),
+            json!({
+                "action": action,
+                "items": items,
+                "changedItem": changed_item,
             }),
         ))
     }
@@ -2631,14 +3461,28 @@ impl HeadlessProductionToolRuntime {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct HeadlessProductionToolPolicy {
     allow_workspace_writes: bool,
     allow_commands: bool,
+    allowed_tools: Option<BTreeSet<String>>,
 }
 
 impl ToolPolicy for HeadlessProductionToolPolicy {
     fn evaluate(&self, descriptor: &ToolDescriptorV2, _call: &ToolCallInput) -> ToolPolicyDecision {
+        if self
+            .allowed_tools
+            .as_ref()
+            .is_some_and(|allowed| !allowed.contains(&descriptor.name))
+        {
+            return ToolPolicyDecision::Deny {
+                code: "agent_core_headless_agent_tool_denied".into(),
+                message: format!(
+                    "The selected Agent definition does not allow headless tool `{}`.",
+                    descriptor.name
+                ),
+            };
+        }
         if descriptor.name == HEADLESS_TOOL_COMMAND && !self.allow_commands {
             return ToolPolicyDecision::Deny {
                 code: "agent_core_headless_command_not_approved".into(),
@@ -3435,6 +4279,46 @@ fn headless_list_descriptor() -> ToolDescriptorV2 {
     }
 }
 
+fn headless_todo_descriptor() -> ToolDescriptorV2 {
+    ToolDescriptorV2 {
+        name: HEADLESS_TOOL_TODO.into(),
+        description: "List, upsert, complete, delete, or clear Agent todo items used by Stage gates."
+            .into(),
+        input_schema: json!({
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["list", "upsert", "complete", "delete", "clear"]
+                },
+                "id": { "type": "string" },
+                "title": { "type": "string" },
+                "notes": { "type": "string" },
+                "status": {
+                    "type": "string",
+                    "enum": ["pending", "in_progress", "completed"]
+                }
+            },
+            "required": ["action"],
+            "additionalProperties": false
+        }),
+        capability_tags: vec!["agent_state".into(), "stages".into()],
+        application_metadata: ToolApplicationMetadata::granular("todo"),
+        effect_class: ToolEffectClass::Metadata,
+        mutability: ToolMutability::ReadOnly,
+        sandbox_requirement: ToolSandboxRequirement::ReadOnly,
+        approval_requirement: ToolApprovalRequirement::Never,
+        telemetry_attributes: BTreeMap::from([
+            ("xero.tool.kind".into(), "agent_todo".into()),
+            ("xero.tool.registry".into(), "tool_registry_v2".into()),
+        ]),
+        result_truncation: ToolResultTruncationContract {
+            max_output_bytes: MAX_TOOL_OUTPUT_BYTES,
+            preserve_json_shape: true,
+        },
+    }
+}
+
 fn headless_write_descriptor() -> ToolDescriptorV2 {
     ToolDescriptorV2 {
         name: HEADLESS_TOOL_WRITE.into(),
@@ -3994,6 +4878,344 @@ fn tool_execution_error_to_core_error(error: ToolExecutionError) -> CoreError {
 
 fn headless_system_prompt(workspace_root: Option<&Path>) -> String {
     headless_system_prompt_for_agent("engineer", workspace_root)
+}
+
+fn normalized_string_set<'a>(values: impl Iterator<Item = &'a JsonValue>) -> BTreeSet<String> {
+    values
+        .filter_map(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .collect()
+}
+
+fn normalized_headless_tool_set<'a>(
+    values: impl Iterator<Item = &'a JsonValue>,
+) -> BTreeSet<String> {
+    values
+        .filter_map(JsonValue::as_str)
+        .flat_map(normalized_headless_tool_names)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn normalized_headless_tool_names(tool_name: &str) -> Vec<&'static str> {
+    match tool_name.trim() {
+        HEADLESS_TOOL_READ => vec![HEADLESS_TOOL_READ],
+        HEADLESS_TOOL_LIST => vec![HEADLESS_TOOL_LIST],
+        HEADLESS_TOOL_WRITE => vec![HEADLESS_TOOL_WRITE],
+        HEADLESS_TOOL_PATCH | "edit" => vec![HEADLESS_TOOL_PATCH],
+        HEADLESS_TOOL_DELETE => vec![HEADLESS_TOOL_DELETE],
+        HEADLESS_TOOL_MOVE => vec![HEADLESS_TOOL_MOVE],
+        HEADLESS_TOOL_REPLACE => vec![HEADLESS_TOOL_REPLACE],
+        HEADLESS_TOOL_COMMAND | "command_run" | "command_verify" | "command_probe" => {
+            vec![HEADLESS_TOOL_COMMAND]
+        }
+        HEADLESS_TOOL_TODO => vec![HEADLESS_TOOL_TODO],
+        _ => Vec::new(),
+    }
+}
+
+fn headless_condition_tool_names(condition: &JsonValue) -> BTreeSet<String> {
+    condition["toolName"]
+        .as_str()
+        .into_iter()
+        .chain(
+            condition["toolNames"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(JsonValue::as_str),
+        )
+        .flat_map(normalized_headless_tool_names)
+        .map(str::to_owned)
+        .collect()
+}
+
+fn supported_headless_agent_tools() -> BTreeSet<&'static str> {
+    HEADLESS_SUPPORTED_AGENT_TOOLS.iter().copied().collect()
+}
+
+fn headless_tool_is_write(tool_name: &str) -> bool {
+    matches!(
+        tool_name,
+        HEADLESS_TOOL_WRITE
+            | HEADLESS_TOOL_PATCH
+            | HEADLESS_TOOL_DELETE
+            | HEADLESS_TOOL_MOVE
+            | HEADLESS_TOOL_REPLACE
+    )
+}
+
+fn base_capability_profile_for_runtime_agent(runtime_agent_id: &str) -> &'static str {
+    match runtime_agent_id {
+        "ask" => "observe_only",
+        "plan" => "planning",
+        "crawl" => "repository_recon",
+        "debug" => "debugging",
+        "agent_create" => "agent_builder",
+        "computer_use" => "computer_use",
+        _ => "engineering",
+    }
+}
+
+fn profile_allows_workspace_writes(base_capability_profile: &str) -> bool {
+    matches!(base_capability_profile, "engineering" | "debugging")
+}
+
+fn default_approval_modes_for_profile(base_capability_profile: &str) -> BTreeSet<String> {
+    if profile_allows_workspace_writes(base_capability_profile) {
+        ["suggest", "auto_edit", "yolo"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect()
+    } else {
+        BTreeSet::from(["suggest".into()])
+    }
+}
+
+fn named_headless_tool_policy(policy: &str) -> Option<BTreeSet<String>> {
+    match policy.trim() {
+        "observe_only" | "planning" | "repository_recon" | "agent_builder" => Some(
+            [HEADLESS_TOOL_READ, HEADLESS_TOOL_LIST, HEADLESS_TOOL_TODO]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        ),
+        "engineering" => None,
+        _ => Some(BTreeSet::new()),
+    }
+}
+
+fn definition_text(
+    object: &serde_json::Map<String, JsonValue>,
+    key: &str,
+    fallback: &str,
+) -> String {
+    object
+        .get(key)
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(fallback)
+        .to_owned()
+}
+
+fn validate_headless_agent_stages(
+    definition_id: &str,
+    workflow: Option<&HeadlessAgentStageWorkflow>,
+) -> CoreResult<()> {
+    let Some(workflow) = workflow else {
+        return Ok(());
+    };
+    if workflow.phases.is_empty() {
+        return Err(CoreError::invalid_request(
+            "agent_core_headless_agent_stages_empty",
+            format!("Agent definition `{definition_id}` must declare at least one Stage."),
+        ));
+    }
+    let mut stage_ids = BTreeSet::new();
+    for stage in &workflow.phases {
+        if stage.id.trim().is_empty() || stage.title.trim().is_empty() {
+            return Err(CoreError::invalid_request(
+                "agent_core_headless_agent_stage_identity_invalid",
+                format!("Agent definition `{definition_id}` has a Stage without an id or title."),
+            ));
+        }
+        if !stage_ids.insert(stage.id.as_str()) {
+            return Err(CoreError::invalid_request(
+                "agent_core_headless_agent_stage_duplicate",
+                format!(
+                    "Agent definition `{definition_id}` declares duplicate Stage `{}`.",
+                    stage.id
+                ),
+            ));
+        }
+        if stage.retry_limit == Some(0) {
+            return Err(CoreError::invalid_request(
+                "agent_core_headless_agent_stage_retry_limit_invalid",
+                format!(
+                    "Agent definition `{definition_id}` Stage `{}` must use a positive retryLimit.",
+                    stage.id
+                ),
+            ));
+        }
+        for check in &stage.required_checks {
+            validate_headless_stage_condition(definition_id, stage, check, false)?;
+        }
+    }
+    if workflow
+        .start_phase_id
+        .as_deref()
+        .is_some_and(|start| !stage_ids.contains(start))
+    {
+        return Err(CoreError::invalid_request(
+            "agent_core_headless_agent_start_stage_unknown",
+            format!(
+                "Agent definition `{definition_id}` start Stage does not reference a declared Stage."
+            ),
+        ));
+    }
+    for stage in &workflow.phases {
+        for branch in &stage.branches {
+            let target = branch
+                .get("targetPhaseId")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .filter(|target| !target.is_empty())
+                .ok_or_else(|| {
+                    CoreError::invalid_request(
+                        "agent_core_headless_agent_stage_branch_target_missing",
+                        format!(
+                            "Agent definition `{definition_id}` Stage `{}` has a branch without targetPhaseId.",
+                            stage.id
+                        ),
+                    )
+                })?;
+            if !stage_ids.contains(target) {
+                return Err(CoreError::invalid_request(
+                    "agent_core_headless_agent_stage_branch_target_unknown",
+                    format!(
+                        "Agent definition `{definition_id}` Stage `{}` branches to unknown Stage `{target}`.",
+                        stage.id
+                    ),
+                ));
+            }
+            validate_headless_stage_condition(
+                definition_id,
+                stage,
+                branch.get("condition").unwrap_or(&JsonValue::Null),
+                true,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+fn validate_headless_stage_condition(
+    definition_id: &str,
+    stage: &HeadlessAgentStage,
+    condition: &JsonValue,
+    allow_always: bool,
+) -> CoreResult<()> {
+    let kind = condition
+        .get("kind")
+        .and_then(JsonValue::as_str)
+        .map(str::trim)
+        .unwrap_or_default();
+    match kind {
+        "always" if allow_always => Ok(()),
+        "todo_completed" => {
+            if condition
+                .get("todoId")
+                .and_then(JsonValue::as_str)
+                .map(str::trim)
+                .is_some_and(|todo_id| !todo_id.is_empty())
+            {
+                Ok(())
+            } else {
+                Err(CoreError::invalid_request(
+                    "agent_core_headless_agent_stage_todo_id_missing",
+                    format!(
+                        "Agent definition `{definition_id}` Stage `{}` has a todo_completed check without todoId.",
+                        stage.id
+                    ),
+                ))
+            }
+        }
+        "tool_succeeded" => {
+            if condition
+                .get("minCount")
+                .is_some_and(|count| count.as_u64().is_none_or(|count| count == 0))
+            {
+                return Err(CoreError::invalid_request(
+                    "agent_core_headless_agent_stage_min_count_invalid",
+                    format!(
+                        "Agent definition `{definition_id}` Stage `{}` must use a positive minCount.",
+                        stage.id
+                    ),
+                ));
+            }
+            let tools = headless_condition_tool_names(condition);
+            if tools.is_empty() {
+                return Err(CoreError::invalid_request(
+                    "agent_core_headless_agent_stage_tool_unsupported",
+                    format!(
+                        "Agent definition `{definition_id}` Stage `{}` has no headless-executable tool in its tool_succeeded check.",
+                        stage.id
+                    ),
+                ));
+            }
+            let effective_tools = stage
+                .allowed_tools
+                .as_ref()
+                .filter(|tools| !tools.is_empty())
+                .map(|tools| {
+                    tools
+                        .iter()
+                        .flat_map(|tool| normalized_headless_tool_names(tool))
+                        .map(str::to_owned)
+                        .collect::<BTreeSet<_>>()
+                });
+            if effective_tools.is_some_and(|allowed| tools.is_disjoint(&allowed)) {
+                return Err(CoreError::invalid_request(
+                    "agent_core_headless_agent_stage_tool_unavailable",
+                    format!(
+                        "Agent definition `{definition_id}` Stage `{}` cannot satisfy its tool_succeeded check with its allowedTools.",
+                        stage.id
+                    ),
+                ));
+            }
+            Ok(())
+        }
+        _ => Err(CoreError::invalid_request(
+            "agent_core_headless_agent_stage_check_unsupported",
+            format!(
+                "Agent definition `{definition_id}` Stage `{}` uses unsupported headless Stage check `{kind}`.",
+                stage.id
+            ),
+        )),
+    }
+}
+
+fn custom_headless_agent_system_prompt(
+    profile: &HeadlessAgentDefinitionProfile,
+    workspace_root: Option<&Path>,
+) -> String {
+    let baseline_agent = match profile.base_capability_profile.as_str() {
+        "observe_only" => "ask",
+        "planning" => "plan",
+        "debugging" => "debug",
+        _ => "engineer",
+    };
+    let mut sections = vec![headless_system_prompt_for_agent(
+        baseline_agent,
+        workspace_root,
+    )];
+    sections.push(format!(
+        "Active custom Agent: {} (`{}` v{}).",
+        profile.display_name, profile.definition_id, profile.definition_version
+    ));
+    if !profile.task_purpose.is_empty() {
+        sections.push(format!("Task purpose: {}", profile.task_purpose));
+    }
+    sections.extend(profile.system_prompt_fragments.iter().cloned());
+    if !profile.workflow_contract.is_empty() {
+        sections.push(format!("Stage contract: {}", profile.workflow_contract));
+    }
+    if let Some(stage) = profile.initial_stage() {
+        sections.push(format!(
+            "Current Stage: {} (`{}`). Complete its required checks before the final response.",
+            stage.title, stage.id
+        ));
+    }
+    if !profile.final_response_contract.is_empty() {
+        sections.push(format!(
+            "Custom final response contract: {}",
+            profile.final_response_contract
+        ));
+    }
+    sections.join("\n\n")
 }
 
 fn headless_system_prompt_for_agent(
@@ -4569,13 +5791,15 @@ mod tests {
                 runtime_agent_id: "ask".into(),
                 agent_definition_id: Some("ask".into()),
                 agent_definition_version: Some(1),
+                agent_definition_snapshot: None,
                 thinking_effort: Some("x_high".into()),
                 approval_mode: "suggest".into(),
                 plan_mode_required: false,
             }),
         };
 
-        let identity = HeadlessRunIdentity::from_request(&request, Some(Path::new("/repo")));
+        let identity = HeadlessRunIdentity::from_request(&request, Some(Path::new("/repo")))
+            .expect("headless identity");
 
         assert_eq!(identity.runtime_agent_id, "ask");
         assert_eq!(identity.agent_definition_id, "ask");
@@ -5120,7 +6344,8 @@ mod tests {
             },
             controls: None,
         };
-        let identity = HeadlessRunIdentity::from_request(&default_request, None);
+        let identity =
+            HeadlessRunIdentity::from_request(&default_request, None).expect("default identity");
         assert_eq!(identity.runtime_agent_id, "engineer");
         assert_eq!(identity.agent_definition_id, "engineer");
         assert_eq!(identity.agent_definition_version, 1);
@@ -5134,11 +6359,13 @@ mod tests {
             runtime_agent_id: " ".into(),
             agent_definition_id: Some(" ".into()),
             agent_definition_version: Some(0),
+            agent_definition_snapshot: None,
             thinking_effort: Some("unknown".into()),
             approval_mode: " ".into(),
             plan_mode_required: false,
         });
-        let identity = HeadlessRunIdentity::from_request(&invalid_controls, None);
+        let identity = HeadlessRunIdentity::from_request(&invalid_controls, None)
+            .expect("normalized identity");
         assert_eq!(identity.runtime_agent_id, "engineer");
         assert_eq!(identity.agent_definition_id, "engineer");
         assert_eq!(identity.agent_definition_version, 1);
@@ -5151,16 +6378,24 @@ mod tests {
             RuntimeEventKind::RunStarted,
             json!({"thinkingEffort": "HIGH", "approvalMode": "yolo"}),
         ));
-        let identity = HeadlessRunIdentity::from_snapshot(&snapshot);
+        let identity = HeadlessRunIdentity::from_snapshot(&snapshot).expect("snapshot identity");
         assert_eq!(identity.thinking_effort.as_deref(), Some("high"));
         assert_eq!(identity.approval_mode, "yolo");
         assert!(identity.allows_workspace_writes());
         assert!(identity.allows_commands());
 
         snapshot.events[0].payload = json!({"approvalMode": "anything"});
-        let identity = HeadlessRunIdentity::from_snapshot(&snapshot);
+        let identity = HeadlessRunIdentity::from_snapshot(&snapshot).expect("snapshot identity");
         assert_eq!(identity.approval_mode, "suggest");
         assert!(!identity.allows_workspace_writes());
+
+        snapshot.events[0].payload["agentDefinitionRuntime"] = json!({"bad": true});
+        assert_eq!(
+            HeadlessRunIdentity::from_snapshot(&snapshot)
+                .expect_err("malformed persisted Agent policy must fail closed")
+                .code,
+            "agent_core_headless_agent_definition_runtime_invalid"
+        );
     }
 
     #[test]
@@ -5332,10 +6567,12 @@ mod tests {
             .expect("create writable runtime");
         assert_eq!(
             runtime.tool_names(),
-            vec!["read", "list", "write", "patch", "delete", "move", "replace", "command"]
+            vec![
+                "read", "list", "todo", "write", "patch", "delete", "move", "replace", "command"
+            ]
         );
-        assert_eq!(runtime.openai_tool_definitions().len(), 8);
-        assert_eq!(runtime.openai_response_tool_definitions().len(), 8);
+        assert_eq!(runtime.openai_tool_definitions().len(), 9);
+        assert_eq!(runtime.openai_response_tool_definitions().len(), 9);
         assert_eq!(runtime.openai_tool_definitions()[0]["type"], "function");
         assert_eq!(
             runtime.openai_response_tool_definitions()[0]["name"],
@@ -5603,7 +6840,7 @@ mod tests {
         let runtime =
             HeadlessProductionToolRuntime::new_with_modes(Some(&root), false, true, Vec::new())
                 .expect("create command runtime");
-        assert_eq!(runtime.tool_names(), vec!["read", "list", "command"]);
+        assert_eq!(runtime.tool_names(), vec!["read", "list", "todo", "command"]);
         let context = ToolExecutionContext {
             run_id: "run-command".into(),
             context_epoch: "turn-3".into(),
@@ -5683,6 +6920,7 @@ mod tests {
         let read_only_policy = HeadlessProductionToolPolicy {
             allow_workspace_writes: false,
             allow_commands: false,
+            allowed_tools: None,
         };
         assert!(matches!(
             read_only_policy.evaluate(

@@ -1706,14 +1706,16 @@ mod tests {
         );
         assert!(semantic_workspace_prompt_requirement_reasons("answer from context").is_empty());
 
-        let mut config = EnvironmentLifecycleConfig::default();
-        config.workspace_root = ".".into();
-        config.required_binaries = vec!["definitely-missing-xero-test-binary".into()];
-        config.provider_credentials_required = true;
-        config.provider_credentials_valid = false;
-        config.tool_packs.clear();
-        config.semantic_index_required = true;
-        config.semantic_index_state = EnvironmentSemanticIndexState::Indexing;
+        let mut config = EnvironmentLifecycleConfig {
+            workspace_root: ".".into(),
+            required_binaries: vec!["definitely-missing-xero-test-binary".into()],
+            provider_credentials_required: true,
+            provider_credentials_valid: false,
+            tool_packs: Vec::new(),
+            semantic_index_required: true,
+            semantic_index_state: EnvironmentSemanticIndexState::Indexing,
+            ..EnvironmentLifecycleConfig::default()
+        };
         let checks = collect_health_checks(&config);
         assert_eq!(checks.len(), 6);
         assert_eq!(
@@ -2114,6 +2116,7 @@ mod tests {
                     runtime_agent_id: "engineer".into(),
                     agent_definition_id: Some("engineer".into()),
                     agent_definition_version: Some(1),
+                    agent_definition_snapshot: None,
                     thinking_effort: None,
                     approval_mode: "yolo".into(),
                     plan_mode_required: false,

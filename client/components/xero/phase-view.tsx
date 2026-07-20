@@ -6,6 +6,7 @@ import {
   Bot,
   GitPullRequestArrow,
   Loader2,
+  MessageSquare,
   Play,
   Save,
   Square,
@@ -78,6 +79,8 @@ interface PhaseViewProps {
   workflowStartRequestToken?: number
   onWorkflowStartRequestHandled?: (requestToken: number) => void
   onCancelWorkflowRun?: (runId: string) => Promise<WorkflowRunDto | void>
+  onOpenWorkflowRunChat?: () => void
+  workflowRunChatOpen?: boolean
   onRetryWorkflowNodeRun?: (runId: string, nodeRunId: string) => Promise<WorkflowRunDto | void>
   onSkipWorkflowBranch?: (
     runId: string,
@@ -166,6 +169,8 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
     workflowStartRequestToken = 0,
     onWorkflowStartRequestHandled,
     onCancelWorkflowRun,
+    onOpenWorkflowRunChat,
+    workflowRunChatOpen = false,
     onRetryWorkflowNodeRun,
     onSkipWorkflowBranch,
     onResumeWorkflowCheckpoint,
@@ -512,6 +517,28 @@ export const PhaseView = memo(function PhaseView(props: PhaseViewProps) {
               ) : (
                 <Play className="size-3.5" />
               )}
+            </Button>
+          ) : null}
+          {showWorkflowDefinition &&
+          selectedWorkflowRun &&
+          !workflowCanvasStatus?.editing &&
+          onOpenWorkflowRunChat ? (
+            <Button
+              type="button"
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Open workflow chat"
+              aria-pressed={workflowRunChatOpen}
+              title="Workflow chat"
+              onClick={onOpenWorkflowRunChat}
+              className={cn(
+                'size-[30px] cursor-pointer rounded-md bg-transparent',
+                workflowRunChatOpen
+                  ? 'text-primary hover:bg-transparent hover:text-primary'
+                  : 'text-foreground/70 hover:bg-transparent hover:text-foreground',
+              )}
+            >
+              <MessageSquare className="size-3.5" />
             </Button>
           ) : null}
           {showWorkflowDefinition &&

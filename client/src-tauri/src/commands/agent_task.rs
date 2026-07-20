@@ -974,6 +974,7 @@ fn locate_agent_run<R: Runtime>(
                 });
             }
             Err(error) if error.code == "agent_run_not_found" => continue,
+            Err(error) if error.code == "project_root_unavailable" => continue,
             Err(error) => return Err(error),
         }
     }

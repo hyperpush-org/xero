@@ -1,5 +1,6 @@
 use std::{
     fs, thread,
+    sync::{LazyLock, Mutex},
     time::{Duration, Instant},
 };
 
@@ -21,9 +22,13 @@ use xero_desktop_lib::{
     state::DesktopState,
 };
 
-fn build_mock_app(root: &TempDir) -> tauri::App<tauri::test::MockRuntime> {
+static AGENT_TASK_APP_DATA_FIXTURE: LazyLock<TempDir> =
+    LazyLock::new(|| tempfile::tempdir().expect("shared agent task app-data fixture"));
+static AGENT_TASK_SEED_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
+
+fn build_mock_app(_root: &TempDir) -> tauri::App<tauri::test::MockRuntime> {
     let state = DesktopState::default()
-        .with_global_db_path_override(root.path().join("app-data").join("xero.db"))
+        .with_global_db_path_override(AGENT_TASK_APP_DATA_FIXTURE.path().join("xero.db"))
         .with_owned_agent_provider_config_override(AgentProviderConfig::Fake);
     configure_builder_with_state(tauri::test::mock_builder(), state)
         .build(tauri::generate_context!())
@@ -34,6 +39,9 @@ fn seed_project(
     root: &TempDir,
     app: &tauri::App<tauri::test::MockRuntime>,
 ) -> (String, std::path::PathBuf) {
+    let _seed_guard = AGENT_TASK_SEED_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
     let repo_root = root.path().join("repo");
     fs::create_dir_all(&repo_root).expect("create repository root");
     let canonical_root = fs::canonicalize(&repo_root).expect("canonical repository root");
@@ -71,14 +79,15 @@ fn seed_project(
     db::configure_project_database_paths(&registry_path);
     db::import_project(&repository, app.state::<DesktopState>().import_failpoints())
         .expect("import fixture project");
-    registry::replace_projects(
+    registry::upsert_project(
         &registry_path,
-        vec![RegistryProjectRecord {
+        RegistryProjectRecord {
             project_id: project_id.clone(),
             repository_id,
             root_path,
             is_git_repo: false,
-        }],
+        },
+        app.state::<DesktopState>().import_failpoints(),
     )
     .expect("persist fixture registry");
     (project_id, canonical_root)
